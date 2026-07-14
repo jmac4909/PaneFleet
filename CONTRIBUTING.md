@@ -26,7 +26,7 @@ npm run hooks:install
 Read the [Safety model](docs/safety-model.md). Changes must preserve these invariants unless the proposal explicitly replaces them with a stronger, tested design:
 
 - There is no arbitrary shell-command endpoint.
-- Every operational API route requires the current same-page control cookie; non-loopback listeners also require the operator's Basic credential.
+- Every operational API route requires the current same-page control cookie; non-loopback listeners require the operator's Basic credential by default, with trusted-network mode allowed only behind independently verified exact-source ingress.
 - Normal agent input is literal text plus one Enter; interrupt, stop, and forced recovery remain distinct actions.
 - Sensitive terminal actions revalidate the exact tmux session and pane identity immediately before input.
 - Uncertain input is not retried or resubmitted automatically.

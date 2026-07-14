@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const modes = new Set(process.argv.slice(2));
@@ -30,7 +29,9 @@ function privatePathReason(file) {
   if (/^(?:data|tmp|screenshots|captures)(?:\/|$)/.test(normalized)) return 'private runtime directory';
   if (/^docs\/incident-[^/]+\.md$/i.test(normalized)) return 'private incident note';
   if (/(?:^|\/)\.env(?:\.|$)/.test(normalized) && normalized !== '.env.example') return 'environment file';
-  if (/(?:^|\/)(?:\.codex|\.claude)(?:\/|$)/.test(normalized)) return 'agent state';
+  if (/(?:^|\/)(?:\.codex|\.claude|\.aws|\.ssh|\.docker)(?:\/|$)/.test(normalized)) return 'agent or credential state';
+  if (/(?:^|\/)(?:\.npmrc|\.pypirc|\.netrc|\.git-credentials|credentials(?:\.json)?|secrets?\.json|tokens?\.json|auth\.json|kubeconfig|id_(?:rsa|dsa|ecdsa|ed25519))$/i.test(normalized)) return 'credential file';
+  if (/\.(?:tfstate(?:\.[^/]*)?|tfvars(?:\.json)?|jks|kdbx|ovpn)$/i.test(normalized)) return 'credential or infrastructure state';
   if (/\.(?:log(?:\.[^/]*)?|pid|pem|key|p12|pfx|keystore)$/i.test(normalized)) return 'secret or runtime file type';
   if (/\.(?:pdf|docx?|xlsx?|csv|sqlite3?|db|zip|tar|tgz|gz|7z|jpg|jpeg|png|webp|heic|gif|mp4|mov)$/i.test(normalized)) return 'binary, document, archive, or capture';
   return '';
@@ -47,14 +48,23 @@ function allowedIpv4(ip) {
 
 function inspectText(file, text) {
   const patterns = [
-    ['private key', new RegExp(['-----BEGIN ', '(?:RSA |EC |OPENSSH )?', 'PRIVATE KEY-----'].join(''), 'i')],
+    ['private key', /-----BEGIN [A-Z ]*PRIVATE KEY-----/i],
     ['AWS access key', /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
     ['OpenAI-style secret', /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/],
     ['GitHub token', /\bgh[pousr]_[A-Za-z0-9]{20,}\b/],
+    ['GitLab token', /\bglpat-[A-Za-z0-9_-]{20,}\b/],
     ['Slack token', /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/],
+    ['Google API key', /\bAIza[A-Za-z0-9_-]{30,}\b/],
+    ['Stripe live secret', /\b(?:sk|rk)_live_[A-Za-z0-9]{16,}\b/],
+    ['npm token', /\bnpm_[A-Za-z0-9]{20,}\b/],
     ['JWT', /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{10,}\b/],
     ['credential URL', /\b(?:postgres(?:ql)?|mysql|redis|https?):\/\/[^\s/:@]+:[^\s@]+@[^\s]+/i],
-    ['absolute user home path', /\/(?:home|Users)\/[A-Za-z0-9._-]+\//]
+    ['absolute user home path', /\/(?:home|Users)\/[A-Za-z0-9._-]+\//],
+    ['EC2 instance identifier', /\bi-[0-9a-f]{8,17}\b/i],
+    ['EC2 security group identifier', /\bsg-[0-9a-f]{8,17}\b/i],
+    ['AWS account or resource ARN', /\barn:aws(?:-[a-z]+)?:[^\s:]+:[^\s:]*:\d{12}:/i],
+    ['EC2 internal hostname', /\bip-(?:\d+-){3}\d+\.[A-Za-z0-9.-]*compute\.internal\b/i],
+    ['EC2 public hostname', /\bec2-(?:\d+-){3}\d+\.[A-Za-z0-9.-]*compute\.amazonaws\.com\b/i]
   ];
   for (const [label, pattern] of patterns) {
     if (pattern.test(text)) findings.push(`${file}: possible ${label}`);
@@ -108,7 +118,7 @@ if (modes.has('--staged')) {
 if (modes.has('--tracked')) {
   for (const file of nullSeparated(git(['ls-files', '-z']))) {
     try {
-      inspectBuffer(`tracked:${file}`, readFileSync(file));
+      inspectBuffer(`tracked:${file}`, git(['show', `:${file}`], { encoding: null }));
     } catch (error) {
       findings.push(`tracked:${file}: cannot read (${error?.code || 'error'})`);
     }
@@ -132,6 +142,24 @@ if (modes.has('--history')) {
     if (type !== 'blob') continue;
     scannedObjects.add(object);
     inspectBuffer(`history:${file}`, git(['cat-file', 'blob', object], { encoding: null }));
+  }
+
+  // Reachability is not enough for publication cleanup: amended commits and
+  // deleted blobs can survive in reflogs or as loose objects and later be
+  // recovered from a copied .git directory. Scan every stored commit, tag, and
+  // blob so local privacy checks expose those remnants before a public push.
+  const storedObjects = git([
+    'cat-file',
+    '--batch-all-objects',
+    "--batch-check=%(objectname) %(objecttype)"
+  ]).split('\n').filter(Boolean);
+  for (const line of storedObjects) {
+    const [object, type] = line.split(' ');
+    if (!object || !['blob', 'commit', 'tag'].includes(type) || scannedObjects.has(object)) continue;
+    scannedObjects.add(object);
+    const buffer = git(['cat-file', type, object], { encoding: null });
+    if (type === 'blob') inspectBuffer(`objects:${object}`, buffer);
+    else inspectText(`objects:${object}`, buffer.toString('utf8'));
   }
 }
 

@@ -57,6 +57,15 @@ test('privacy checker rejects machine-local staged paths', () => {
   assert.match(result.stderr, /machine-local configuration/);
 });
 
+test('privacy checker rejects a force-added credential configuration path', () => {
+  const directory = repository();
+  writeFileSync(path.join(directory, '.npmrc'), 'registry=https://registry.example.com\n');
+  git(directory, ['add', '-f', '.npmrc']);
+  const result = runChecker(directory, '--staged');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /credential file/);
+});
+
 test('privacy checker rejects credentials retained only in Git history', () => {
   const directory = repository();
   const syntheticCredential = `sk-proj-${'x'.repeat(32)}`;
@@ -69,4 +78,18 @@ test('privacy checker rejects credentials retained only in Git history', () => {
   const result = runChecker(directory, '--tracked', '--history');
   assert.equal(result.status, 1);
   assert.match(result.stderr, /history:temporary\.txt: possible OpenAI-style secret/);
+});
+
+test('privacy checker rejects host identity retained only in an unreachable amended commit', () => {
+  const directory = repository();
+  const syntheticHostEmail = ['operator@ip-', '10-20-30-40', '.compute.internal'].join('');
+  git(directory, ['config', 'user.email', syntheticHostEmail]);
+  git(directory, ['commit', '--allow-empty', '-qm', 'temporary host identity']);
+  const leakedCommit = git(directory, ['rev-parse', 'HEAD']).trim();
+  git(directory, ['reset', '--hard', '-q', 'HEAD^']);
+
+  const result = runChecker(directory, '--tracked', '--history');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, new RegExp(`objects:${leakedCommit}: possible EC2 internal hostname`));
+  assert.match(result.stderr, new RegExp(`objects:${leakedCommit}: non-example email address`));
 });
