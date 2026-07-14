@@ -163,3 +163,17 @@ test('live responsive CSS floats desktop windows across the viewport and shows o
   assert.match(styles, /@media \(max-width: 759px\)[\s\S]*\.terminal-window\s*\{\s*position: fixed/);
   assert.match(styles, /\.control-drawer\s*\{[\s\S]*position: fixed/);
 });
+
+test('mobile terminal typing is protected from focus-destroying dashboard renders', async () => {
+  const [app, styles] = await Promise.all([uiSource('app.js'), uiSource('styles.css')]);
+
+  assert.match(app, /const protectedTerminalEditor = preserveActiveEditor[\s\S]*\.terminal-window textarea/);
+  assert.match(app, /syncOpenTerminalWindows\(\{ protectedEditor: protectedTerminalEditor \}\)/);
+  assert.match(app, /item\.sendText !== protectedEditor\) updateTerminalSendForm\(item\)/);
+  assert.match(app, /if \(protectedEditor\?\.isConnected\) return/);
+  assert.match(app, /const alreadyActive = state\.activeTerminalId === item\.id[\s\S]*if \(alreadyActive\) return/);
+  assert.match(app, /const terminalEditor = event\.target\.closest\('\.terminal-send-form, input, textarea, select, \[contenteditable="true"\]'\)/);
+  assert.match(app, /if \(item\.sendText\.readOnly !== promptDisabled\) item\.sendText\.readOnly = promptDisabled/);
+  assert.match(styles, /@media \(max-width: 759px\) \{\s*\.terminal-layer \{\s*z-index: 1000/);
+  assert.match(styles, /@media \(max-width: 759px\)[\s\S]*\.terminal-dock \{\s*z-index: 1001/);
+});

@@ -500,9 +500,15 @@ function render({ preserveActiveEditor = false } = {}) {
   const data = state.snapshot;
   if (!data) return;
   const activeElement = document.activeElement;
-  const protectedViewId = preserveActiveEditor && activeElement?.matches?.('input, textarea, select')
-    ? activeElement.closest('.view, #queue-view, #services-view, #security-view, #review-view, #ports-view, #processes-view, #audit-view')?.id || ''
-    : '';
+  const protectedTerminalEditor = preserveActiveEditor
+    && activeElement?.matches?.('.terminal-window input, .terminal-window textarea, .terminal-window select')
+    ? activeElement
+    : null;
+  const protectedViewId = protectedTerminalEditor
+    ? 'agents-view'
+    : preserveActiveEditor && activeElement?.matches?.('input, textarea, select')
+      ? activeElement.closest('.view, #queue-view, #services-view, #security-view, #review-view, #ports-view, #processes-view, #audit-view')?.id || ''
+      : '';
   const workerAgents = sortSessionAgents(data.agents.filter((agent) => !isReviewAgent(agent)));
   const visibleServices = data.services.filter(isDisplayableService);
   const runningServices = visibleServices.filter((item) => item.running).length;
@@ -533,7 +539,7 @@ function render({ preserveActiveEditor = false } = {}) {
   if (protectedViewId !== 'security-view') renderSecurityTools(data.security);
   renderToolsOverview(data, visibleServices, attention);
   scheduleHealthChecks();
-  syncOpenTerminalWindows();
+  syncOpenTerminalWindows({ protectedEditor: protectedTerminalEditor });
 }
 
 function sortSessionAgents(agents) {
@@ -3197,9 +3203,11 @@ function setTerminalFullHeight(enabled = !state.terminalFullHeight, { render = t
 
 function focusTerminalWindow(item) {
   if (!item || item.minimized) return;
+  const alreadyActive = state.activeTerminalId === item.id;
   state.activeTerminalId = item.id;
   state.selectedSession = item.session || state.selectedSession;
   item.focusedAt = Date.now();
+  if (alreadyActive) return;
   state.topTerminalZ += 1;
   item.element.style.zIndex = String(state.topTerminalZ);
   applyTerminalLayout();
@@ -3414,11 +3422,12 @@ function displayNameForSession(session) {
   return currentBrief(session)?.displayName || session;
 }
 
-function syncOpenTerminalWindows() {
+function syncOpenTerminalWindows({ protectedEditor = null } = {}) {
   for (const item of state.terminalWindows.values()) {
     if (item.mode === 'agent') item.title.textContent = displayNameForSession(item.session);
-    if (item.mode !== 'static') updateTerminalSendForm(item);
+    if (item.mode !== 'static' && item.sendText !== protectedEditor) updateTerminalSendForm(item);
   }
+  if (protectedEditor?.isConnected) return;
   renderTerminalDock();
   applyTerminalLayout();
   renderTerminalChrome();
@@ -3510,7 +3519,7 @@ function updateSendInputState(item) {
   item.sendCounter.textContent = `${length}/${SEND_TEXT_MAX}`;
   item.sendCounter.dataset.full = length >= SEND_TEXT_MAX ? 'true' : 'false';
   item.sendForm.setAttribute('aria-busy', interactionBusy ? 'true' : 'false');
-  item.sendText.readOnly = promptDisabled;
+  if (item.sendText.readOnly !== promptDisabled) item.sendText.readOnly = promptDisabled;
   item.sendText.setAttribute('aria-readonly', promptDisabled ? 'true' : 'false');
   item.sendText.classList.toggle('is-picker-locked', item.pickerActive);
   const activeMission = activeMissionForAgentSession(item.session);
@@ -4536,7 +4545,8 @@ document.addEventListener('click', (event) => {
   const target = event.target.closest('[data-action]');
   if (!target) {
     const focusedTerminal = terminalItemFromTarget(event.target);
-    if (focusedTerminal && currentAgent(focusedTerminal.session) && !isReviewAgent(currentAgent(focusedTerminal.session))) {
+    const terminalEditor = event.target.closest('.terminal-send-form, input, textarea, select, [contenteditable="true"]');
+    if (!terminalEditor && focusedTerminal && currentAgent(focusedTerminal.session) && !isReviewAgent(currentAgent(focusedTerminal.session))) {
       void touchOpenedAgent(focusedTerminal.session);
     }
     return;
