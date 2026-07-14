@@ -199,7 +199,6 @@ Only the two reviewed README capture paths are permitted by the privacy checker;
 | `scripts/` | Installation, restart, screenshot, access-token, and privacy helpers |
 | `test/` | Isolated integration, lifecycle, mission, terminal, and UI tests |
 | `docs/` | Features, architecture, configuration, safety, and operations references |
-| `.github/workflows/` | Public verification across supported Node versions |
 
 ## Current limits
 
