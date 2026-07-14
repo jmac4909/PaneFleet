@@ -7,7 +7,7 @@ TOKEN_FILE="${ORCHESTRATOR_ACCESS_TOKEN_FILE:-$ROOT/data/access-token}"
 
 if [[ ! -f "$TOKEN_FILE" || -L "$TOKEN_FILE" ]]; then
   printf 'access token file is missing or unsafe: %s\n' "$TOKEN_FILE" >&2
-  printf 'It is created automatically after Host Control first starts on a non-loopback bind.\n' >&2
+  printf 'It is created automatically after PaneFleet first starts on a non-loopback bind.\n' >&2
   exit 1
 fi
 

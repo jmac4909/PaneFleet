@@ -1,6 +1,6 @@
 # Configuration
 
-Host Control separates reusable source from machine-local authority. Two ignored files provide host-specific configuration:
+PaneFleet separates reusable source from machine-local authority. Two ignored files provide host-specific configuration:
 
 - `services.json` grants visibility and allowlisted service actions; and
 - `host-config.json` adds workspace roots, workspace entries, display groups, display aliases, and PDF artifact folders.
@@ -141,7 +141,7 @@ Common settings:
 | `ORCHESTRATOR_ACCESS_MODE` | `authenticated` | Use `trusted-network` to suppress non-loopback Basic only behind externally enforced exact-source ingress |
 | `ORCHESTRATOR_ACCESS_TOKEN` | unset | Explicit authenticated-mode Basic password; must contain at least 24 characters |
 | `ORCHESTRATOR_ACCESS_TOKEN_FILE` | `data/access-token` | Owner-only token generated/reused when authenticated non-loopback mode needs one |
-| `ORCHESTRATOR_SECURE_COOKIE` | unset | Set to `1` when the browser reaches Host Control over HTTPS |
+| `ORCHESTRATOR_SECURE_COOKIE` | unset | Set to `1` when the browser reaches PaneFleet over HTTPS |
 | `MISSION_MAX_ACTIVE` | `3` | Global active mission cap |
 | `SNAPSHOT_EVENT_MS` | `5000` | Server-sent snapshot interval |
 | `AGENT_SAMPLE_INTERVAL_MS` | `15000` | Agent history sampling interval |
@@ -175,8 +175,8 @@ When an external firewall or cloud security group has been independently verifie
 
 ## Runtime data
 
-Host Control creates `data/` with mission, notification, interaction, review, access-rule, and audit state. An authenticated non-loopback deployment without an injected token also stores `data/access-token` with owner-only permissions; trusted-network mode does not. State files use atomic replacement where consistency matters.
+PaneFleet creates `data/` with mission, notification, interaction, review, access-rule, and audit state. An authenticated non-loopback deployment without an injected token also stores `data/access-token` with owner-only permissions; trusted-network mode does not. State files use atomic replacement where consistency matters.
 
-Treat `data/`, `services.json`, and `host-config.json` as private. Back them up only to a protected destination, never commit them, and stop Host Control before attempting a manual restore.
+Treat `data/`, `services.json`, and `host-config.json` as private. Back them up only to a protected destination, never commit them, and stop PaneFleet before attempting a manual restore.
 
 Browser-local notes, prompt drafts, snippets, pins, and window preferences live in browser storage rather than `data/`.

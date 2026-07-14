@@ -168,7 +168,7 @@ case "$1" in
     fi
     if [ "$4" = "-l" ] && [ "$#" -eq 5 ]; then
       case "$5" in
-        '[Host Control Mission '* )
+        '[PaneFleet Mission '* )
           if ! grep -q '"status": "dispatching"' "$MISSION_QUEUE_PATH" || \
              ! grep -q '"assignedPaneId": "codex-worker:0.0"' "$MISSION_QUEUE_PATH" || \
              ! grep -q '"activeAttempt": {' "$MISSION_QUEUE_PATH"; then
@@ -683,7 +683,7 @@ test('dispatch claims durably, then sends literal text and Enter to one idle exi
     assert.equal(job.activeAttempt.session, 'codex-worker');
     assert.equal(job.activeAttempt.tmuxPaneId, '%77');
     assert.equal(job.activeAttempt.panePid, 4100);
-    assert.equal(job.activeAttempt.confirmationMarker, `[Host Control Dispatch ${job.activeAttempt.id}]`);
+    assert.equal(job.activeAttempt.confirmationMarker, `[PaneFleet Dispatch ${job.activeAttempt.id}]`);
     assert.match(job.activeAttempt.submittedAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.deepEqual(queue.events.map((event) => event.kind), [
       'mission.created',
@@ -788,9 +788,9 @@ test('long mission prompts are typed in bounded literal chunks before one Enter'
     assert.ok(operations.indexOf('tmux:send-enter:C-m') > operations.lastIndexOf(literalOperations.at(-1)));
 
     const renderedInput = readFileSync(fixture.tmuxInputPath, 'utf8');
-    assert.match(renderedInput, new RegExp(`^\\[Host Control Mission ${created.id}\\]`));
+    assert.match(renderedInput, new RegExp(`^\\[PaneFleet Mission ${created.id}\\]`));
     assert.match(renderedInput, /Dispatch a long mission without dropping terminal input/);
-    assert.match(renderedInput, new RegExp(`\\[Host Control Dispatch ${readQueue(fixture).jobs[0].activeAttempt.id}\\]$`));
+    assert.match(renderedInput, new RegExp(`\\[PaneFleet Dispatch ${readQueue(fixture).jobs[0].activeAttempt.id}\\]$`));
   } finally {
     if (server) await server.stop();
     rmSync(fixture.fixtureDir, { recursive: true, force: true });

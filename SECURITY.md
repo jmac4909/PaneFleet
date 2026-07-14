@@ -1,6 +1,6 @@
 # Security policy
 
-Host Control can inspect terminals and host state, send input to selected tmux panes, run locally allowlisted service actions, and optionally update narrowly scoped network rules. Treat it as privileged operator software.
+PaneFleet can inspect terminals and host state, send input to selected tmux panes, run locally allowlisted service actions, and optionally update narrowly scoped network rules. Treat it as privileged operator software.
 
 ## Supported versions
 
@@ -22,7 +22,7 @@ The maintainer will acknowledge the report as soon as practical, investigate it 
 
 ## Deployment and authentication boundary
 
-Host Control is a single-operator application. It does not provide separate accounts, roles, or multi-user audit identities. It uses two access modes:
+PaneFleet is a single-operator application. It does not provide separate accounts, roles, or multi-user audit identities. It uses two access modes:
 
 - A loopback listener (`127.0.0.1`, `::1`, or `localhost`) does not prompt for HTTP Basic credentials.
 - A non-loopback listener requires HTTP Basic authentication before serving the application or issuing a control cookie by default. The username is always `host-control`; the password is an operator token of at least 24 characters.
@@ -30,9 +30,9 @@ Host Control is a single-operator application. It does not provide separate acco
 
 Every operational `/api` route, read or write, also requires the same-page `host_control_session` cookie. The minimal `/healthz` endpoint is the intentional exception. POST requests additionally require JSON and same-origin request checks.
 
-If `ORCHESTRATOR_ACCESS_TOKEN` is not supplied for an authenticated non-loopback listener, Host Control creates a random owner-only token at `data/access-token`. Reveal it locally with `bash scripts/show-access-token.sh`. Never paste the token into chat, logs, issues, or shell history.
+If `ORCHESTRATOR_ACCESS_TOKEN` is not supplied for an authenticated non-loopback listener, PaneFleet creates a random owner-only token at `data/access-token`. Reveal it locally with `bash scripts/show-access-token.sh`. Never paste the token into chat, logs, issues, or shell history.
 
-HTTP Basic only encodes credentials; it does not encrypt them. Carry Basic credentials only through HTTPS or a private/tunneled transport. When the browser reaches Host Control over HTTPS, set `ORCHESTRATOR_SECURE_COOKIE=1` so the control cookie receives the `Secure` attribute.
+HTTP Basic only encodes credentials; it does not encrypt them. Carry Basic credentials only through HTTPS or a private/tunneled transport. When the browser reaches PaneFleet over HTTPS, set `ORCHESTRATOR_SECURE_COOKIE=1` so the control cookie receives the `Secure` attribute.
 
 Recommended deployment:
 

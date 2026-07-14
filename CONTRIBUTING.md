@@ -1,10 +1,10 @@
-# Contributing to Host Control
+# Contributing to PaneFleet
 
-Thank you for helping improve Host Control. This project sits on a sensitive boundary between a browser and live host processes, so small, reviewable changes with explicit safety evidence are preferred.
+Thank you for helping improve PaneFleet. This project sits on a sensitive boundary between a browser and live host processes, so small, reviewable changes with explicit safety evidence are preferred.
 
 ## Development setup
 
-Host Control currently has zero runtime npm dependencies. Use Linux, Node.js 20 or newer, and the host tools listed in the [quick start](README.md#quick-start).
+PaneFleet currently has zero runtime npm dependencies. Use Linux, Node.js 20 or newer, and the host tools listed in the [quick start](README.md#quick-start).
 
 ```bash
 npm ci

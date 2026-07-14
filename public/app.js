@@ -1523,7 +1523,7 @@ function renderSecurityTools(security = {}) {
   els.security.innerHTML = `
     <section class="tool-panel security-panel">
       <div class="panel-head"><div><span class="eyebrow">Inbound access</span><h2>Exact IP rules</h2><p>${escapeHtml(sshRescueStatusLabel(sshRescue, safeIpRuleControls))}</p></div><span class="status ${warnings.length ? 'warn' : 'good'}">${warnings.length ? `${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : 'clear'}</span></div>
-      <p class="security-explainer">Host Control only manages its allowlisted security-group rules. Current browser and active SSH addresses are protected during cleanup.</p>
+      <p class="security-explainer">PaneFleet only manages its allowlisted security-group rules. Current browser and active SSH addresses are protected during cleanup.</p>
       <div class="security-actions">
         <button class="action-button ${escapeHtml(accessAction.tone)}" data-action="${escapeHtml(accessAction.action)}" title="${escapeHtml(accessAction.title)}" ${accessAction.disabled ? 'disabled' : ''} type="button">${escapeHtml(accessAction.label)}</button>
         <button class="action-button" data-action="ip-rules-view" ${ipRuleManagement ? '' : 'disabled'} type="button">View inbound rules</button>
@@ -2193,11 +2193,11 @@ function projectContextChecks(context) {
     return {
       summary: String(raw.summary || raw.label || raw.status || (scripts.length ? `${scripts.length} available · not run` : 'Not recorded')),
       items: items.length ? items : scripts.map((script) => typeof script === 'string'
-        ? { name: script, status: 'available', detail: 'Available; not run by Host Control.' }
+        ? { name: script, status: 'available', detail: 'Available; not run by PaneFleet.' }
         : {
             name: String(script?.name || script?.label || 'check'),
             status: String(script?.status || 'available'),
-            detail: String(script?.detail || script?.command || 'Available; not run by Host Control.')
+            detail: String(script?.detail || script?.command || 'Available; not run by PaneFleet.')
           })
     };
   }
@@ -2504,7 +2504,7 @@ function updateProjectComposerState() {
   els.scratchpadSafety.textContent = !target
     ? 'Draft only · no terminal selected'
     : !capabilityAvailable
-      ? 'Draft saved · restart Host Control to enable exact-target Review and Send'
+      ? 'Draft saved · restart PaneFleet to enable exact-target Review and Send'
     : !target.identityComplete
       ? 'Send locked · durable pane identity unavailable'
       : !canPrompt.ok
@@ -4281,7 +4281,7 @@ async function adoptExistingMissionClient(button) {
     `Adopt the work already running in ${displayNameForSession(worker.session)} for “${mission.title}”?`,
     '',
     'Confirm you inspected this terminal and it is doing this mission.',
-    'Host Control will update queue ownership only. It will not send a prompt, Enter, or any terminal input.'
+    'PaneFleet will update queue ownership only. It will not send a prompt, Enter, or any terminal input.'
   ].join('\n'));
   if (!confirmed) return;
 
@@ -5087,7 +5087,7 @@ async function confirmScratchpadSend() {
   const review = state.projectDesk.review;
   if (!review || state.projectDesk.sending) return;
   if (!projectDeskCapabilityAvailable()) {
-    setNotice('Prompt not sent: restart Host Control to enable durable exact-target validation.', 'error');
+    setNotice('Prompt not sent: restart PaneFleet to enable durable exact-target validation.', 'error');
     clearScratchpadReview();
     updateProjectComposerState();
     return;

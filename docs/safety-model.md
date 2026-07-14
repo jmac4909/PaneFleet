@@ -1,6 +1,6 @@
 # Safety model
 
-Host Control is privileged operator software. Its design assumes that observation is common, mutation is narrow, and ambiguous terminal state must fail toward human review.
+PaneFleet is privileged operator software. Its design assumes that observation is common, mutation is narrow, and ambiguous terminal state must fail toward human review.
 
 ## Assets to protect
 
@@ -14,7 +14,7 @@ Host Control is privileged operator software. Its design assumes that observatio
 
 ## Trust assumptions
 
-Host Control assumes:
+PaneFleet assumes:
 
 - one trusted operator controls the browser, host account, and workload tmux server;
 - the dashboard is reached through loopback, HTTPS, or a private/tunneled transport with tightly restricted ingress;
@@ -22,18 +22,18 @@ Host Control assumes:
 - `services.json` and `host-config.json` are reviewed machine-local configuration; and
 - terminal output, project instructions, logs, filenames, and agent-authored status reports are untrusted data.
 
-Host Control authenticates one shared operator on non-loopback listeners by default. An explicit trusted-network deployment may delegate that first boundary to independently verified exact-source ingress. Host Control does not identify several people or assign roles.
+PaneFleet authenticates one shared operator on non-loopback listeners by default. An explicit trusted-network deployment may delegate that first boundary to independently verified exact-source ingress. PaneFleet does not identify several people or assign roles.
 
 ## Authentication layers
 
-Host Control applies separate transport, listener, and request controls:
+PaneFleet applies separate transport, listener, and request controls:
 
 1. **Transport and network** — loopback, an SSH/private tunnel, or HTTPS plus restricted ingress limits who can reach the service.
 2. **Non-loopback operator challenge** — by default, any non-loopback bind requires HTTP Basic username `host-control` and an operator token of at least 24 characters before serving the app. A deliberate `trusted-network` override may delegate this layer to externally enforced exact-source ingress. Loopback remains frictionless.
 3. **Same-page control session** — loading the app issues an HttpOnly, SameSite=Strict cookie. Every operational `/api` route requires that current cookie. `/healthz` is the only intentionally minimal public endpoint.
 4. **Mutation checks** — POST requests additionally require JSON and same-origin request checks.
 
-When the authenticated non-loopback mode needs a Basic credential and no token is injected through `ORCHESTRATOR_ACCESS_TOKEN`, Host Control creates and reuses a random owner-only `data/access-token`. Trusted-network mode does not create or use a Basic token. The local `scripts/show-access-token.sh` helper refuses unsafe file ownership or permissions before revealing an existing token.
+When the authenticated non-loopback mode needs a Basic credential and no token is injected through `ORCHESTRATOR_ACCESS_TOKEN`, PaneFleet creates and reuses a random owner-only `data/access-token`. Trusted-network mode does not create or use a Basic token. The local `scripts/show-access-token.sh` helper refuses unsafe file ownership or permissions before revealing an existing token.
 
 HTTP Basic provides no transport encryption. It must be used only through HTTPS or a private/tunneled transport. HTTPS deployments should set `ORCHESTRATOR_SECURE_COOKIE=1` so the control-session cookie is marked `Secure`.
 
@@ -54,7 +54,7 @@ A visible pane coordinate alone is not durable because a tmux window or pane can
 3. intrinsic tmux pane ID; and
 4. pane PID.
 
-Host Control re-queries tmux and compares that identity immediately before sensitive input. A mismatch fails closed. Input is serialized per pane so simultaneous browser windows cannot merge prompts or keys.
+PaneFleet re-queries tmux and compares that identity immediately before sensitive input. A mismatch fails closed. Input is serialized per pane so simultaneous browser windows cannot merge prompts or keys.
 
 ## Normal prompt delivery
 
@@ -67,9 +67,9 @@ Normal agent input behaves like terminal typing:
 5. send one Enter; and
 6. observe stable evidence that Codex accepted the submission.
 
-Host Control does not use normal dispatch to send `Ctrl-C`, respawn a pane, kill a session, signal a process, or switch a tmux client. Those recovery actions remain separate and visibly confirmed.
+PaneFleet does not use normal dispatch to send `Ctrl-C`, respawn a pane, kill a session, signal a process, or switch a tmux client. Those recovery actions remain separate and visibly confirmed.
 
-If text rendering or acceptance cannot be proven, Host Control records an uncertain state and does not retry Enter. This can leave text visible but unsubmitted; the operator must inspect the exact terminal.
+If text rendering or acceptance cannot be proven, PaneFleet records an uncertain state and does not retry Enter. This can leave text visible but unsubmitted; the operator must inspect the exact terminal.
 
 ## Mission invariants
 
@@ -87,7 +87,7 @@ Mission and notification state is written atomically with owner-only permissions
 
 ## Filesystem boundary
 
-Workspaces originate from the primary project root, reviewed additional roots in ignored host configuration, and live pane context. Explicit workspace entries and display aliases must stay inside an allowed root. Before reading, Host Control resolves real paths and verifies containment, including symlinks. Reads are capped and sensitive-looking values are redacted.
+Workspaces originate from the primary project root, reviewed additional roots in ignored host configuration, and live pane context. Explicit workspace entries and display aliases must stay inside an allowed root. Before reading, PaneFleet resolves real paths and verifies containment, including symlinks. Reads are capped and sensitive-looking values are redacted.
 
 Project Desk:
 
@@ -115,13 +115,13 @@ The optional ephemeral review agent uses a separate named tmux socket and a read
 
 The EC2 integration accepts only an explicit globally routable IPv4 address and authorizes its exact `/32`. It never authorizes `0.0.0.0/0` as a normal action.
 
-Cleanup requires a fresh preview and token. It can remove only rules with the exact Host Control ownership format and preserves active SSH sources plus unmanaged, IPv6, source-group, prefix-list, broad, and unrelated port rules.
+Cleanup requires a fresh preview and token. It can remove only rules with the exact PaneFleet ownership format and preserves active SSH sources plus unmanaged, IPv6, source-group, prefix-list, broad, and unrelated port rules.
 
 This integration depends on EC2 metadata, AWS CLI credentials, least-privilege IAM, and a network topology that matches its assumptions. Do not enable it merely because the UI exposes the option.
 
 ## Failure philosophy
 
-Host Control prefers a visible unresolved state to a guessed action:
+PaneFleet prefers a visible unresolved state to a guessed action:
 
 - no automatic prompt resend;
 - no automatic Done;

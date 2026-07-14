@@ -10,7 +10,7 @@ INTERVAL="${ORCH_WATCHDOG_INTERVAL:-30}"
 LOG="$ROOT/watchdog.log"
 
 if [[ "${ALLOW_LEGACY_TMUX_WATCHDOG:-}" != 1 ]]; then
-  printf 'legacy tmux watchdog is disabled; Host Control is supervised by agent-orchestrator.service\n' >&2
+  printf 'legacy tmux watchdog is disabled; PaneFleet is supervised by agent-orchestrator.service\n' >&2
   exit 2
 fi
 

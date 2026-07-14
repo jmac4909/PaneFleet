@@ -1,5 +1,5 @@
 [Unit]
-Description=Host Control dashboard
+Description=PaneFleet dashboard
 Documentation=file://@ROOT@/README.md
 Wants=network-online.target
 After=network-online.target

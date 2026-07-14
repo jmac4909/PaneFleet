@@ -34,7 +34,7 @@ workload_inventory() {
 }
 
 exec 9>"$LOCK_FILE"
-flock -n 9 || { printf 'another Host Control restart is already running\n' >&2; exit 3; }
+flock -n 9 || { printf 'another PaneFleet restart is already running\n' >&2; exit 3; }
 
 systemctl --user is-enabled --quiet "$UNIT" || {
   printf '%s is not installed and enabled; run scripts/install-control-plane.sh --migrate first\n' "$UNIT" >&2
@@ -54,14 +54,14 @@ for _ in $(seq 1 80); do
 done
 
 if [[ "$ready" != 1 ]]; then
-  printf 'Host Control did not become healthy after restart\n' >&2
+  printf 'PaneFleet did not become healthy after restart\n' >&2
   systemctl --user --no-pager --full status "$UNIT" >&2 || true
   exit 5
 fi
 
 sleep 0.25
 curl -fsS --max-time 2 "$HEALTH_URL" >/dev/null 2>&1 || {
-  printf 'Host Control health was not stable across two samples\n' >&2
+  printf 'PaneFleet health was not stable across two samples\n' >&2
   exit 5
 }
 
@@ -79,4 +79,4 @@ if [[ "$before" != "$after" ]]; then
   exit 6
 fi
 
-printf 'Host Control healthy on %s (unit=%s pid=%s); workload tmux inventory unchanged\n' "$HEALTH_URL" "$UNIT" "$main_pid"
+printf 'PaneFleet healthy on %s (unit=%s pid=%s); workload tmux inventory unchanged\n' "$HEALTH_URL" "$UNIT" "$main_pid"

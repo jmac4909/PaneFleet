@@ -12,7 +12,7 @@ browser -> SSH tunnel or private overlay -> 127.0.0.1:8787 on the host
 
 Loopback access is intentionally frictionless: the page issues a control cookie, and every operational API requires it. By default, a non-loopback bind adds a browser HTTP Basic challenge with username `host-control` and a long operator token before the page can issue that cookie.
 
-HTTP Basic does not encrypt credentials. Use a non-loopback listener only behind HTTPS or a private/tunneled transport, and continue restricting host and cloud firewalls to exact trusted sources. Host Control has one shared operator credential, not accounts or roles.
+HTTP Basic does not encrypt credentials. Use a non-loopback listener only behind HTTPS or a private/tunneled transport, and continue restricting host and cloud firewalls to exact trusted sources. PaneFleet has one shared operator credential, not accounts or roles.
 
 ## Foreground evaluation
 
@@ -34,11 +34,11 @@ Use an SSH tunnel from a remote workstation:
 ssh -N -L 8787:127.0.0.1:8787 user@your-host
 ```
 
-Foreground mode is suitable for evaluation. Closing its shell stops only Host Control, not the workload tmux server.
+Foreground mode is suitable for evaluation. Closing its shell stops only PaneFleet, not the workload tmux server.
 
 ## Authenticated non-loopback access
 
-Set `HOST` to a non-loopback address only after an encrypted transport and narrow ingress are ready. On first startup, Host Control creates a random token at `data/access-token` unless `ORCHESTRATOR_ACCESS_TOKEN` supplies a value of at least 24 characters.
+Set `HOST` to a non-loopback address only after an encrypted transport and narrow ingress are ready. On first startup, PaneFleet creates a random token at `data/access-token` unless `ORCHESTRATOR_ACCESS_TOKEN` supplies a value of at least 24 characters.
 
 Reveal the generated token from a local shell:
 
@@ -63,7 +63,7 @@ ORCHESTRATOR_ACCESS_MODE=trusted-network
 
 This is an explicit deployment override, not the public default. It does not disable the same-page HttpOnly control cookie, JSON and same-origin checks, CSP, tmux identity validation, or allowlisted service controls. Do not use it with `0.0.0.0/0`, IPv6-wide, ranged, shared, source-group, prefix-list, or otherwise unverified access.
 
-When the browser-facing URL is HTTPS, set this in the Host Control service environment:
+When the browser-facing URL is HTTPS, set this in the PaneFleet service environment:
 
 ```text
 ORCHESTRATOR_SECURE_COOKIE=1
@@ -71,7 +71,7 @@ ORCHESTRATOR_SECURE_COOKIE=1
 
 This marks the control cookie `Secure`. Do not set it for a plain loopback HTTP URL, because the browser will correctly refuse to send a Secure cookie over HTTP.
 
-After installing the user systemd unit, add the setting through a drop-in and restart Host Control after the HTTPS endpoint is ready:
+After installing the user systemd unit, add the setting through a drop-in and restart PaneFleet after the HTTPS endpoint is ready:
 
 ```bash
 systemctl --user edit agent-orchestrator.service
@@ -127,7 +127,7 @@ Review this command under the host's account policy; it changes user-service per
 
 ## Migration from a legacy tmux-backed dashboard
 
-Only installations that already run Host Control in legacy control sessions need migration. The same install-time bind and port variables apply:
+Only installations that already run PaneFleet in legacy control sessions need migration. The same install-time bind and port variables apply:
 
 ```bash
 bash scripts/install-control-plane.sh --migrate
@@ -169,13 +169,13 @@ Operational API routes intentionally reject command-line requests that do not ca
 
 Durable state lives under `data/` and should remain owner-readable only. It may contain mission text, pane summaries, audit records, notifications, managed access-rule state, and the generated non-loopback access token.
 
-Before a protected backup, stop only the Host Control user unit, copy `data/` to a private destination, and start the unit again. Never include `data/`, logs, or terminal captures in a source archive.
+Before a protected backup, stop only the PaneFleet user unit, copy `data/` to a private destination, and start the unit again. Never include `data/`, logs, or terminal captures in a source archive.
 
 ## Optional EC2 access integration
 
 The access-rule tools require all of the following:
 
-- an EC2 instance with metadata access available to the Host Control process;
+- an EC2 instance with metadata access available to the PaneFleet process;
 - AWS CLI in the service PATH;
 - an explicit security group or an unambiguous instance security-group context;
 - least-privilege permission to describe instances and security-group rules, authorize ingress, and revoke only approved rule IDs; and
@@ -204,7 +204,7 @@ The old tmux watchdog is retained only as an emergency compatibility fallback an
 - Reload the page so it can issue the current process's control cookie.
 - A dashboard restart intentionally invalidates the previous cookie.
 - If `ORCHESTRATOR_SECURE_COOKIE=1`, confirm the browser-facing URL is HTTPS. Secure cookies are not sent over plain HTTP.
-- Confirm a proxy preserves `Set-Cookie` and browser cookies for the Host Control origin.
+- Confirm a proxy preserves `Set-Cookie` and browser cookies for the PaneFleet origin.
 
 ### The page loads but shows no agents
 
@@ -222,8 +222,8 @@ The old tmux watchdog is retained only as an emergency compatibility fallback an
 
 ### A prompt is visible but not submitted
 
-Host Control intentionally sends no Enter when full rendering cannot be proved. Open the exact terminal, inspect the draft, and decide manually. Do not repeatedly dispatch the same mission.
+PaneFleet intentionally sends no Enter when full rendering cannot be proved. Open the exact terminal, inspect the draft, and decide manually. Do not repeatedly dispatch the same mission.
 
 ### A mission requires reconciliation
 
-The dashboard lost certainty after reserving or submitting work. Inspect the assigned pane and choose the explicit reconciliation action. Host Control will not resend automatically.
+The dashboard lost certainty after reserving or submitting work. Inspect the assigned pane and choose the explicit reconciliation action. PaneFleet will not resend automatically.

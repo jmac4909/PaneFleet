@@ -20,6 +20,9 @@ async function uiSource(name) {
 test('live entrypoint loads the terminal-first shell', async () => {
   const index = await uiSource('index.html');
 
+  assert.match(index, /<title>PaneFleet — Terminal Workspace<\/title>/);
+  assert.match(index, /<span class="brand-mark" aria-hidden="true">PF<\/span>/);
+  assert.match(index, /<div><h1>PaneFleet<\/h1><p>Terminal workspace<\/p><\/div>/);
   assert.match(index, /id="agents-tab" class="tab active"[^>]*><span>Terminals<\/span>/);
   assert.match(index, /href="\/styles\.css"/);
   assert.match(index, /src="\/app\.js"/);
@@ -122,7 +125,7 @@ test('live UI keeps terminal controls and literal-send safety paths while adding
   assert.match(app, /SCRATCHPAD_SNIPPETS_KEY/);
   assert.match(app, /sameExactTarget/);
   assert.match(app, /state\.snapshot\?\.capabilities\?\.projectDesk === true/);
-  assert.match(app, /restart Host Control to enable exact-target Review and Send/);
+  assert.match(app, /restart PaneFleet to enable exact-target Review and Send/);
   assert.match(app, /sessionCreatedAt: target\.sessionCreatedAt/);
   assert.match(app, /paneId: target\.paneId/);
   assert.match(app, /tmuxPaneId: target\.tmuxPaneId/);

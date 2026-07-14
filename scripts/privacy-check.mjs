@@ -10,8 +10,17 @@ if (!modes.size || [...modes].some((mode) => !['--staged', '--tracked', '--histo
 }
 
 const MAX_PUBLIC_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_REVIEWED_CAPTURE_BYTES = 512 * 1024;
+const REVIEWED_PUBLIC_CAPTURES = new Set([
+  'docs/assets/panefleet-desktop.png',
+  'docs/assets/panefleet-mobile.png'
+]);
 const findings = [];
 const scannedObjects = new Set();
+
+function publicPath(file) {
+  return String(file || '').replace(/^(?:staged|tracked|history):/, '').replaceAll('\\', '/');
+}
 
 function git(args, options = {}) {
   return execFileSync('git', args, {
@@ -23,8 +32,9 @@ function git(args, options = {}) {
 }
 
 function privatePathReason(file) {
-  const normalized = String(file || '').replace(/^(?:staged|tracked|history):/, '').replaceAll('\\', '/');
+  const normalized = publicPath(file);
   const base = path.posix.basename(normalized);
+  if (REVIEWED_PUBLIC_CAPTURES.has(normalized)) return '';
   if (['services.json', 'host-config.json', 'AGENTS.md'].includes(normalized) || base === 'AGENTS.md') return 'machine-local configuration';
   if (/^(?:data|tmp|screenshots|captures)(?:\/|$)/.test(normalized)) return 'private runtime directory';
   if (/^docs\/incident-[^/]+\.md$/i.test(normalized)) return 'private incident note';
@@ -89,6 +99,15 @@ function inspectText(file, text) {
 }
 
 function inspectBuffer(file, buffer) {
+  const normalized = publicPath(file);
+  if (REVIEWED_PUBLIC_CAPTURES.has(normalized)) {
+    const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    if (buffer.length > MAX_REVIEWED_CAPTURE_BYTES) findings.push(`${file}: reviewed capture exceeds 512 KiB limit`);
+    if (buffer.length < pngSignature.length || !buffer.subarray(0, pngSignature.length).equals(pngSignature)) {
+      findings.push(`${file}: reviewed capture is not a PNG`);
+    }
+    return;
+  }
   const reason = privatePathReason(file);
   if (reason) findings.push(`${file}: ${reason}`);
   if (buffer.length > MAX_PUBLIC_FILE_BYTES) findings.push(`${file}: exceeds 2 MiB public-file limit`);
@@ -112,6 +131,11 @@ if (modes.has('--staged')) {
       continue;
     }
     inspectBuffer(`staged:${file}`, buffer);
+    try {
+      scannedObjects.add(git(['rev-parse', `:${file}`]).trim());
+    } catch {
+      // The staged entry may disappear between listing and inspection.
+    }
   }
 }
 
@@ -119,6 +143,7 @@ if (modes.has('--tracked')) {
   for (const file of nullSeparated(git(['ls-files', '-z']))) {
     try {
       inspectBuffer(`tracked:${file}`, git(['show', `:${file}`], { encoding: null }));
+      scannedObjects.add(git(['rev-parse', `:${file}`]).trim());
     } catch (error) {
       findings.push(`tracked:${file}: cannot read (${error?.code || 'error'})`);
     }
@@ -132,7 +157,12 @@ if (modes.has('--history')) {
     if (separator < 0) continue;
     const object = line.slice(0, separator);
     const file = line.slice(separator + 1);
-    if (!object || !file || scannedObjects.has(object)) continue;
+    if (!object || !file) continue;
+    if (scannedObjects.has(object)) {
+      const reason = privatePathReason(`history:${file}`);
+      if (reason) findings.push(`history:${file}: ${reason}`);
+      continue;
+    }
     let type;
     try {
       type = git(['cat-file', '-t', object]).trim();

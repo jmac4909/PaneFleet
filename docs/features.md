@@ -1,6 +1,6 @@
 # Features
 
-Host Control is organized around one primary workflow: keep live terminals easy to reach, then put queue and host operations nearby without letting them obscure the terminal.
+PaneFleet is organized around one primary workflow: keep live terminals easy to reach, then put queue and host operations nearby without letting them obscure the terminal.
 
 ## Terminal workspace
 
@@ -80,13 +80,13 @@ HTTP Basic credentials are safe only inside HTTPS or a private/tunneled transpor
 
 ## Optional EC2 access controls
 
-On a suitably configured EC2 host, Host Control can inspect sanitized inbound rules, authorize one globally routable IPv4 `/32`, and preview cleanup of stale rules created by the dashboard.
+On a suitably configured EC2 host, PaneFleet can inspect sanitized inbound rules, authorize one globally routable IPv4 `/32`, and preview cleanup of stale rules created by the dashboard.
 
-Authorization and cleanup are separate operations. Cleanup preserves unmanaged rules, broad rules not owned by Host Control, IPv6, source groups, prefix lists, active SSH peers, and other port ranges. This integration is optional and should remain unused outside its documented trust and IAM boundary.
+Authorization and cleanup are separate operations. Cleanup preserves unmanaged rules, broad rules not owned by PaneFleet, IPv6, source groups, prefix lists, active SSH peers, and other port ranges. This integration is optional and should remain unused outside its documented trust and IAM boundary.
 
 ## Non-goals
 
-Host Control is not:
+PaneFleet is not:
 
 - a browser shell or general remote command runner;
 - a multi-user identity and permissions system;

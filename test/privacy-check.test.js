@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'node:test';
@@ -64,6 +64,31 @@ test('privacy checker rejects a force-added credential configuration path', () =
   const result = runChecker(directory, '--staged');
   assert.equal(result.status, 1);
   assert.match(result.stderr, /credential file/);
+});
+
+test('privacy checker accepts only the reviewed synthetic README capture paths', () => {
+  const directory = repository();
+  const assetDirectory = path.join(directory, 'docs', 'assets');
+  mkdirSync(assetDirectory, { recursive: true });
+  const syntheticPng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+  writeFileSync(path.join(assetDirectory, 'panefleet-desktop.png'), syntheticPng);
+  git(directory, ['add', 'docs/assets/panefleet-desktop.png']);
+
+  const result = runChecker(directory, '--tracked', '--history');
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('privacy checker rejects unreviewed image captures', () => {
+  const directory = repository();
+  const assetDirectory = path.join(directory, 'docs', 'assets');
+  mkdirSync(assetDirectory, { recursive: true });
+  const syntheticPng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+  writeFileSync(path.join(assetDirectory, 'live-host.png'), syntheticPng);
+  git(directory, ['add', 'docs/assets/live-host.png']);
+
+  const result = runChecker(directory, '--staged');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /binary, document, archive, or capture/);
 });
 
 test('privacy checker rejects credentials retained only in Git history', () => {

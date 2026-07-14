@@ -357,12 +357,12 @@ function deliveredInput(fixture) {
 function markersAroundPrompt(delivered, prompt) {
   const firstBreak = delivered.indexOf('\n\n');
   const lastBreak = delivered.lastIndexOf('\n\n');
-  assert.ok(firstBreak > 0 && lastBreak > firstBreak, 'paired Host Control markers must surround the prompt');
+  assert.ok(firstBreak > 0 && lastBreak > firstBreak, 'paired PaneFleet markers must surround the prompt');
   const startMarker = delivered.slice(0, firstBreak);
   const deliveredPrompt = delivered.slice(firstBreak + 2, lastBreak);
   const endMarker = delivered.slice(lastBreak + 2);
-  const startMatch = startMarker.match(/^\[Host Control Initial Prompt ([a-f0-9]+) Start\]$/);
-  const endMatch = endMarker.match(/^\[Host Control Initial Prompt ([a-f0-9]+) End\]$/);
+  const startMatch = startMarker.match(/^\[PaneFleet Initial Prompt ([a-f0-9]+) Start\]$/);
+  const endMatch = endMarker.match(/^\[PaneFleet Initial Prompt ([a-f0-9]+) End\]$/);
   assert.ok(startMatch && endMatch, 'bounded start and end confirmation markers are required');
   assert.equal(startMatch[1], endMatch[1], 'start and end markers must share one unique token');
   assert.equal(deliveredPrompt, prompt, 'the complete requested prompt must remain between the markers');

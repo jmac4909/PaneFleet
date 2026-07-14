@@ -24,7 +24,7 @@ export function agentCreateOutcome(result, hadPrompt) {
     return {
       accepted: false,
       preserveDraft: true,
-      notice: `${session} started, but its prompt was typed and not submitted. Open the terminal and review it; Host Control will not press Enter again.`,
+      notice: `${session} started, but its prompt was typed and not submitted. Open the terminal and review it; PaneFleet will not press Enter again.`,
       tone: 'warning'
     };
   }
@@ -39,7 +39,7 @@ export function agentCreateOutcome(result, hadPrompt) {
   return {
     accepted: false,
     preserveDraft: true,
-    notice: `${session} started, but Host Control could not confirm that Codex accepted the prompt. Open the terminal and review it; no input was resent.`,
+    notice: `${session} started, but PaneFleet could not confirm that Codex accepted the prompt. Open the terminal and review it; no input was resent.`,
     tone: 'warning'
   };
 }

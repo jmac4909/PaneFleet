@@ -152,7 +152,7 @@ done
 
 sleep 0.25
 curl -fsS --max-time 2 "http://$HEALTH_HOST:$PORT/healthz" >/dev/null 2>&1 || {
-  printf 'Host Control health was not stable across two samples\n' >&2
+  printf 'PaneFleet health was not stable across two samples\n' >&2
   exit 5
 }
 main_pid="$(systemctl --user show "$UNIT" -p MainPID --value)"
@@ -169,4 +169,4 @@ if [[ "$before" != "$after" ]]; then
   exit 6
 fi
 
-printf 'migrated Host Control to %s; workload tmux inventory unchanged\n' "$UNIT"
+printf 'migrated PaneFleet to %s; workload tmux inventory unchanged\n' "$UNIT"

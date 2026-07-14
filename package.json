@@ -1,20 +1,24 @@
 {
-  "name": "host-control-dashboard",
+  "name": "panefleet",
   "version": "0.1.0",
   "private": true,
-  "description": "Safety-first operations dashboard for tmux-based Codex sessions and allowlisted developer services.",
+  "description": "Safety-first control room for tmux-based AI coding agents and allowlisted developer services.",
   "license": "MIT",
   "keywords": [
+    "ai-agents",
     "codex",
     "developer-tools",
     "operations",
+    "self-hosted",
+    "terminal",
     "tmux"
   ],
   "type": "module",
   "scripts": {
     "start": "node server.js",
     "test": "node --test test/*.test.js",
-    "check": "node --check server.js && node --check public/app.js && node --check public/ui-state.js && node --check scripts/privacy-check.mjs && npm test",
+    "check": "node --check server.js && node --check public/app.js && node --check public/ui-state.js && node --check scripts/privacy-check.mjs && node --check scripts/capture-readme-screenshots.mjs && npm test",
+    "screenshots:readme": "node scripts/capture-readme-screenshots.mjs",
     "hooks:install": "git config core.hooksPath .githooks",
     "privacy:check": "node scripts/privacy-check.mjs --tracked --history",
     "verify:public": "npm run check && npm run privacy:check"

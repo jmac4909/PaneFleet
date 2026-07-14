@@ -1,6 +1,6 @@
 # Architecture
 
-Host Control is a single Node.js process with a dependency-free browser client. It observes a host through bounded command adapters, owns local coordination state, and sends mutations only through named allowlisted operations.
+PaneFleet is a single Node.js process with a dependency-free browser client. It observes a host through bounded command adapters, owns local coordination state, and sends mutations only through named allowlisted operations.
 
 ## Components
 
@@ -14,7 +14,7 @@ Host Control is a single Node.js process with a dependency-free browser client. 
 | `services.json` | Ignored machine-local authority for known services, links, logs, lifecycle commands, and workflow actions |
 | `host-config.json` | Ignored machine-local workspace roots, entries, groups, aliases, and artifact-folder names |
 | `data/` | Private owner-only mission, notification, interaction, sampling, review, audit, network-rule, and optional access-token state |
-| user systemd | Supervises Host Control outside the workload tmux failure domain |
+| user systemd | Supervises PaneFleet outside the workload tmux failure domain |
 | workload tmux server | Source of truth for live sessions, panes, processes, and terminal output |
 | named review tmux socket | Isolated lifecycle for the optional ephemeral read-only review agent |
 
@@ -116,7 +116,7 @@ Initial launcher prompts use the same paired-render and one-Enter philosophy. Di
 
 Mission and notification changes are serialized in process and written through atomic replacement. Mission revisions reject stale browser decisions. Audit history is append-only and rotated when bounded size is exceeded.
 
-The control-session cookie rotates whenever Host Control restarts. The persistent non-loopback Basic token does not rotate on a normal restart when it comes from the configured environment or existing owner-only token file.
+The control-session cookie rotates whenever PaneFleet restarts. The persistent non-loopback Basic token does not rotate on a normal restart when it comes from the configured environment or existing owner-only token file.
 
 The user systemd unit is not a workload tmux target. The restart helper snapshots the complete workload pane inventory, restarts only the unit, verifies stable local health and listener ownership, then compares the inventory. A mismatch is an operational failure rather than an accepted side effect.
 

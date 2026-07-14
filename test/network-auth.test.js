@@ -147,7 +147,7 @@ test('non-loopback access defaults to operator auth and trusted-network mode rem
       for (const pathname of ['/', '/api/audit']) {
         const response = await request(baseUrl, pathname);
         assert.equal(response.status, 401);
-        assert.equal(response.headers.get('www-authenticate'), 'Basic realm="Host Control", charset="UTF-8"');
+        assert.equal(response.headers.get('www-authenticate'), 'Basic realm="PaneFleet", charset="UTF-8"');
         assert.equal(response.headers.get('set-cookie'), null);
         assert.equal(await response.text(), 'Operator authentication required.\n');
       }
