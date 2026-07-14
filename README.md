@@ -141,7 +141,7 @@ AWS CLI and instance permissions are needed only for the optional EC2 access wor
 ### Run safely on loopback
 
 ```bash
-git clone <your-fork-or-repository-url> panefleet
+git clone https://github.com/jmac4909/PaneFleet.git panefleet
 cd panefleet
 npm ci
 cp services.example.json services.json
