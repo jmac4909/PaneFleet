@@ -139,8 +139,8 @@ Common settings:
 | `ORCHESTRATOR_HOST_CONFIG` | repository `host-config.json` | Alternate ignored host-configuration path |
 | `ORCHESTRATOR_EXTRA_WORKSPACE_ROOTS` | unset | Additional roots separated by the platform path delimiter |
 | `ORCHESTRATOR_ACCESS_MODE` | `authenticated` | Use `trusted-network` to suppress non-loopback Basic only behind externally enforced exact-source ingress |
-| `ORCHESTRATOR_ACCESS_TOKEN` | unset | Explicit non-loopback Basic password; must contain at least 24 characters |
-| `ORCHESTRATOR_ACCESS_TOKEN_FILE` | `data/access-token` | Owner-only generated/reused non-loopback token file |
+| `ORCHESTRATOR_ACCESS_TOKEN` | unset | Explicit authenticated-mode Basic password; must contain at least 24 characters |
+| `ORCHESTRATOR_ACCESS_TOKEN_FILE` | `data/access-token` | Owner-only token generated/reused when authenticated non-loopback mode needs one |
 | `ORCHESTRATOR_SECURE_COOKIE` | unset | Set to `1` when the browser reaches Host Control over HTTPS |
 | `MISSION_MAX_ACTIVE` | `3` | Global active mission cap |
 | `SNAPSHOT_EVENT_MS` | `5000` | Server-sent snapshot interval |
@@ -161,7 +161,7 @@ The systemd installer has separate installation-time settings:
 | `ORCH_SYSTEMD_UNIT` | `agent-orchestrator.service` | User-unit name |
 | `ORCH_NODE_BIN` | discovered `node` | Absolute Node executable written into the unit |
 
-Any non-loopback `ORCH_BIND_HOST` activates the Basic challenge at runtime by default. If no explicit token is injected into the installed service, first startup creates the owner-only token file. Retrieve it locally with:
+Any non-loopback `ORCH_BIND_HOST` activates the Basic challenge at runtime by default. In that default authenticated mode, if no explicit token is injected into the installed service, first startup creates the owner-only token file. Retrieve it locally with:
 
 ```bash
 bash scripts/show-access-token.sh
@@ -175,7 +175,7 @@ When an external firewall or cloud security group has been independently verifie
 
 ## Runtime data
 
-Host Control creates `data/` with mission, notification, interaction, review, access-rule, and audit state. A non-loopback deployment without an injected token also stores `data/access-token` with owner-only permissions. State files use atomic replacement where consistency matters.
+Host Control creates `data/` with mission, notification, interaction, review, access-rule, and audit state. An authenticated non-loopback deployment without an injected token also stores `data/access-token` with owner-only permissions; trusted-network mode does not. State files use atomic replacement where consistency matters.
 
 Treat `data/`, `services.json`, and `host-config.json` as private. Back them up only to a protected destination, never commit them, and stop Host Control before attempting a manual restore.
 

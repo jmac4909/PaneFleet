@@ -33,7 +33,7 @@ Host Control applies separate transport, listener, and request controls:
 3. **Same-page control session** — loading the app issues an HttpOnly, SameSite=Strict cookie. Every operational `/api` route requires that current cookie. `/healthz` is the only intentionally minimal public endpoint.
 4. **Mutation checks** — POST requests additionally require JSON and same-origin request checks.
 
-If a non-loopback token is not injected through `ORCHESTRATOR_ACCESS_TOKEN`, Host Control creates and reuses a random owner-only `data/access-token`. The local `scripts/show-access-token.sh` helper refuses unsafe file ownership or permissions before revealing it.
+When the authenticated non-loopback mode needs a Basic credential and no token is injected through `ORCHESTRATOR_ACCESS_TOKEN`, Host Control creates and reuses a random owner-only `data/access-token`. Trusted-network mode does not create or use a Basic token. The local `scripts/show-access-token.sh` helper refuses unsafe file ownership or permissions before revealing an existing token.
 
 HTTP Basic provides no transport encryption. It must be used only through HTTPS or a private/tunneled transport. HTTPS deployments should set `ORCHESTRATOR_SECURE_COOKIE=1` so the control-session cookie is marked `Secure`.
 
