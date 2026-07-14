@@ -1,0 +1,53 @@
+[
+  {
+    "id": "example-app",
+    "label": "Example App",
+    "session": "example-app",
+    "cwd": "/srv/example-app",
+    "command": "npm start",
+    "ports": [3000],
+    "links": [
+      {
+        "label": "Open app",
+        "port": 3000,
+        "protocol": "http",
+        "path": "/"
+      }
+    ],
+    "logFiles": [
+      {
+        "label": "Application log",
+        "path": "app.log",
+        "lines": 80
+      }
+    ]
+  },
+  {
+    "id": "example-workflow",
+    "label": "Example Workflow",
+    "cwd": "/srv/example-workflow",
+    "sessionPrefixes": ["example-worker-"],
+    "ports": [],
+    "links": [],
+    "actions": [
+      {
+        "id": "status",
+        "label": "Check status",
+        "command": "npm run status",
+        "runMode": "exec",
+        "safe": true,
+        "confirm": false,
+        "timeoutMs": 30000
+      },
+      {
+        "id": "restart",
+        "label": "Restart workflow",
+        "command": "npm run restart",
+        "runMode": "tmux",
+        "safe": false,
+        "confirm": true,
+        "timeoutMs": 120000
+      }
+    ]
+  }
+]

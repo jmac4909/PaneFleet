@@ -1,0 +1,29 @@
+{
+  "additionalWorkspaceRoots": [
+    {
+      "path": "/srv/shared-workspaces",
+      "label": "Shared workspaces",
+      "group": "Additional roots"
+    }
+  ],
+  "workspaceEntries": [
+    {
+      "path": "/srv/shared-workspaces/example-tooling",
+      "label": "Example tooling",
+      "group": "Project tools"
+    }
+  ],
+  "directoryGroups": {
+    "docs": "Supporting folders",
+    "inbox": "Supporting folders"
+  },
+  "areaAliases": [
+    {
+      "path": "/srv/shared-workspaces/example-tooling",
+      "label": "Example Tooling"
+    }
+  ],
+  "artifactDirectories": [
+    "releases"
+  ]
+}

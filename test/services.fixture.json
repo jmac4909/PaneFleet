@@ -1,0 +1,21 @@
+[
+  {
+    "id": "public_ip_workflow",
+    "label": "Public IP Workflow Fixture",
+    "cwd": "/tmp/host-control-test-workflow",
+    "ports": [],
+    "links": [],
+    "actions": [
+      {
+        "id": "start",
+        "label": "Start fixture",
+        "command": "true",
+        "runMode": "exec",
+        "safe": false,
+        "confirm": true,
+        "timeoutMs": 30000,
+        "publicIpEnv": "TEST_PUBLIC_IP"
+      }
+    ]
+  }
+]

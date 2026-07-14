@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose a narrowly scoped improvement that preserves the safety model.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Operator problem
+      description: What workflow is difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe behavior, not an arbitrary command endpoint.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and failure behavior
+      description: Explain authorization, exact targeting, confirmation, and fail-closed behavior.
+    validations:
+      required: true

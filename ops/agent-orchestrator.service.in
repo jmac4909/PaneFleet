@@ -1,0 +1,30 @@
+[Unit]
+Description=Host Control dashboard
+Documentation=file://@ROOT@/README.md
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=@ROOT@
+Environment=HOST=@HOST@
+Environment=PORT=@PORT@
+Environment=NODE_ENV=production
+Environment=ORCH_CONTROL_PLANE_MODE=systemd-user
+Environment=CODEX_HOME=@HOME@/.codex
+Environment=TMUX=
+Environment=TMUX_PANE=
+Environment="PATH=@NODE_DIR@:@HOME@/.local/bin:/usr/local/bin:/usr/bin:/usr/sbin"
+ExecStart=@NODE@ @ROOT@/server.js
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+SyslogIdentifier=agent-orchestrator
+
+[Install]
+WantedBy=default.target

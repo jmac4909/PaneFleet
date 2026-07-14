@@ -1,0 +1,25 @@
+{
+  "name": "host-control-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Safety-first operations dashboard for tmux-based Codex sessions and allowlisted developer services.",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "developer-tools",
+    "operations",
+    "tmux"
+  ],
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js",
+    "check": "node --check server.js && node --check public/app.js && node --check public/ui-state.js && node --check scripts/privacy-check.mjs && npm test",
+    "hooks:install": "git config core.hooksPath .githooks",
+    "privacy:check": "node scripts/privacy-check.mjs --tracked --history",
+    "verify:public": "npm run check && npm run privacy:check"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

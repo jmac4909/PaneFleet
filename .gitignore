@@ -1,0 +1,68 @@
+# Dependencies and generated test/build output
+node_modules/
+coverage/
+dist/
+build/
+.nyc_output/
+npm-debug.log*
+
+# Credentials and machine-local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+.codex/
+.claude/
+
+# Host Control's private machine configuration and operator instructions
+services.json
+host-config.json
+AGENTS.md
+*.local
+*.local.*
+
+# Runtime state can contain prompts, pane summaries, IP rules, or audit history
+data/
+*.log
+*.log.*
+*.pid
+server.pid
+tmp/
+
+# Private documents, captures, and local databases
+*.pdf
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.csv
+*.sqlite
+*.sqlite3
+*.db
+*.zip
+*.tar
+*.tgz
+*.gz
+*.7z
+*.jpg
+*.jpeg
+*.webp
+*.heic
+*.gif
+*.mp4
+*.mov
+screenshots/
+captures/
+docs/*.png
+docs/incident-*.md
+
+# Editor and OS metadata
+.DS_Store
+.idea/
+.vscode/
+*~
+*.swp
