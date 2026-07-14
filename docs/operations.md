@@ -10,7 +10,7 @@ The recommended topology is:
 browser -> SSH tunnel or private overlay -> 127.0.0.1:8787 on the host
 ```
 
-Loopback access is intentionally frictionless: the page issues a control cookie, and every operational API requires it. A non-loopback bind adds a browser HTTP Basic challenge with username `host-control` and a long operator token before the page can issue that cookie.
+Loopback access is intentionally frictionless: the page issues a control cookie, and every operational API requires it. By default, a non-loopback bind adds a browser HTTP Basic challenge with username `host-control` and a long operator token before the page can issue that cookie.
 
 HTTP Basic does not encrypt credentials. Use a non-loopback listener only behind HTTPS or a private/tunneled transport, and continue restricting host and cloud firewalls to exact trusted sources. Host Control has one shared operator credential, not accounts or roles.
 
@@ -52,6 +52,16 @@ The helper requires the token file to be owned by the current user with mode `06
 - password: the generated or configured token
 
 The Basic credential gates the page and static assets. The page then issues the separate control cookie required by every `/api` route. `/healthz` remains a minimal unauthenticated readiness endpoint.
+
+### Explicit trusted-network mode
+
+If the host firewall or cloud security group has been independently verified to permit the dashboard port only from the operator's exact IPv4 `/32`, the Basic prompt can be disabled with:
+
+```text
+ORCHESTRATOR_ACCESS_MODE=trusted-network
+```
+
+This is an explicit deployment override, not the public default. It does not disable the same-page HttpOnly control cookie, JSON and same-origin checks, CSP, tmux identity validation, or allowlisted service controls. Do not use it with `0.0.0.0/0`, IPv6-wide, ranged, shared, source-group, prefix-list, or otherwise unverified access.
 
 When the browser-facing URL is HTTPS, set this in the Host Control service environment:
 

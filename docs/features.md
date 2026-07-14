@@ -72,7 +72,7 @@ The local registry may describe host-specific workflows, but those commands are 
 
 - Loopback use opens normally and receives a same-page control cookie.
 - Every operational API requires that cookie, including read-only snapshots and audit data.
-- A non-loopback listener first requires the fixed HTTP Basic username `host-control` and a long operator token.
+- A non-loopback listener requires the fixed HTTP Basic username `host-control` and a long operator token by default; explicit `trusted-network` deployments may delegate that first gate to verified exact-source ingress.
 - The non-loopback credential is one shared operator credential, not a multi-user account system.
 - The health endpoint remains a minimal unauthenticated readiness check.
 

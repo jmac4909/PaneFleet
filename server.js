@@ -220,7 +220,10 @@ const AGENT_UI_KEYS = Object.freeze({
 const CONTROL_COOKIE = 'host_control_session';
 const CONTROL_SESSION_TOKEN = randomBytes(32).toString('base64url');
 const ACCESS_USERNAME = 'host-control';
-const REQUIRE_HTTP_AUTH = !['127.0.0.1', '::1', 'localhost'].includes(String(HOST).trim().toLowerCase());
+const ACCESS_MODE = String(process.env.ORCHESTRATOR_ACCESS_MODE || 'authenticated').trim().toLowerCase();
+if (!['authenticated', 'trusted-network'].includes(ACCESS_MODE)) throw new Error('orchestrator_access_mode_invalid');
+const REQUIRE_HTTP_AUTH = !['127.0.0.1', '::1', 'localhost'].includes(String(HOST).trim().toLowerCase())
+  && ACCESS_MODE === 'authenticated';
 const SECURE_COOKIE = process.env.ORCHESTRATOR_SECURE_COOKIE === '1';
 const ALLOW_DOCUMENTATION_IPS_FOR_TESTS = process.env.NODE_ENV === 'test' && process.env.ORCHESTRATOR_ALLOW_DOCUMENTATION_IPS === '1';
 const PROTECTED_TMUX_SESSIONS = new Set(['agent-orchestrator', 'agent-orchestrator-watchdog']);
@@ -4891,6 +4894,8 @@ async function snapshot({ includeMissionDetails = true, runSupervisor = true } =
       projectArtifacts: true,
       servicePublicIpInputs: true,
       todayAttention: true,
+      accessMode: ACCESS_MODE,
+      httpAuthentication: REQUIRE_HTTP_AUTH,
       controlPlaneMode: CONTROL_PLANE_MODE,
       controlPlaneIsolated: CONTROL_PLANE.isolatedFromWorkloadTmux
     },

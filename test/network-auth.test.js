@@ -60,6 +60,13 @@ async function waitForServer(baseUrl, child, output) {
   throw new Error(`isolated server did not become ready\n${output()}`);
 }
 
+async function stopServer(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  child.kill('SIGTERM');
+  await Promise.race([once(child, 'exit'), delay(2000)]);
+  if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+}
+
 function installCommandTrap(binDir, toolLogPath, name) {
   writeFileSync(
     path.join(binDir, name),
@@ -68,7 +75,7 @@ function installCommandTrap(binDir, toolLogPath, name) {
   );
 }
 
-test('a non-loopback listener requires operator auth before issuing a control session', async (t) => {
+test('non-loopback access defaults to operator auth and trusted-network mode remains cookie-gated', async (t) => {
   const fixtureDir = mkdtempSync(path.join(os.tmpdir(), 'host-control-network-auth-'));
   const homeDir = path.join(fixtureDir, 'home');
   const projectsRoot = path.join(homeDir, 'projects');
@@ -101,25 +108,28 @@ test('a non-loopback listener requires operator auth before issuing a control se
 
     const port = await unusedLoopbackPort();
     const baseUrl = `http://127.0.0.1:${port}`;
+    const baseEnvironment = {
+      HOME: homeDir,
+      HOST: '0.0.0.0',
+      PATH: binDir,
+      TMPDIR: tmpDir,
+      NODE_ENV: 'test',
+      CODEX_HOME: codexHome,
+      ORCH_CONTROL_PLANE_MODE: 'foreground',
+      ORCH_TOOL_LOG: toolLogPath,
+      ORCHESTRATOR_SECURE_COOKIE: '1',
+      ORCHESTRATOR_HOST_CONFIG: path.join(fixtureDir, 'host-config.json'),
+      ORCHESTRATOR_PROJECTS_ROOT: projectsRoot,
+      ORCHESTRATOR_AGENT_WORKSPACES_ROOT: agentWorkspacesRoot,
+      AWS_EC2_METADATA_DISABLED: 'true',
+      SNAPSHOT_EVENT_MS: '3600000',
+      SSH_RESCUE_MONITOR_MS: '3600000'
+    };
     child = spawn(process.execPath, ['server.js'], {
       cwd: fixtureDir,
       env: {
-        HOME: homeDir,
-        HOST: '0.0.0.0',
+        ...baseEnvironment,
         PORT: String(port),
-        PATH: binDir,
-        TMPDIR: tmpDir,
-        NODE_ENV: 'test',
-        CODEX_HOME: codexHome,
-        ORCH_CONTROL_PLANE_MODE: 'foreground',
-        ORCH_TOOL_LOG: toolLogPath,
-        ORCHESTRATOR_SECURE_COOKIE: '1',
-        ORCHESTRATOR_HOST_CONFIG: path.join(fixtureDir, 'host-config.json'),
-        ORCHESTRATOR_PROJECTS_ROOT: projectsRoot,
-        ORCHESTRATOR_AGENT_WORKSPACES_ROOT: agentWorkspacesRoot,
-        AWS_EC2_METADATA_DISABLED: 'true',
-        SNAPSHOT_EVENT_MS: '3600000',
-        SSH_RESCUE_MONITOR_MS: '3600000'
       },
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -186,13 +196,48 @@ test('a non-loopback listener requires operator auth before issuing a control se
       assert.deepEqual(await withCookie.json(), { audit: [] });
     });
 
+    await t.test('trusted-network mode removes Basic but retains the same-page API cookie', async () => {
+      await stopServer(child);
+      child = null;
+      rmSync(accessTokenPath, { force: true });
+      childOutput = '';
+      const trustedPort = await unusedLoopbackPort();
+      const trustedBaseUrl = `http://127.0.0.1:${trustedPort}`;
+      child = spawn(process.execPath, ['server.js'], {
+        cwd: fixtureDir,
+        env: {
+          ...baseEnvironment,
+          PORT: String(trustedPort),
+          ORCHESTRATOR_ACCESS_MODE: 'trusted-network'
+        },
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      child.stdout.on('data', (chunk) => { childOutput += chunk; });
+      child.stderr.on('data', (chunk) => { childOutput += chunk; });
+      await waitForServer(trustedBaseUrl, child, () => childOutput);
+
+      const indexResponse = await request(trustedBaseUrl, '/');
+      assert.equal(indexResponse.status, 200);
+      assert.equal(indexResponse.headers.get('www-authenticate'), null);
+      const setCookie = indexResponse.headers.get('set-cookie') || '';
+      assert.match(setCookie, /^host_control_session=[^;]+;/);
+      const trustedCookie = setCookie.split(';', 1)[0];
+      assert.equal(existsSync(accessTokenPath), false);
+
+      const withoutCookie = await request(trustedBaseUrl, '/api/audit');
+      assert.equal(withoutCookie.status, 401);
+      assert.deepEqual(await withoutCookie.json(), { error: 'control_session_required' });
+
+      const withCookie = await request(trustedBaseUrl, '/api/audit', {
+        headers: { cookie: trustedCookie }
+      });
+      assert.equal(withCookie.status, 200);
+      assert.deepEqual(await withCookie.json(), { audit: [] });
+    });
+
     assert.equal(existsSync(toolLogPath) ? readFileSync(toolLogPath, 'utf8') : '', '');
   } finally {
-    if (child && child.exitCode === null && child.signalCode === null) {
-      child.kill('SIGTERM');
-      await Promise.race([once(child, 'exit'), delay(2000)]);
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-    }
+    await stopServer(child);
     rmSync(fixtureDir, { recursive: true, force: true });
   }
 });

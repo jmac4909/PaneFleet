@@ -138,6 +138,7 @@ Common settings:
 | `ORCHESTRATOR_AGENT_WORKSPACES_ROOT` | inside the project root | Additional managed agent-workspace root |
 | `ORCHESTRATOR_HOST_CONFIG` | repository `host-config.json` | Alternate ignored host-configuration path |
 | `ORCHESTRATOR_EXTRA_WORKSPACE_ROOTS` | unset | Additional roots separated by the platform path delimiter |
+| `ORCHESTRATOR_ACCESS_MODE` | `authenticated` | Use `trusted-network` to suppress non-loopback Basic only behind externally enforced exact-source ingress |
 | `ORCHESTRATOR_ACCESS_TOKEN` | unset | Explicit non-loopback Basic password; must contain at least 24 characters |
 | `ORCHESTRATOR_ACCESS_TOKEN_FILE` | `data/access-token` | Owner-only generated/reused non-loopback token file |
 | `ORCHESTRATOR_SECURE_COOKIE` | unset | Set to `1` when the browser reaches Host Control over HTTPS |
@@ -160,7 +161,7 @@ The systemd installer has separate installation-time settings:
 | `ORCH_SYSTEMD_UNIT` | `agent-orchestrator.service` | User-unit name |
 | `ORCH_NODE_BIN` | discovered `node` | Absolute Node executable written into the unit |
 
-Any non-loopback `ORCH_BIND_HOST` activates the Basic challenge at runtime. If no explicit token is injected into the installed service, first startup creates the owner-only token file. Retrieve it locally with:
+Any non-loopback `ORCH_BIND_HOST` activates the Basic challenge at runtime by default. If no explicit token is injected into the installed service, first startup creates the owner-only token file. Retrieve it locally with:
 
 ```bash
 bash scripts/show-access-token.sh
@@ -169,6 +170,8 @@ bash scripts/show-access-token.sh
 Use username `host-control` and the printed token. Never carry that credential over plain HTTP; use HTTPS or a private/tunneled transport.
 
 Prefer the generated owner-only token file. If a supervisor injects `ORCHESTRATOR_ACCESS_TOKEN`, use its protected secret mechanism rather than placing the token in a command line, unit file, repository file, or shell history.
+
+When an external firewall or cloud security group has been independently verified to allow the dashboard port only from the operator's exact IPv4 `/32`, an installation may deliberately set `ORCHESTRATOR_ACCESS_MODE=trusted-network`. This removes only the browser Basic prompt. The HttpOnly same-page control cookie, JSON requirement, origin checks, CSP, and all operation-specific validation remain active. Never use trusted-network mode with broad, ranged, shared, or unverified ingress.
 
 ## Runtime data
 

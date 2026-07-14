@@ -44,7 +44,7 @@ sequenceDiagram
     D-->>O: redacted JSON or SSE update
 ```
 
-The minimal `/healthz` route is available without Basic or the control cookie for local supervision. Every operational `/api` route requires the same-page cookie. A non-loopback listener applies the Basic challenge before serving static content or allowing the page to obtain that cookie.
+The minimal `/healthz` route is available without Basic or the control cookie for local supervision. Every operational `/api` route requires the same-page cookie. By default, a non-loopback listener applies the Basic challenge before serving static content or allowing the page to obtain that cookie. An explicit `trusted-network` deployment may delegate that first gate to independently verified exact-source ingress; the API cookie boundary remains unchanged.
 
 ## Observation data flow
 

@@ -22,14 +22,14 @@ Host Control assumes:
 - `services.json` and `host-config.json` are reviewed machine-local configuration; and
 - terminal output, project instructions, logs, filenames, and agent-authored status reports are untrusted data.
 
-Host Control authenticates one shared operator on non-loopback listeners. It does not identify several people or assign roles.
+Host Control authenticates one shared operator on non-loopback listeners by default. An explicit trusted-network deployment may delegate that first boundary to independently verified exact-source ingress. Host Control does not identify several people or assign roles.
 
 ## Authentication layers
 
 Host Control applies separate transport, listener, and request controls:
 
 1. **Transport and network** — loopback, an SSH/private tunnel, or HTTPS plus restricted ingress limits who can reach the service.
-2. **Non-loopback operator challenge** — any non-loopback bind requires HTTP Basic username `host-control` and an operator token of at least 24 characters before serving the app. Loopback remains frictionless and does not use this challenge.
+2. **Non-loopback operator challenge** — by default, any non-loopback bind requires HTTP Basic username `host-control` and an operator token of at least 24 characters before serving the app. A deliberate `trusted-network` override may delegate this layer to externally enforced exact-source ingress. Loopback remains frictionless.
 3. **Same-page control session** — loading the app issues an HttpOnly, SameSite=Strict cookie. Every operational `/api` route requires that current cookie. `/healthz` is the only intentionally minimal public endpoint.
 4. **Mutation checks** — POST requests additionally require JSON and same-origin request checks.
 

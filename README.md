@@ -11,7 +11,7 @@ Host Control is a self-hosted cockpit for supervising several long-running Codex
 The project is intentionally single-host and single-operator. It values exact targeting, visible approval, and safe failure over unattended automation.
 
 > [!IMPORTANT]
-> Loopback access stays frictionless. Any non-loopback bind additionally requires HTTP Basic authentication with username `host-control` and a long operator token. Basic credentials must travel only through HTTPS or a private/tunneled transport. Host Control still has no roles or multi-user authorization, so network access should remain limited to one trusted operator.
+> Loopback access stays frictionless. By default, any non-loopback bind additionally requires HTTP Basic authentication with username `host-control` and a long operator token. A deliberate `trusted-network` mode can suppress that prompt only when external ingress is already restricted to the operator's exact source. Host Control still has no roles or multi-user authorization, so network access should remain limited to one trusted operator.
 
 ![Sanitized Host Control interface preview with synthetic agent sessions](docs/assets/host-control-overview.svg)
 
@@ -46,7 +46,7 @@ The full assumptions and failure behavior are in the [Safety model](docs/safety-
 
 ```mermaid
 flowchart LR
-    Browser[Desktop or phone browser] -->|Basic on non-loopback; same-page cookie for APIs| Control[Node.js control plane]
+    Browser[Desktop or phone browser] -->|Default Basic or verified trusted network; same-page cookie for APIs| Control[Node.js control plane]
     Systemd[user systemd unit] -->|supervises| Control
 
     Control --> Read[Read-only collectors]
