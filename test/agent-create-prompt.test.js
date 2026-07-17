@@ -58,9 +58,11 @@ case "$1" in
   new-session)
     previous=''
     session=''
+    last=''
     for argument in "$@"; do
       if [ "$previous" = "-s" ]; then session="$argument"; fi
       previous="$argument"
+      last="$argument"
     done
     if [ -z "$session" ]; then log 'new-session:missing-session'; exit 97; fi
     printf '%s' "$session" > "$AGENT_CREATE_SESSION_PATH"
@@ -69,6 +71,15 @@ case "$1" in
     : > "$AGENT_CREATE_READY_COUNT_PATH"
     : > "$AGENT_CREATE_RENDER_COUNT_PATH"
     log "new-session:$session"
+    log "new-session-command:$last"
+    ;;
+  set-option)
+    if [ "$2" != '-p' ] || [ "$3" != '-t' ] || [ "$4" != '%41' ] || [ "$5" != 'remain-on-exit' ] || [ "$6" != 'on' ]; then
+      log "protect:unexpected:$*"
+      exit 97
+    fi
+    log 'protect:%41:remain-on-exit:on'
+    if [ "$AGENT_CREATE_BEHAVIOR" = 'lifecycle-guard-failure' ]; then exit 96; fi
     ;;
   list-panes)
     if [ "$2" = "-a" ]; then
@@ -214,8 +225,6 @@ function createFixture(behavior) {
     mkdirSync(directory, { recursive: true });
   }
 
-  copyFileSync(path.join(projectDir, 'server.js'), path.join(fixtureDir, 'server.js'));
-  copyFileSync(path.join(projectDir, 'process-runner.js'), path.join(fixtureDir, 'process-runner.js'));
   writeFileSync(path.join(fixtureDir, 'package.json'), '{"type":"module"}\n');
   writeFileSync(path.join(fixtureDir, 'services.json'), '[]\n');
   writeFileSync(path.join(publicDir, 'index.html'), '<!doctype html><title>Agent Create Prompt Test</title>\n');
@@ -249,12 +258,14 @@ async function startServer(fixture) {
   const port = await unusedLoopbackPort();
   const baseUrl = `http://127.0.0.1:${port}`;
   let output = '';
-  const child = spawn(process.execPath, ['server.js'], {
+  const child = spawn(process.execPath, [path.join(projectDir, 'server.js')], {
     cwd: fixture.fixtureDir,
     env: {
       ...process.env,
+      NODE_ENV: 'test',
       HOST: '127.0.0.1',
       PORT: String(port),
+      ORCHESTRATOR_RUNTIME_ROOT: fixture.fixtureDir,
       PATH: `${fixture.binDir}:${process.env.PATH || ''}`,
       CODEX_HOME: fixture.codexHome,
       ORCHESTRATOR_PROJECTS_ROOT: fixture.projectsRoot,
@@ -390,8 +401,11 @@ test('New Agent waits for a stable composer, types in chunks, and confirms accep
     const firstDelivered = deliveredInput(fixture);
     const firstMarker = markersAroundPrompt(firstDelivered, prompt);
     const firstLog = toolLog(fixture);
+    assert.match(firstLog, /new-session-command:.*exec bash -l/);
+    assert.match(firstLog, /protect:%41:remain-on-exit:on/);
     const firstLiteralIndex = firstLog.indexOf('literal:%41:');
     assert.ok(firstLiteralIndex > -1);
+    assert.ok(firstLog.indexOf('protect:%41:remain-on-exit:on') < firstLiteralIndex);
     assert.equal(firstLog.includes('literal-before-ready:'), false);
     assert.ok((firstLog.slice(0, firstLiteralIndex).match(/capture:ready:/g) || []).length >= 2);
     const firstChunkLengths = [...firstLog.matchAll(/literal:%41:(\d+)/g)].map((match) => Number(match[1]));
@@ -412,6 +426,24 @@ test('New Agent waits for a stable composer, types in chunks, and confirms accep
     const secondMarker = markersAroundPrompt(deliveredInput(fixture), secondPrompt);
     assert.notEqual(secondMarker.endMarker, firstMarker.endMarker, 'each create handshake needs a unique confirmation marker');
     assert.equal(occurrences(toolLog(fixture), 'enter:%41:C-m'), 2);
+  });
+});
+
+test('New Agent sends no prompt when exact-pane exit preservation cannot be armed', async () => {
+  await withServer('lifecycle-guard-failure', async ({ fixture, server }) => {
+    const result = await server.create({
+      name: 'prompt-lifecycle-guard',
+      workspaceMode: 'existing',
+      workspace: fixture.workspace,
+      prompt: 'Do not type this unless the exact pane is protected first.'
+    });
+    assert.equal(result.response.status, 200);
+    assert.equal(result.body.promptSent, false);
+    assert.equal(result.body.promptState, 'not_typed');
+    assert.equal(result.body.promptError, 'agent_lifecycle_guard_failed');
+    assert.match(toolLog(fixture), /protect:%41:remain-on-exit:on/);
+    assert.doesNotMatch(toolLog(fixture), /(^|\n)literal:/);
+    assert.doesNotMatch(toolLog(fixture), /(^|\n)enter:/);
   });
 });
 

@@ -5,19 +5,24 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import os from 'node:os';
+import { takeCoverage } from 'node:v8';
 import { run } from './process-runner.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const publicDir = path.join(__dirname, 'public');
-const serviceRegistryPath = path.join(__dirname, 'services.json');
-const hostConfigPath = process.env.ORCHESTRATOR_HOST_CONFIG || path.join(__dirname, 'host-config.json');
-const dataDir = path.join(__dirname, 'data');
+const runtimeRoot = process.env.NODE_ENV === 'test' && process.env.ORCHESTRATOR_RUNTIME_ROOT
+  ? path.resolve(process.env.ORCHESTRATOR_RUNTIME_ROOT)
+  : __dirname;
+const publicDir = path.join(runtimeRoot, 'public');
+const serviceRegistryPath = path.join(runtimeRoot, 'services.json');
+const hostConfigPath = process.env.ORCHESTRATOR_HOST_CONFIG || path.join(runtimeRoot, 'host-config.json');
+const dataDir = path.join(runtimeRoot, 'data');
 const accessTokenPath = process.env.ORCHESTRATOR_ACCESS_TOKEN_FILE || path.join(dataDir, 'access-token');
 const auditLogPath = path.join(dataDir, 'actions.jsonl');
 const agentSamplesPath = path.join(dataDir, 'agent-samples.json');
 const agentInteractionsPath = path.join(dataDir, 'agent-interactions.json');
 const missionQueuePath = path.join(dataDir, 'mission-queue.json');
+const promptQueuePath = process.env.PROMPT_QUEUE_PATH || path.join(dataDir, 'prompt-queue.json');
 const notificationStatePath = path.join(dataDir, 'notification-state.json');
 const reviewDir = path.join(dataDir, 'reviews');
 const reviewContextPath = path.join(reviewDir, 'latest-context.md');
@@ -65,7 +70,7 @@ function loadHostConfig() {
     parsed = JSON.parse(readFileSync(hostConfigPath, 'utf8'));
   } catch (error) {
     if (error?.code === 'ENOENT') parsed = {};
-    else throw new Error(`host_config_load_failed: ${error?.message || error}`);
+    else throw new Error('host_config_load_failed');
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('invalid_host_config_root');
@@ -157,10 +162,23 @@ const MAX_MISSION_GOAL_CHARS = 2600;
 const MAX_MISSION_VERIFICATION_CHARS = 800;
 const MAX_MISSION_JOBS = 500;
 const MISSION_EVENT_LIMIT = 2000;
-const configuredMissionLiteralConfirmMs = Number(process.env.MISSION_LITERAL_CONFIRM_MS || 3000);
+const MAX_PROMPT_QUEUE_ITEMS = 500;
+const MAX_MULTI_AGENT_PROMPT_TARGETS = 12;
+const PROMPT_QUEUE_HISTORY_LIMIT = 40;
+const MAX_PROMPT_SCHEDULES = 50;
+const MAX_PROMPT_QUEUE_COMPLETION_CHARS = 1200;
+const MAX_PROMPT_QUEUE_COMPLETION_SNAPSHOT_CHARS = 4000;
+const PROMPT_QUEUE_COMPLETION_CAPTURE_LINES = 1200;
+const PROMPT_QUEUE_COMPLETION_RECOVERY_CAPTURE_LINES = 2400;
+const PROMPT_QUEUE_COMPLETION_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+const configuredPromptQueueMissingFinalMs = Number(process.env.PROMPT_QUEUE_MISSING_FINAL_MS || 2 * 60 * 1000);
+const PROMPT_QUEUE_MISSING_FINAL_MS = Number.isFinite(configuredPromptQueueMissingFinalMs)
+  ? Math.max(20, Math.min(60 * 60 * 1000, Math.floor(configuredPromptQueueMissingFinalMs)))
+  : 2 * 60 * 1000;
+const configuredMissionLiteralConfirmMs = Number(process.env.MISSION_LITERAL_CONFIRM_MS || 6000);
 const MISSION_LITERAL_CONFIRM_MS = Number.isFinite(configuredMissionLiteralConfirmMs)
   ? Math.max(100, Math.min(10000, Math.floor(configuredMissionLiteralConfirmMs)))
-  : 3000;
+  : 6000;
 const configuredMissionSubmitConfirmMs = Number(process.env.MISSION_SUBMIT_CONFIRM_MS || 8000);
 const MISSION_SUBMIT_CONFIRM_MS = Number.isFinite(configuredMissionSubmitConfirmMs)
   ? Math.max(100, Math.min(20000, Math.floor(configuredMissionSubmitConfirmMs)))
@@ -186,10 +204,21 @@ const configuredMissionSupervisorIdleStaleMs = Number(process.env.MISSION_SUPERV
 const MISSION_SUPERVISOR_IDLE_STALE_MS = Number.isFinite(configuredMissionSupervisorIdleStaleMs)
   ? Math.max(0, Math.min(24 * 60 * 60 * 1000, Math.floor(configuredMissionSupervisorIdleStaleMs)))
   : 2 * 60 * 1000;
+const configuredPromptQueueReadyMinMs = Number(process.env.PROMPT_QUEUE_READY_MIN_MS || 4 * 1000);
+const PROMPT_QUEUE_READY_MIN_MS = Number.isFinite(configuredPromptQueueReadyMinMs)
+  ? Math.max(20, Math.min(60 * 1000, Math.floor(configuredPromptQueueReadyMinMs)))
+  : 4 * 1000;
+const configuredPromptQueueMonitorMs = Number(process.env.PROMPT_QUEUE_MONITOR_MS || 5 * 1000);
+const PROMPT_QUEUE_MONITOR_MS = Number.isFinite(configuredPromptQueueMonitorMs)
+  ? Math.max(20, Math.min(60 * 1000, Math.floor(configuredPromptQueueMonitorMs)))
+  : 5 * 1000;
+const configuredCodexRuntimeSettleMs = Number(process.env.CODEX_RUNTIME_SETTLE_MS || 8 * 1000);
+const CODEX_RUNTIME_SETTLE_MS = Number.isFinite(configuredCodexRuntimeSettleMs)
+  ? Math.max(20, Math.min(60 * 1000, Math.floor(configuredCodexRuntimeSettleMs)))
+  : 8 * 1000;
 const SNAPSHOT_EVENT_MS = Number(process.env.SNAPSHOT_EVENT_MS || 5000);
 const AGENT_SAMPLE_INTERVAL_MS = Number(process.env.AGENT_SAMPLE_INTERVAL_MS || 15 * 1000);
 const AGENT_SAMPLE_MAX = Number(process.env.AGENT_SAMPLE_MAX || 240);
-const SSH_RESCUE_DEFAULT_TTL_MS = Number(process.env.SSH_RESCUE_DEFAULT_TTL_MS || 10 * 60 * 1000);
 const SSH_RESCUE_MONITOR_MS = Number(process.env.SSH_RESCUE_MONITOR_MS || 15 * 1000);
 const MAX_REVIEW_CONTEXT_CHARS = 90000;
 const MAX_LOG_CHARS = 18000;
@@ -204,9 +233,25 @@ const MAX_PROJECT_DESK_ARTIFACT_DIRECTORIES = 200;
 const MAX_PROJECT_DESK_ARTIFACT_ENTRIES = 5000;
 const PROJECT_DESK_INSTRUCTION_FILES = new Set(['AGENTS.md', 'CLAUDE.md']);
 const PROJECT_DESK_CHECK_SCRIPTS = new Set(['build', 'check', 'lint', 'test', 'typecheck', 'validate', 'verify']);
-const PROJECT_DESK_ARTIFACT_TYPES = new Map([['.pdf', 'application/pdf']]);
+const PROJECT_DESK_ARTIFACT_TYPES = new Map([
+  ['.pdf', 'application/pdf'],
+  ['.md', 'text/markdown; charset=utf-8'],
+  ['.html', 'text/html; charset=utf-8']
+]);
+const PROJECT_DESK_OUTPUT_ARTIFACT_TYPES = new Set(['.pdf']);
+const PROJECT_DESK_SESSION_ARTIFACT_TYPES = new Set(PROJECT_DESK_ARTIFACT_TYPES.keys());
 const PROJECT_DESK_ARTIFACT_DIRECTORIES = new Set(['artifacts', 'deliverables', 'exports', 'output', ...hostConfig.artifactDirectories]);
 const PROJECT_DESK_ARTIFACT_SKIP_DIRECTORIES = new Set(['.git', '.cache', '.next', 'build', 'dist', 'node_modules', 'vendor']);
+const PROJECT_DESK_SESSION_ARTIFACT_EXCLUDED_NAMES = new Set([
+  'agents.md',
+  'claude.md',
+  'contributing.md',
+  'current_context.md',
+  'license',
+  'license.md',
+  'readme.md',
+  'security.md'
+]);
 const SAFE_REASONING_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 const DEFAULT_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 const AGENT_UI_KEYS = Object.freeze({
@@ -226,6 +271,9 @@ const REQUIRE_HTTP_AUTH = !['127.0.0.1', '::1', 'localhost'].includes(String(HOS
   && ACCESS_MODE === 'authenticated';
 const SECURE_COOKIE = process.env.ORCHESTRATOR_SECURE_COOKIE === '1';
 const ALLOW_DOCUMENTATION_IPS_FOR_TESTS = process.env.NODE_ENV === 'test' && process.env.ORCHESTRATOR_ALLOW_DOCUMENTATION_IPS === '1';
+const TEST_REMOTE_ADDRESS = process.env.NODE_ENV === 'test'
+  ? String(process.env.ORCHESTRATOR_TEST_REMOTE_ADDRESS || '')
+  : '';
 const PROTECTED_TMUX_SESSIONS = new Set(['agent-orchestrator', 'agent-orchestrator-watchdog']);
 const AGENT_INTERACTION_ACTIONS = new Set([
   'agent.create',
@@ -234,6 +282,13 @@ const AGENT_INTERACTION_ACTIONS = new Set([
   'agent.resume',
   'agent.send',
   'agent.ui_key',
+  'prompt_queue.sent',
+  'session.interrupt'
+]);
+const PROMPT_QUEUE_SUPERSEDING_INTERACTIONS = new Set([
+  'agent.interrupt',
+  'agent.send',
+  'mission.dispatch',
   'session.interrupt'
 ]);
 const MISSION_STATUSES = new Set([
@@ -263,6 +318,7 @@ const MISSION_TRANSITIONS = Object.freeze({
   failed: new Set(['ready', 'canceled']),
   canceled: new Set(['ready'])
 });
+const PROMPT_QUEUE_STATUSES = new Set(['queued', 'dispatching', 'sent', 'needs_review', 'canceled']);
 const RESPONSE_SECURITY_HEADERS = Object.freeze({
   'content-security-policy': "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
   'cross-origin-resource-policy': 'same-origin',
@@ -287,10 +343,20 @@ let agentInteractionWritePending = false;
 let agentInteractionDirty = false;
 let missionQueueStore = null;
 let missionOperationQueue = Promise.resolve();
+let promptQueueStore = null;
+let promptQueueOperationQueue = Promise.resolve();
+let promptQueueMonitorRunning = false;
 let notificationStateStore = null;
 let notificationOperationQueue = Promise.resolve();
 const missionDispatchReservations = new Set();
+const promptQueueDispatchReservations = new Set();
 const missionSupervisorObservations = new Map();
+const promptQueueReadyObservations = new Map();
+const promptQueueCompletionObservations = new Map();
+const promptQueueReturnObservations = new Map();
+const promptQueueMissingFinalObservations = new Map();
+const promptQueueAcceptanceObservations = new Map();
+const codexRuntimeObservations = new Map();
 const paneInputQueues = new Map();
 let sshSecurityQueue = Promise.resolve();
 let operatorAccessToken = '';
@@ -446,7 +512,7 @@ async function findExactTmuxPane(session, expectedPaneId = '') {
     '-t',
     `=${session}`,
     '-F',
-    '#{session_name}|#{session_created}|#{window_index}|#{pane_index}|#{pane_active}|#{pane_current_command}|#{pane_current_path}|#{pane_id}|#{pane_pid}'
+    '#{session_name}|#{session_created}|#{window_index}|#{pane_index}|#{pane_active}|#{pane_current_command}|#{pane_current_path}|#{pane_id}|#{pane_pid}|#{pane_dead}|#{pane_dead_status}'
   ]);
   if (!result.ok) return null;
   const panes = result.stdout.trim().split('\n').filter(Boolean).map((line) => {
@@ -455,7 +521,20 @@ async function findExactTmuxPane(session, expectedPaneId = '') {
     let pathParts = parts.slice(6);
     let tmuxPaneId = '';
     let panePid = null;
-    if (/^%\d+$/.test(pathParts.at(-2) || '') && /^\d+$/.test(pathParts.at(-1) || '')) {
+    let dead = false;
+    let deadStatus = null;
+    const hasDeadFields = /^%\d+$/.test(pathParts.at(-4) || '') &&
+      /^\d+$/.test(pathParts.at(-3) || '') &&
+      /^(?:0|1)$/.test(pathParts.at(-2) || '') &&
+      /^(?:|\d+)$/.test(pathParts.at(-1) || '');
+    if (hasDeadFields) {
+      tmuxPaneId = pathParts.at(-4);
+      panePid = Number(pathParts.at(-3));
+      dead = pathParts.at(-2) === '1';
+      deadStatus = /^\d+$/.test(pathParts.at(-1) || '') ? Number(pathParts.at(-1)) : null;
+      pathParts = pathParts.slice(0, -4);
+    } else if (/^%\d+$/.test(pathParts.at(-2) || '') && /^\d+$/.test(pathParts.at(-1) || '')) {
+      // Backward-compatible parsing for older test fixtures and tmux wrappers.
       tmuxPaneId = pathParts.at(-2);
       panePid = Number(pathParts.at(-1));
       pathParts = pathParts.slice(0, -2);
@@ -470,6 +549,8 @@ async function findExactTmuxPane(session, expectedPaneId = '') {
       windowIndex: Number(windowIndex),
       paneIndex: Number(paneIndex),
       panePid,
+      dead,
+      deadStatus,
       active: active === '1',
       currentCommand,
       currentPath: pathParts.join('|')
@@ -482,7 +563,7 @@ async function findExactTmuxPane(session, expectedPaneId = '') {
 async function findPromptableCodexPane(session, expectedPaneId = '') {
   if (!/^codex(?:[\w-]*)?$/.test(String(session || '')) || PROTECTED_TMUX_SESSIONS.has(session) || session === REVIEW_SESSION) return null;
   const pane = await findExactTmuxPane(session, expectedPaneId);
-  return pane?.currentCommand === 'node' ? pane : null;
+  return pane?.dead !== true && pane?.currentCommand === 'node' ? pane : null;
 }
 
 async function waitForPromptableCodexPane(session, timeoutMs = 10000) {
@@ -629,20 +710,67 @@ function paneIdentityFieldsMatch(pane, expected) {
 }
 
 function exactPaneIdentityMatches(pane, expected) {
-  return paneIdentityFieldsMatch(pane, expected) && pane.currentCommand === 'node';
+  return paneIdentityFieldsMatch(pane, expected) && pane.dead !== true && pane.currentCommand === 'node';
+}
+
+async function protectPromptDeliveryPane(pane, identityError = 'agent_pane_identity_changed') {
+  const identity = exactPaneIdentity(pane);
+  if (!identity.tmuxPaneId || !Number.isInteger(identity.panePid) || pane?.dead === true) {
+    return { ok: false, error: 'agent_lifecycle_guard_unavailable' };
+  }
+  const protectedPane = await run('tmux', [
+    'set-option',
+    '-p',
+    '-t',
+    identity.tmuxPaneId,
+    'remain-on-exit',
+    'on'
+  ]);
+  if (!protectedPane.ok) {
+    return { ok: false, error: 'agent_lifecycle_guard_failed' };
+  }
+  const currentPane = await findExactTmuxPane(identity.session, identity.id);
+  if (!exactPaneIdentityMatches(currentPane, identity)) {
+    return { ok: false, error: identityError };
+  }
+  return { ok: true, pane: currentPane };
+}
+
+function terminalWitnessMatch(output, witness) {
+  const textValue = String(output || '');
+  const compactWitness = String(witness || '').replace(/\s/g, '');
+  if (compactWitness.length < 8) return null;
+  let compactOutput = '';
+  const sourcePositions = [];
+  for (let index = 0; index < textValue.length; index += 1) {
+    if (/\s/.test(textValue[index])) continue;
+    compactOutput += textValue[index];
+    sourcePositions.push(index);
+  }
+  const compactIndex = compactOutput.lastIndexOf(compactWitness);
+  if (compactIndex < 0) return null;
+  const finalCompactIndex = compactIndex + compactWitness.length - 1;
+  return {
+    index: sourcePositions[compactIndex],
+    end: sourcePositions[finalCompactIndex] + 1
+  };
+}
+
+function terminalWitnessVisible(output, witness) {
+  return Boolean(terminalWitnessMatch(output, witness));
 }
 
 function missionAcceptanceVisible(output, marker) {
   const textValue = String(output || '');
-  const markerIndex = textValue.lastIndexOf(marker);
-  if (markerIndex < 0) return false;
-  const trailing = textValue.slice(markerIndex + marker.length);
+  const markerMatch = terminalWitnessMatch(textValue, marker);
+  if (!markerMatch) return false;
+  const trailing = textValue.slice(markerMatch.end);
   if (/\b(?:Working|Pursuing goal)\s*\(|\besc to interrupt\b|^(?:Running command|Ran |Read |Search |List |Explored|Edited |Updated Plan|Update Plan)\b/im.test(trailing)) {
     return true;
   }
   const meaningful = trailing.split('\n').map((line) => line.trim()).filter((line) => {
     if (!line) return false;
-    if (/^\s*[›>]\s*(?:.*)?$/.test(line)) return false;
+    if (/^\s*›\s*(?:.*)?$/.test(line)) return false;
     if (/^OpenAI Codex\b|^Starting interactive session\b/i.test(line)) return false;
     if (/^[╭╰┌└│┃┆┊─━═╌╍┄┅┈┉┤├┬┴┼]+(?:\s*)$/.test(line)) return false;
     if (/\b(?:gpt|codex)-[a-z0-9._-]+\b/i.test(line) && /\b(?:minimal|low|medium|high|xhigh|max|ultra)\b/i.test(line)) return false;
@@ -673,16 +801,10 @@ async function waitForConfirmedTerminalState(session, expectedIdentity, predicat
   return { ok: false, error: timeoutError };
 }
 
-async function waitForMissionTerminalState(session, expectedIdentity, predicate, timeoutMs) {
-  return waitForConfirmedTerminalState(session, expectedIdentity, predicate, timeoutMs, {
-    identityError: 'mission_worker_identity_changed'
-  });
-}
-
 async function typeMarkedTextAndConfirm(target, session, pane, textValue, marker, {
   submitKey = 'C-m',
   identityError = 'terminal_pane_identity_changed',
-  renderedPredicate = (output) => String(output || '').includes(marker),
+  renderedPredicate,
   renderCaptureLines = 120
 } = {}) {
   const identity = exactPaneIdentity(pane);
@@ -725,20 +847,18 @@ async function typeMarkedTextAndConfirm(target, session, pane, textValue, marker
     identity,
     (output) => missionAcceptanceVisible(output, marker),
     MISSION_SUBMIT_CONFIRM_MS,
-    { identityError }
+    { identityError, captureLines: renderCaptureLines }
   );
   return { sent, entered, confirmed, submitKey, settleMs: 0, identity };
 }
 
 async function typeMissionTextAndConfirm(target, session, pane, textValue, marker, submitKey = 'C-m') {
+  const startMarker = String(textValue || '').match(/^\[[^\]\n]{1,200}\]/)?.[0] || '';
   return typeMarkedTextAndConfirm(target, session, pane, textValue, marker, {
     submitKey,
     identityError: 'mission_worker_identity_changed',
-    renderedPredicate: (output) => {
-      const renderedText = String(output || '');
-      return ['[PaneFleet Mission ', '[Host Control Mission ']
-        .some((prefix) => renderedText.includes(prefix)) && renderedText.includes(marker);
-    }
+    renderedPredicate: (output) =>
+      terminalWitnessVisible(output, startMarker) && terminalWitnessVisible(output, marker)
   });
 }
 
@@ -929,6 +1049,10 @@ function codexLaunchCommand(prefix, selection) {
   return codexCommand(args.filter(Boolean).join(' '));
 }
 
+function persistentCodexShellCommand(command) {
+  return 'bash -lc ' + shellQuote(command + '; exec bash -l');
+}
+
 function normalizeIpv4(value) {
   const textValue = String(value || '').trim().replace(/^::ffff:/, '');
   const match = textValue.match(/^(\d{1,3})(?:\.(\d{1,3})){3}$/);
@@ -965,7 +1089,10 @@ function isLoopbackOrPrivateCidr(cidr) {
 }
 
 function requestCidr(req) {
-  return ipv4Cidr(req?.socket?.remoteAddress || '');
+  // Integration tests need a public-looking peer to exercise the same
+  // fail-closed cleanup path used in production. The override is process-local,
+  // unavailable outside NODE_ENV=test, and cannot be supplied by an HTTP client.
+  return ipv4Cidr(TEST_REMOTE_ADDRESS || req?.socket?.remoteAddress || '');
 }
 
 function parseSshPeerCidrs(output) {
@@ -973,7 +1100,9 @@ function parseSshPeerCidrs(output) {
   for (const line of String(output || '').split('\n')) {
     const parts = line.trim().split(/\s+/);
     if (parts.length < 4) continue;
-    const remote = parts[3] || '';
+    // `ss -Htn` ends each row with the peer address. Reading a fixed middle
+    // column mistakes the local SSH listener for the connected client.
+    const remote = parts.at(-1) || '';
     const match = remote.match(/((?:\d{1,3}\.){3}\d{1,3})(?::\d+)?$/);
     const cidr = match ? ipv4Cidr(match[1]) : '';
     if (cidr && !isLoopbackOrPrivateCidr(cidr)) cidrs.add(cidr);
@@ -1584,15 +1713,79 @@ async function resolveProjectDeskWorkspace(session, input) {
   return { status: 200, pane, workspace, boundary };
 }
 
-async function projectDownloadArtifacts(workspace) {
+function projectArtifactType(extension) {
+  if (extension === '.md') return 'markdown';
+  return extension.slice(1);
+}
+
+function projectSessionArtifactCandidate(entry, sessionStartedMs) {
+  const extension = path.extname(entry.name).toLowerCase();
+  return (
+    Number.isFinite(sessionStartedMs) &&
+    entry.isFile() &&
+    !entry.isSymbolicLink() &&
+    !entry.name.startsWith('.') &&
+    !PROJECT_DESK_SESSION_ARTIFACT_EXCLUDED_NAMES.has(entry.name.toLowerCase()) &&
+    PROJECT_DESK_ARTIFACT_TYPES.has(extension)
+  );
+}
+
+async function projectArtifactMetadata(
+  workspace,
+  candidate,
+  outputRoot,
+  minimumModifiedAt = null,
+  allowedExtensions = PROJECT_DESK_SESSION_ARTIFACT_TYPES
+) {
+  const extension = path.extname(candidate).toLowerCase();
+  if (!PROJECT_DESK_ARTIFACT_TYPES.has(extension) || !allowedExtensions.has(extension)) return null;
+  const resolved = await realpath(candidate).catch(() => null);
+  // Artifact files themselves must not redirect through a symlink.
+  if (!resolved || resolved !== candidate || !isSameOrChild(resolved, outputRoot)) return null;
+  try {
+    const details = await stat(resolved);
+    if (
+      !details.isFile() ||
+      details.size < 1 ||
+      details.size > MAX_PROJECT_DESK_ARTIFACT_BYTES ||
+      (Number.isFinite(minimumModifiedAt) && details.mtimeMs < minimumModifiedAt)
+    ) return null;
+    const relativePath = path.relative(workspace, resolved);
+    if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) return null;
+    return {
+      id: createHash('sha256').update(workspace + '\0' + relativePath).digest('hex').slice(0, 32),
+      name: path.basename(resolved),
+      path: relativePath.split(path.sep).join('/'),
+      size: details.size,
+      updatedAt: details.mtime.toISOString(),
+      type: projectArtifactType(extension)
+    };
+  } catch {
+    // An artifact that changes during discovery is omitted until refresh.
+    return null;
+  }
+}
+
+async function projectDownloadArtifacts(workspace, sessionStartedAt = '') {
   const artifacts = [];
   const directories = [];
+  const sessionStartedMs = Date.parse(sessionStartedAt);
   let inspectedEntries = 0;
   try {
     const root = await opendir(workspace);
     for await (const entry of root) {
       inspectedEntries += 1;
       if (inspectedEntries > MAX_PROJECT_DESK_ARTIFACT_ENTRIES) break;
+      if (projectSessionArtifactCandidate(entry, sessionStartedMs)) {
+        const artifact = await projectArtifactMetadata(
+          workspace,
+          path.join(workspace, entry.name),
+          workspace,
+          sessionStartedMs
+        );
+        if (artifact) artifacts.push(artifact);
+        continue;
+      }
       if (!entry.isDirectory() || entry.isSymbolicLink() || !PROJECT_DESK_ARTIFACT_DIRECTORIES.has(entry.name)) continue;
       const outputPath = path.join(workspace, entry.name);
       const outputRoot = await realpath(outputPath).catch(() => null);
@@ -1629,33 +1822,22 @@ async function projectDownloadArtifacts(workspace) {
           }
           continue;
         }
-        if (!entry.isFile() || !PROJECT_DESK_ARTIFACT_TYPES.has(path.extname(entry.name).toLowerCase())) continue;
-        const resolved = await realpath(candidate).catch(() => null);
-        // Keep every result under the exact canonical fixed output folder that admitted it.
-        if (!resolved || !isSameOrChild(resolved, current.outputRoot)) continue;
-        try {
-          const details = await stat(resolved);
-          if (!details.isFile() || details.size < 1 || details.size > MAX_PROJECT_DESK_ARTIFACT_BYTES) continue;
-          const relativePath = path.relative(workspace, resolved);
-          if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) continue;
-          artifacts.push({
-            id: createHash('sha256').update(`${workspace}\0${relativePath}`).digest('hex').slice(0, 32),
-            name: path.basename(resolved),
-            path: relativePath.split(path.sep).join('/'),
-            size: details.size,
-            updatedAt: details.mtime.toISOString(),
-            type: 'pdf'
-          });
-          artifacts.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.path.localeCompare(right.path));
-          if (artifacts.length > MAX_PROJECT_DESK_ARTIFACTS) artifacts.length = MAX_PROJECT_DESK_ARTIFACTS;
-        } catch {
-          // An artifact that changes during discovery is omitted until refresh.
-        }
+        if (!entry.isFile()) continue;
+        const artifact = await projectArtifactMetadata(
+          workspace,
+          candidate,
+          current.outputRoot,
+          null,
+          PROJECT_DESK_OUTPUT_ARTIFACT_TYPES
+        );
+        if (artifact) artifacts.push(artifact);
       }
     } catch {
       // A directory that changes during bounded traversal is omitted until refresh.
     }
   }
+  artifacts.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.path.localeCompare(right.path));
+  if (artifacts.length > MAX_PROJECT_DESK_ARTIFACTS) artifacts.length = MAX_PROJECT_DESK_ARTIFACTS;
   return artifacts;
 }
 
@@ -1671,7 +1853,7 @@ async function projectDeskSnapshot(session, input) {
     projectInstructionSnapshot(workspace, boundary),
     nearestPackageChecks(workspace, canonicalRepoRoot || boundary),
     projectUsefulLinks(workspace, canonicalRepoRoot),
-    projectDownloadArtifacts(canonicalRepoRoot || workspace)
+    projectDownloadArtifacts(canonicalRepoRoot || workspace, pane.sessionCreatedAt)
   ]);
   const projectPath = canonicalRepoRoot || workspace;
   return {
@@ -1701,15 +1883,18 @@ async function projectDeskArtifact(session, input) {
   if (resolvedDesk.status !== 200) return resolvedDesk;
   const gitSnapshot = await projectGitSnapshot(resolvedDesk.workspace, resolvedDesk.boundary);
   const artifactRoot = gitSnapshot.canonicalRepoRoot || resolvedDesk.workspace;
-  const artifact = (await projectDownloadArtifacts(artifactRoot)).find((item) => item.id === artifactId);
+  const artifact = (await projectDownloadArtifacts(artifactRoot, resolvedDesk.pane.sessionCreatedAt)).find((item) => item.id === artifactId);
   if (!artifact) return { status: 404, body: { error: 'artifact_not_found' } };
   const artifactParts = artifact.path.split('/');
-  if (!PROJECT_DESK_ARTIFACT_DIRECTORIES.has(artifactParts[0])) {
-    return { status: 404, body: { error: 'artifact_not_found' } };
+  let outputRoot = artifactRoot;
+  if (artifactParts.length > 1) {
+    if (!PROJECT_DESK_ARTIFACT_DIRECTORIES.has(artifactParts[0])) {
+      return { status: 404, body: { error: 'artifact_not_found' } };
+    }
+    const outputPath = path.join(artifactRoot, artifactParts[0]);
+    outputRoot = await realpath(outputPath).catch(() => null);
+    if (!outputRoot || outputRoot !== outputPath) return { status: 404, body: { error: 'artifact_not_found' } };
   }
-  const outputPath = path.join(artifactRoot, artifactParts[0]);
-  const outputRoot = await realpath(outputPath).catch(() => null);
-  if (!outputRoot || outputRoot !== outputPath) return { status: 404, body: { error: 'artifact_not_found' } };
   const resolved = await realpath(path.resolve(artifactRoot, artifact.path)).catch(() => null);
   if (!resolved || !isSameOrChild(resolved, outputRoot)) return { status: 404, body: { error: 'artifact_not_found' } };
   const extension = path.extname(resolved).toLowerCase();
@@ -1731,7 +1916,8 @@ async function projectDeskArtifact(session, input) {
         modifiedAt: details.mtimeMs,
         device: details.dev,
         inode: details.ino,
-        contentType
+        contentType,
+        type: artifact.type
       }
     };
   } catch {
@@ -1740,13 +1926,26 @@ async function projectDeskArtifact(session, input) {
 }
 
 function attachmentContentDisposition(filename) {
-  const safeAscii = String(filename || 'artifact.pdf')
+  const safeAscii = String(filename || 'project-file')
     .replace(/[^\x20-\x7E]/g, '_')
     .replace(/["\\]/g, '_')
-    .slice(0, 180) || 'artifact.pdf';
-  const encoded = encodeURIComponent(String(filename || 'artifact.pdf'))
+    .slice(0, 180) || 'project-file';
+  const encoded = encodeURIComponent(String(filename || 'project-file'))
     .replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
   return `attachment; filename="${safeAscii}"; filename*=UTF-8''${encoded}`;
+}
+
+function projectArtifactPayloadAllowed(type, payload) {
+  if (type === 'pdf') return payload.subarray(0, 5).toString('ascii') === '%PDF-';
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(payload);
+  } catch {
+    return false;
+  }
+  if (text.includes('\0')) return false;
+  if (type === 'html') return /^\s*(?:<!doctype\s+html\b|<html\b)/i.test(text);
+  return type === 'markdown';
 }
 
 async function serveProjectDeskArtifact(req, res, session, input) {
@@ -1792,7 +1991,7 @@ async function serveProjectDeskArtifact(req, res, session, input) {
       return json(res, 409, { error: 'artifact_changed_during_download' });
     }
     const payload = body.subarray(0, offset);
-    if (payload.subarray(0, 5).toString('ascii') !== '%PDF-') {
+    if (!projectArtifactPayloadAllowed(result.file.type, payload)) {
       return json(res, 415, { error: 'artifact_content_not_allowed' });
     }
     res.writeHead(200, responseHeaders({
@@ -1821,18 +2020,61 @@ function cleanDurationText(value) {
   return String(value || '').split(/[•·]/)[0].replace(/\s+/g, ' ').trim();
 }
 
-function codexRuntimeSignal(output) {
+function codexRuntimeObservationKey(agent) {
+  return [agent?.session, agent?.sessionCreatedAt, agent?.id, agent?.tmuxPaneId, agent?.panePid].join('|');
+}
+
+function codexRuntimeSignal(agent, output, nowMs = Date.now()) {
   const recent = lastOutputSnippet(output, 28);
-  const working = recent.match(/\bWorking\s*\(([^)]*)\)/i);
-  if (working) {
-    const duration = cleanDurationText(working[1]);
-    return { state: 'busy', tone: 'good', reason: duration ? `working ${duration}` : 'working timer' };
+  const recentLines = recent.split('\n');
+  const promptIndex = recentLines.findLastIndex((line) => /^\s*›\s/.test(line));
+  const runtimeLines = promptIndex >= 0
+    ? recentLines.slice(Math.max(0, promptIndex - 6))
+    : recentLines;
+  const runtimeWindow = runtimeLines.join('\n');
+  const observationKey = codexRuntimeObservationKey(agent);
+  const prior = codexRuntimeObservations.get(observationKey);
+  if (/\bWaiting for background terminal\b/i.test(runtimeWindow)) {
+    codexRuntimeObservations.set(observationKey, {
+      signature: 'background-terminal',
+      changedAt: nowMs,
+      lastSeenAt: nowMs,
+      reason: 'waiting for background terminal'
+    });
+    return { state: 'busy', tone: 'good', reason: 'waiting for background terminal' };
   }
-  const pursuing = recent.match(/\bPursuing goal\s*\(([^)]*)\)/i);
-  if (pursuing) {
-    const duration = cleanDurationText(pursuing[1]);
-    return { state: 'busy', tone: 'good', reason: duration ? `goal running ${duration}` : 'goal running' };
+  const backgroundTerminal = runtimeWindow.match(/\b(\d+)\s+background\s+term(?:inal)?s?\b/i);
+  if (backgroundTerminal && Number(backgroundTerminal[1]) > 0) {
+    const count = Number(backgroundTerminal[1]);
+    codexRuntimeObservations.set(observationKey, {
+      signature: `background-count:${count}`,
+      changedAt: nowMs,
+      lastSeenAt: nowMs,
+      reason: `${count} background terminal${count === 1 ? '' : 's'} running`
+    });
+    return { state: 'busy', tone: 'good', reason: `${count} background terminal${count === 1 ? '' : 's'} running` };
   }
+  const runtimeMatches = runtimeLines.flatMap((line) => {
+    const match = line.match(/\b(Working|Pursuing goal)\s*\(([^)]*)\)/i);
+    return match ? [{ kind: match[1].toLowerCase(), duration: cleanDurationText(match[2]) }] : [];
+  });
+  if (runtimeMatches.length) {
+    const current = runtimeMatches.at(-1);
+    const signature = runtimeMatches.map((match) => `${match.kind}:${match.duration}`).join('|');
+    const reason = current.kind === 'working'
+      ? (current.duration ? `working ${current.duration}` : 'working timer')
+      : (current.duration ? `goal running ${current.duration}` : 'goal running');
+    const changedAt = !prior || prior.signature !== signature ? nowMs : prior.changedAt;
+    codexRuntimeObservations.set(observationKey, { signature, changedAt, lastSeenAt: nowMs, reason });
+    if (!codexIdlePromptVisible(output) || nowMs - changedAt < CODEX_RUNTIME_SETTLE_MS) {
+      return { state: 'busy', tone: 'good', reason };
+    }
+    return null;
+  }
+  if (prior && nowMs - prior.lastSeenAt < CODEX_RUNTIME_SETTLE_MS) {
+    return { state: 'busy', tone: 'good', reason: 'finishing current turn' };
+  }
+  codexRuntimeObservations.delete(observationKey);
   if (/\bGoal achieved\b/i.test(recent)) {
     return { state: 'idle', tone: 'good', reason: 'goal achieved' };
   }
@@ -1850,8 +2092,11 @@ function codexNeedsInput(output) {
 }
 
 function codexIdlePromptVisible(output) {
+  const recent = lastOutputSnippet(output, 12);
+  if (/\bWaiting for background terminal\b/i.test(recent)) return false;
+  if (/\b[1-9]\d*\s+background\s+term(?:inal)?s?\b/i.test(recent)) return false;
   const lines = lastOutputSnippet(output, 8).split('\n').filter((line) => line.trim());
-  const promptIndex = lines.findLastIndex((line) => /^\s*[›>]\s/.test(line));
+  const promptIndex = lines.findLastIndex((line) => /^\s*›\s/.test(line));
   const statusIndex = lines.findLastIndex((line) => (
     /\b(?:gpt|codex)-[a-z0-9._-]+\b/i.test(line) &&
     /\b(?:minimal|low|medium|high|xhigh|max|ultra)\b/i.test(line) &&
@@ -1932,7 +2177,13 @@ function normalizeServiceLink(link, location) {
 }
 
 async function loadServices() {
-  const parsed = JSON.parse(await readFile(serviceRegistryPath, 'utf8'));
+  let parsed;
+  try {
+    parsed = JSON.parse(await readFile(serviceRegistryPath, 'utf8'));
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error('services.json invalid JSON');
+    throw error;
+  }
   if (!Array.isArray(parsed)) throw new Error('services.json must contain an array');
   const serviceIds = new Set();
   return parsed.map((service, serviceIndex) => {
@@ -2121,10 +2372,19 @@ function classifySession(session, currentCommand, currentPath, services) {
   return 'other';
 }
 
+const TMUX_PANE_LIST_FORMAT = '#{session_name}|#{session_created}|#{window_index}|#{pane_index}|#{session_attached}|#{pane_active}|#{pane_pid}|#{pane_tty}|#{pane_id}|#{pane_dead}|#{pane_dead_status}|#{pane_current_command}|#{pane_current_path}|#{pane_title}';
+
 function parseTmuxPanes(output, ttyProcessMap, services) {
   return output.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
     const parts = line.split('|');
-    const [session, sessionCreated, windowIndex, paneIndex, attached, active, panePid, paneTty, tmuxPaneId, currentCommand, currentPath, ...titleParts] = parts;
+    const [session, sessionCreated, windowIndex, paneIndex, attached, active, panePid, paneTty, tmuxPaneId] = parts;
+    const hasDeadFields = /^(?:0|1)$/.test(parts[9] || '') && /^(?:|\d+)$/.test(parts[10] || '');
+    const dead = hasDeadFields ? parts[9] === '1' : false;
+    const deadStatus = hasDeadFields && /^\d+$/.test(parts[10] || '') ? Number(parts[10]) : null;
+    const commandIndex = hasDeadFields ? 11 : 9;
+    const currentCommand = parts[commandIndex] || '';
+    const currentPath = parts[commandIndex + 1] || '';
+    const titleParts = parts.slice(commandIndex + 2);
     const processes = ttyProcessMap.get(paneTty) || [];
     const primary = processes.find((proc) => proc.pid !== Number(panePid)) || processes[0] || null;
     const type = classifySession(session, currentCommand, currentPath, services);
@@ -2141,12 +2401,14 @@ function parseTmuxPanes(output, ttyProcessMap, services) {
       panePid: Number(panePid),
       paneTty,
       tmuxPaneId,
+      dead,
+      deadStatus,
       currentCommand: redactSensitive(currentCommand),
       currentPath,
       title: redactSensitive(titleParts.join('|')),
       type,
-      canSend: type === 'agent' && currentCommand === 'node',
-      canResume: type === 'agent' && currentCommand !== 'node' && /^codex(?:[\w-]*)?$/.test(session),
+      canSend: type === 'agent' && !dead && currentCommand === 'node',
+      canResume: type === 'agent' && !dead && currentCommand !== 'node' && /^codex(?:[\w-]*)?$/.test(session),
       canStopSession: !PROTECTED_TMUX_SESSIONS.has(session),
       processes,
       primaryProcess: primary
@@ -2382,6 +2644,10 @@ async function recordAgentSample(agent) {
 }
 
 function inferAgentStatus(agent, preview) {
+  if (agent?.dead === true) {
+    const suffix = Number.isInteger(agent.deadStatus) ? ` (exit ${agent.deadStatus})` : '';
+    return { state: 'stopped', tone: 'bad', reason: `Codex process exited${suffix}` };
+  }
   if (/^codex(?:[\w-]*)?$/.test(agent.session) && agent.currentCommand !== 'node') {
     const createdAt = Date.parse(agent.sessionCreatedAt || '');
     const startupAgeMs = Number.isFinite(createdAt) ? Date.now() - createdAt : Infinity;
@@ -2390,8 +2656,6 @@ function inferAgentStatus(agent, preview) {
     }
     return { state: 'stopped', tone: 'bad', reason: 'codex process not running' };
   }
-  const runtimeSignal = codexRuntimeSignal(preview?.output || '');
-  if (runtimeSignal) return runtimeSignal;
   const rawRecent = lastOutputSnippet(preview?.output || '', 12).toLowerCase();
   const usefulRecent = usefulOutputLines(`${preview?.lastOutput || ''}\n${preview?.lastLine || ''}`).slice(-8).join('\n').toLowerCase();
   const textValue = usefulRecent || rawRecent;
@@ -2399,6 +2663,8 @@ function inferAgentStatus(agent, preview) {
   if (codexNeedsInput(rawRecent)) {
     return { state: 'waiting', tone: 'warn', reason: 'input needed' };
   }
+  const runtimeSignal = codexRuntimeSignal(agent, preview?.output || '');
+  if (runtimeSignal) return runtimeSignal;
   if (codexIdlePromptVisible(preview?.output || '')) {
     return { state: 'idle', tone: 'good', reason: 'prompt ready' };
   }
@@ -2819,6 +3085,8 @@ function buildOrchestrationBrief({ agents, services, listeners, review, host }) 
 async function enrichAgents(panes) {
   return Promise.all(panes.filter((pane) => pane.type === 'agent').map(async (agent) => {
     const preview = await panePreview(agent, 80);
+    const agentStatus = inferAgentStatus(agent, preview);
+    const promptReady = codexIdlePromptVisible(preview.output || '');
     const storedInteraction = agentInteraction(agent.session);
     const interactionTime = Date.parse(storedInteraction?.at || '');
     const sessionCreatedTime = Date.parse(agent.sessionCreatedAt || '');
@@ -2830,7 +3098,15 @@ async function enrichAgents(panes) {
       ...agent,
       lastInteractionAt: interaction?.at || agent.sessionCreatedAt || null,
       lastInteractionKind: interaction?.kind || 'session.created',
-      agentStatus: inferAgentStatus(agent, preview),
+      agentStatus,
+      promptReady,
+      queueReady: Boolean(
+        agent.canSend &&
+        agentStatus.state === 'idle' &&
+        agentStatus.tone === 'good' &&
+        promptReady &&
+        agentHasCodexProcess(agent)
+      ),
       latestPrompt: latestUserPrompt(preview.output),
       lastLine: preview.lastLine,
       lastOutput: preview.lastOutput,
@@ -3092,6 +3368,8 @@ function validateMissionQueueStore(store) {
     if (typeof job.title !== 'string' || !job.title || job.title.length > MAX_MISSION_TITLE_CHARS) throw new Error('mission_queue_job_title_invalid');
     if (typeof job.goal !== 'string' || !job.goal || job.goal.length > MAX_MISSION_GOAL_CHARS) throw new Error('mission_queue_job_goal_invalid');
     if (typeof job.verificationCriteria !== 'string' || !job.verificationCriteria || job.verificationCriteria.length > MAX_MISSION_VERIFICATION_CHARS) throw new Error('mission_queue_job_verification_invalid');
+    if (typeof job.blocker !== 'string' || job.blocker.length > MAX_MISSION_VERIFICATION_CHARS) throw new Error('mission_queue_job_result_invalid');
+    if (typeof job.resultSummary !== 'string' || job.resultSummary.length > MAX_MISSION_VERIFICATION_CHARS) throw new Error('mission_queue_job_result_invalid');
     if (!Number.isInteger(job.position) || job.position < 0) throw new Error('mission_queue_job_position_invalid');
     if (job.assignedSession && !isAgentInteractionTarget(job.assignedSession)) throw new Error('mission_queue_job_worker_invalid');
     if (job.assignedPaneId && (
@@ -3133,6 +3411,14 @@ function validateMissionQueueStore(store) {
       ) throw new Error('mission_queue_job_attempt_invalid');
       if (attempt.tmuxPaneId != null && !/^%\d+$/.test(String(attempt.tmuxPaneId))) throw new Error('mission_queue_job_attempt_invalid');
       if (attempt.panePid != null && (!Number.isInteger(attempt.panePid) || attempt.panePid < 1)) throw new Error('mission_queue_job_attempt_invalid');
+      if (attempt.sessionCreatedAt != null && !validMissionTimestamp(attempt.sessionCreatedAt, { nullable: false })) {
+        throw new Error('mission_queue_job_attempt_invalid');
+      }
+      if (attempt.paneId != null && (
+        typeof attempt.paneId !== 'string' ||
+        !attempt.paneId.startsWith(`${attempt.session}:`) ||
+        !/^[A-Za-z0-9_.-]{1,128}:\d+\.\d+$/.test(attempt.paneId)
+      )) throw new Error('mission_queue_job_attempt_invalid');
       if (attemptKind === 'adoption' && attempt.confirmationMarker != null) throw new Error('mission_queue_job_attempt_invalid');
       // Persisted pre-PaneFleet queues keep their original marker so restart
       // reconciliation remains read-compatible without rewriting mission data.
@@ -3150,6 +3436,8 @@ function validateMissionQueueStore(store) {
       typeof job.activeAttempt !== 'object' ||
       !/^attempt-[a-z0-9-]{8,64}$/.test(String(job.activeAttempt.id || '')) ||
       job.activeAttempt.session !== job.assignedSession ||
+      (job.assignedSessionCreatedAt && job.activeAttempt.sessionCreatedAt !== job.assignedSessionCreatedAt) ||
+      (job.assignedPaneId && job.activeAttempt.paneId !== job.assignedPaneId) ||
       (job.assignedTmuxPaneId && job.activeAttempt.tmuxPaneId !== job.assignedTmuxPaneId) ||
       (Number.isInteger(job.assignedPanePid) && job.activeAttempt.panePid !== job.assignedPanePid) ||
       !job.attempts.some((attempt) => attempt.id === job.activeAttempt.id)
@@ -3179,6 +3467,7 @@ async function ensureMissionQueue() {
     const parsed = JSON.parse(await readFile(missionQueuePath, 'utf8'));
     missionQueueStore = validateMissionQueueStore(parsed);
   } catch (error) {
+    if (error instanceof SyntaxError) throw new Error('mission_queue_json_invalid');
     if (error?.code !== 'ENOENT') throw error;
     missionQueueStore = emptyMissionQueue();
     await persistMissionQueue(missionQueueStore);
@@ -3200,6 +3489,338 @@ function enqueueMissionOperation(operation) {
   const next = missionOperationQueue.catch(() => {}).then(operation);
   missionOperationQueue = next;
   return next;
+}
+
+function parsePromptCronField(source, minimum, maximum, { sundaySeven = false } = {}) {
+  const values = new Set();
+  const textValue = String(source || '').trim();
+  if (!textValue) throw new Error('prompt_schedule_cron_invalid');
+  for (const segment of textValue.split(',')) {
+    if (!segment) throw new Error('prompt_schedule_cron_invalid');
+    const [base, stepText, ...extra] = segment.split('/');
+    if (extra.length || !base) throw new Error('prompt_schedule_cron_invalid');
+    const step = stepText === undefined ? 1 : Number(stepText);
+    if (!Number.isInteger(step) || step < 1 || step > maximum - minimum + 1) throw new Error('prompt_schedule_cron_invalid');
+    let start;
+    let end;
+    if (base === '*') {
+      start = minimum;
+      end = maximum;
+    } else if (/^\d+-\d+$/.test(base)) {
+      [start, end] = base.split('-').map(Number);
+    } else if (/^\d+$/.test(base)) {
+      start = Number(base);
+      end = start;
+    } else {
+      throw new Error('prompt_schedule_cron_invalid');
+    }
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < minimum || end > maximum || start > end) {
+      throw new Error('prompt_schedule_cron_invalid');
+    }
+    for (let value = start; value <= end; value += step) values.add(sundaySeven && value === 7 ? 0 : value);
+  }
+  return values;
+}
+
+function parsePromptCron(value) {
+  const cron = String(value || '').trim().replace(/\s+/g, ' ');
+  const parts = cron.split(' ');
+  if (parts.length !== 5 || cron.length > 80) throw new Error('prompt_schedule_cron_invalid');
+  return {
+    cron,
+    minutes: parsePromptCronField(parts[0], 0, 59),
+    hours: parsePromptCronField(parts[1], 0, 23),
+    days: parsePromptCronField(parts[2], 1, 31),
+    months: parsePromptCronField(parts[3], 1, 12),
+    weekdays: parsePromptCronField(parts[4], 0, 7, { sundaySeven: true }),
+    dayWildcard: parts[2] === '*',
+    weekdayWildcard: parts[4] === '*'
+  };
+}
+
+function promptCronMatches(parsed, date) {
+  if (!parsed.minutes.has(date.getUTCMinutes()) || !parsed.hours.has(date.getUTCHours()) || !parsed.months.has(date.getUTCMonth() + 1)) return false;
+  const dayMatch = parsed.days.has(date.getUTCDate());
+  const weekdayMatch = parsed.weekdays.has(date.getUTCDay());
+  if (parsed.dayWildcard && parsed.weekdayWildcard) return true;
+  if (parsed.dayWildcard) return weekdayMatch;
+  if (parsed.weekdayWildcard) return dayMatch;
+  return dayMatch || weekdayMatch;
+}
+
+function nextPromptCronAt(cron, afterMs = Date.now()) {
+  const parsed = parsePromptCron(cron);
+  const candidate = new Date(Math.floor(Number(afterMs) / 60_000) * 60_000 + 60_000);
+  const limit = 2 * 366 * 24 * 60;
+  for (let offset = 0; offset < limit; offset += 1) {
+    if (promptCronMatches(parsed, candidate)) return candidate.toISOString();
+    candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
+  }
+  throw new Error('prompt_schedule_has_no_run_within_two_years');
+}
+
+function emptyPromptQueue() {
+  return { version: 1, revision: 0, items: [], schedules: [] };
+}
+
+function clonePromptQueue(store = promptQueueStore) {
+  return JSON.parse(JSON.stringify(store || emptyPromptQueue()));
+}
+
+function validatePromptQueueStore(store) {
+  if (!store || typeof store !== 'object' || Array.isArray(store)) throw new Error('prompt_queue_invalid');
+  if (store.version !== 1) throw new Error('prompt_queue_version_unsupported');
+  if (!Number.isInteger(store.revision) || store.revision < 0 || !Array.isArray(store.items)) {
+    throw new Error('prompt_queue_shape_invalid');
+  }
+  if (store.schedules === undefined) store.schedules = [];
+  if (!Array.isArray(store.schedules) || store.schedules.length > MAX_PROMPT_SCHEDULES) throw new Error('prompt_schedule_shape_invalid');
+  if (store.items.length > MAX_PROMPT_QUEUE_ITEMS) throw new Error('prompt_queue_limit_exceeded');
+  const ids = new Set();
+  const positions = new Set();
+  for (const item of store.items) {
+    if (!item || typeof item !== 'object' || !/^prompt-[a-z0-9-]{8,64}$/.test(String(item.id || ''))) {
+      throw new Error('prompt_queue_item_invalid');
+    }
+    if (ids.has(item.id)) throw new Error('prompt_queue_duplicate_item');
+    ids.add(item.id);
+    if (!Number.isInteger(item.revision) || item.revision < 1 || !PROMPT_QUEUE_STATUSES.has(item.status)) {
+      throw new Error('prompt_queue_item_invalid');
+    }
+    if (!Number.isSafeInteger(item.position) || item.position < 1 || item.position >= Number.MAX_SAFE_INTEGER || positions.has(item.position)) {
+      throw new Error('prompt_queue_item_position_invalid');
+    }
+    positions.add(item.position);
+    if (!isAgentInteractionTarget(item.session)) {
+      throw new Error('prompt_queue_item_target_invalid');
+    }
+    if (
+      !validMissionTimestamp(item.sessionCreatedAt, { nullable: false }) ||
+      !String(item.paneId || '').startsWith(`${item.session}:`) ||
+      !/^[A-Za-z0-9_.-]{1,128}:\d+\.\d+$/.test(String(item.paneId || '')) ||
+      !/^%\d+$/.test(String(item.tmuxPaneId || '')) ||
+      !Number.isInteger(item.panePid) ||
+      item.panePid < 1
+    ) throw new Error('prompt_queue_item_target_invalid');
+    if (typeof item.text !== 'string' || !item.text.trim() || item.text.length > MAX_SEND_CHARS) {
+      throw new Error('prompt_queue_item_text_invalid');
+    }
+    if (typeof item.blocker !== 'string' || item.blocker.length > 500) throw new Error('prompt_queue_item_invalid');
+    if (typeof item.deliveryStage !== 'string' || item.deliveryStage.length > 80) throw new Error('prompt_queue_item_invalid');
+    if (item.completionSummary != null && (typeof item.completionSummary !== 'string' || item.completionSummary.length > MAX_PROMPT_QUEUE_COMPLETION_CHARS)) {
+      throw new Error('prompt_queue_item_completion_invalid');
+    }
+    if (item.completionSnapshot != null && (typeof item.completionSnapshot !== 'string' || item.completionSnapshot.length > MAX_PROMPT_QUEUE_COMPLETION_SNAPSHOT_CHARS)) {
+      throw new Error('prompt_queue_item_completion_invalid');
+    }
+    if (item.summaryState != null && !['pending', 'captured', 'returned', 'operator_confirmed', 'operator_released', 'unavailable'].includes(item.summaryState)) {
+      throw new Error('prompt_queue_item_completion_invalid');
+    }
+    if (['captured', 'returned', 'operator_confirmed', 'operator_released'].includes(item.summaryState)) {
+      const snapshotRequired = ['captured', 'returned'].includes(item.summaryState);
+      if (
+        item.status !== 'sent' ||
+        !String(item.completionSummary || '').trim() ||
+        (snapshotRequired && !String(item.completionSnapshot || '').trim()) ||
+        !validMissionTimestamp(item.completedAt, { nullable: false })
+      ) throw new Error('prompt_queue_item_completion_invalid');
+    }
+    if (item.attemptId != null && !/^queue-attempt-[a-z0-9-]{8,64}$/.test(String(item.attemptId))) {
+      throw new Error('prompt_queue_item_invalid');
+    }
+    if (item.scheduleId != null && !/^schedule-[a-z0-9-]{8,64}$/.test(String(item.scheduleId))) throw new Error('prompt_queue_item_schedule_invalid');
+    for (const field of ['createdAt', 'updatedAt']) {
+      if (!validMissionTimestamp(item[field], { nullable: false })) throw new Error('prompt_queue_item_timestamp_invalid');
+    }
+    for (const field of ['claimedAt', 'sentAt']) {
+      if (!validMissionTimestamp(item[field])) throw new Error('prompt_queue_item_timestamp_invalid');
+    }
+    if (item.completedAt !== undefined && !validMissionTimestamp(item.completedAt)) throw new Error('prompt_queue_item_timestamp_invalid');
+    if (item.scheduledFor !== undefined && !validMissionTimestamp(item.scheduledFor)) throw new Error('prompt_queue_item_timestamp_invalid');
+    const hasAttempt = Boolean(item.attemptId);
+    const hasClaim = Boolean(item.claimedAt);
+    const hasSend = Boolean(item.sentAt);
+    const hasCompletion = Boolean(item.completedAt);
+    const lifecycleInvalid =
+      hasAttempt !== hasClaim ||
+      (hasSend && (!hasAttempt || !hasClaim)) ||
+      (hasCompletion && !hasSend) ||
+      (item.status === 'queued' && (hasAttempt || hasClaim || hasSend || hasCompletion)) ||
+      (item.status === 'dispatching' && (!hasAttempt || !hasClaim || hasSend || hasCompletion)) ||
+      (item.status === 'sent' && (!hasAttempt || !hasClaim || !hasSend)) ||
+      (item.status === 'needs_review' && (!hasAttempt || !hasClaim || hasCompletion));
+    if (lifecycleInvalid) throw new Error('prompt_queue_item_lifecycle_invalid');
+    const createdAtMs = Date.parse(item.createdAt);
+    const updatedAtMs = Date.parse(item.updatedAt);
+    const claimedAtMs = hasClaim ? Date.parse(item.claimedAt) : null;
+    const sentAtMs = hasSend ? Date.parse(item.sentAt) : null;
+    const completedAtMs = hasCompletion ? Date.parse(item.completedAt) : null;
+    const scheduledForMs = item.scheduledFor ? Date.parse(item.scheduledFor) : null;
+    const chronologyInvalid =
+      updatedAtMs < createdAtMs ||
+      (claimedAtMs !== null && (claimedAtMs < createdAtMs || updatedAtMs < claimedAtMs)) ||
+      (sentAtMs !== null && (sentAtMs < claimedAtMs || updatedAtMs < sentAtMs)) ||
+      (completedAtMs !== null && (completedAtMs < sentAtMs || updatedAtMs < completedAtMs)) ||
+      (scheduledForMs !== null && scheduledForMs > createdAtMs);
+    if (chronologyInvalid) throw new Error('prompt_queue_item_chronology_invalid');
+  }
+  const scheduleIds = new Set();
+  for (const schedule of store.schedules) {
+    if (!schedule || typeof schedule !== 'object' || !/^schedule-[a-z0-9-]{8,64}$/.test(String(schedule.id || ''))) {
+      throw new Error('prompt_schedule_item_invalid');
+    }
+    if (scheduleIds.has(schedule.id)) throw new Error('prompt_schedule_duplicate_item');
+    scheduleIds.add(schedule.id);
+    if (!Number.isInteger(schedule.revision) || schedule.revision < 1 || typeof schedule.enabled !== 'boolean') throw new Error('prompt_schedule_item_invalid');
+    if (!isAgentInteractionTarget(schedule.session) || !String(schedule.paneId || '').startsWith(`${schedule.session}:`)) throw new Error('prompt_schedule_target_invalid');
+    if (
+      !validMissionTimestamp(schedule.sessionCreatedAt, { nullable: false }) ||
+      !/^[A-Za-z0-9_.-]{1,128}:\d+\.\d+$/.test(String(schedule.paneId || '')) ||
+      !/^%\d+$/.test(String(schedule.tmuxPaneId || '')) ||
+      !Number.isInteger(schedule.panePid) || schedule.panePid < 1
+    ) throw new Error('prompt_schedule_target_invalid');
+    if (typeof schedule.text !== 'string' || !schedule.text.trim() || schedule.text.length > MAX_SEND_CHARS) throw new Error('prompt_schedule_text_invalid');
+    if (typeof schedule.cron !== 'string' || schedule.cron.length > 80) throw new Error('prompt_schedule_cron_invalid');
+    parsePromptCron(schedule.cron);
+    if (typeof schedule.lastOutcome !== 'string' || schedule.lastOutcome.length > 80) throw new Error('prompt_schedule_item_invalid');
+    if (!Number.isInteger(schedule.runCount) || schedule.runCount < 0) throw new Error('prompt_schedule_item_invalid');
+    for (const field of ['occurrenceCount', 'coalescedCount', 'skippedCount']) {
+      if (!Number.isInteger(schedule[field]) || schedule[field] < 0) throw new Error('prompt_schedule_item_invalid');
+    }
+    if (schedule.occurrenceCount !== schedule.runCount + schedule.coalescedCount + schedule.skippedCount) {
+      throw new Error('prompt_schedule_counter_invalid');
+    }
+    for (const field of ['createdAt', 'updatedAt', 'nextRunAt']) {
+      if (!validMissionTimestamp(schedule[field], { nullable: false })) throw new Error('prompt_schedule_timestamp_invalid');
+    }
+    for (const field of ['lastRunAt', 'lastScheduledFor']) {
+      if (!validMissionTimestamp(schedule[field])) throw new Error('prompt_schedule_timestamp_invalid');
+    }
+    const createdAtMs = Date.parse(schedule.createdAt);
+    const updatedAtMs = Date.parse(schedule.updatedAt);
+    const nextRunAtMs = Date.parse(schedule.nextRunAt);
+    const lastRunAtMs = schedule.lastRunAt ? Date.parse(schedule.lastRunAt) : null;
+    const lastScheduledForMs = schedule.lastScheduledFor ? Date.parse(schedule.lastScheduledFor) : null;
+    const chronologyInvalid =
+      updatedAtMs < createdAtMs ||
+      (lastRunAtMs !== null && (lastRunAtMs < createdAtMs || updatedAtMs < lastRunAtMs)) ||
+      (lastScheduledForMs !== null && lastScheduledForMs < createdAtMs) ||
+      (lastRunAtMs !== null && lastScheduledForMs !== null && lastRunAtMs < lastScheduledForMs) ||
+      (lastScheduledForMs !== null && nextRunAtMs <= lastScheduledForMs);
+    if (chronologyInvalid) throw new Error('prompt_schedule_chronology_invalid');
+  }
+  return store;
+}
+
+async function migratePromptScheduleCounters(store) {
+  const schedules = Array.isArray(store?.schedules) ? store.schedules : [];
+  const missing = schedules.filter((schedule) => (
+    schedule &&
+    typeof schedule === 'object' &&
+    !Array.isArray(schedule) &&
+    /^schedule-[a-z0-9-]{8,64}$/.test(String(schedule.id || '')) &&
+    (
+      !Number.isInteger(schedule.occurrenceCount) ||
+      !Number.isInteger(schedule.coalescedCount) ||
+      !Number.isInteger(schedule.skippedCount)
+    )
+  ));
+  if (!missing.length) return { store, changed: false };
+
+  const wanted = new Set(missing.map((schedule) => String(schedule.id || '')));
+  const counts = new Map([...wanted].map((id) => [id, { occurrences: 0, coalesced: 0, skipped: 0 }]));
+  try {
+    const audit = await readFile(auditLogPath, 'utf8');
+    for (const line of audit.split('\n')) {
+      if (!line.trim()) continue;
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+      if (!['prompt_schedule.queued', 'prompt_schedule.coalesced', 'prompt_schedule.skipped'].includes(entry?.action)) continue;
+      const id = String(entry?.detail || '').match(/(?:^|;\s*)schedule=(schedule-[a-z0-9-]{8,64})(?:;|$)/)?.[1] || '';
+      const counter = counts.get(id);
+      if (!counter) continue;
+      counter.occurrences += 1;
+      if (entry.action === 'prompt_schedule.coalesced') counter.coalesced += 1;
+      if (entry.action === 'prompt_schedule.skipped') counter.skipped += 1;
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+
+  for (const schedule of missing) {
+    const counter = counts.get(schedule.id) || { occurrences: 0, coalesced: 0, skipped: 0 };
+    schedule.occurrenceCount = Math.max(Number(schedule.runCount) || 0, counter.occurrences);
+    schedule.coalescedCount = counter.coalesced;
+    schedule.skippedCount = counter.skipped;
+  }
+  return { store, changed: true };
+}
+
+async function ensurePromptQueue() {
+  if (promptQueueStore) return promptQueueStore;
+  try {
+    const migrated = await migratePromptScheduleCounters(JSON.parse(await readFile(promptQueuePath, 'utf8')));
+    promptQueueStore = validatePromptQueueStore(migrated.store);
+    if (migrated.changed) await persistPromptQueue(promptQueueStore);
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error('prompt_queue_json_invalid');
+    if (error?.code !== 'ENOENT') throw error;
+    promptQueueStore = emptyPromptQueue();
+    await persistPromptQueue(promptQueueStore);
+  }
+  return promptQueueStore;
+}
+
+async function persistPromptQueue(nextStore) {
+  const validated = validatePromptQueueStore(nextStore);
+  await mkdir(path.dirname(promptQueuePath), { recursive: true });
+  const temporaryPath = `${promptQueuePath}.tmp`;
+  await writeFile(temporaryPath, JSON.stringify(validated, null, 2), { mode: 0o600 });
+  await rename(temporaryPath, promptQueuePath);
+  promptQueueStore = validated;
+  return promptQueueStore;
+}
+
+function enqueuePromptQueueOperation(operation) {
+  const next = promptQueueOperationQueue.catch(() => {}).then(operation);
+  promptQueueOperationQueue = next;
+  return next;
+}
+
+function promptQueueIdentity(item) {
+  return {
+    session: item.session,
+    sessionCreatedAt: item.sessionCreatedAt,
+    id: item.paneId,
+    tmuxPaneId: item.tmuxPaneId,
+    panePid: item.panePid
+  };
+}
+
+function promptQueueItemAwaitingCompletion(item) {
+  return item?.status === 'sent' && item?.summaryState === 'pending';
+}
+
+function promptQueueRecoverableCompletionReview(item) {
+  return item?.status === 'needs_review' &&
+    item?.summaryState === 'unavailable' &&
+    ['final_boundary_missing', 'completion_marker_missing'].includes(item?.deliveryStage);
+}
+
+function promptQueueItemOpen(item) {
+  return ['queued', 'dispatching', 'needs_review'].includes(item?.status) || promptQueueItemAwaitingCompletion(item);
+}
+
+function promptQueueItemFinal(item) {
+  return item?.status === 'canceled' || (item?.status === 'sent' && !promptQueueItemAwaitingCompletion(item));
+}
+
+function trimPromptQueueHistory(store) {
+  const finalItems = store.items
+    .filter(promptQueueItemFinal)
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+  const remove = new Set(finalItems.slice(PROMPT_QUEUE_HISTORY_LIMIT).map((item) => item.id));
+  if (remove.size) store.items = store.items.filter((item) => !remove.has(item.id));
 }
 
 function missionEvent(store, job, kind, from = null, to = null, detail = '') {
@@ -3246,6 +3867,7 @@ async function ensureNotificationState() {
   try {
     notificationStateStore = validateNotificationState(JSON.parse(await readFile(notificationStatePath, 'utf8')));
   } catch (error) {
+    if (error instanceof SyntaxError) throw new Error('notification_state_json_invalid');
     if (error?.code !== 'ENOENT') throw error;
     notificationStateStore = emptyNotificationState();
     await persistNotificationState(notificationStateStore);
@@ -3501,8 +4123,8 @@ function parseMissionSupervisorReport(output) {
         if (match[2]) fields[activeField].push(match[2]);
         continue;
       }
-      if (!activeField || !line || /^\s*[›>]/.test(line)) continue;
-      if (/\b(?:esc to interrupt|view transcript|background term|token count|wall time|process exited)\b/i.test(line)) continue;
+      if (!activeField || !line || /^\s*›/.test(line)) continue;
+      if (/\b(?:esc to interrupt|view transcript|background term|token count|wall time|worked for|process exited)\b/i.test(line)) continue;
       if (/\b(?:gpt|codex)-[a-z0-9._-]+\b/i.test(line) && /\b(?:minimal|low|medium|high|xhigh|max|ultra)\b/i.test(line)) continue;
       fields[activeField].push(line);
     }
@@ -3575,6 +4197,9 @@ function missionSupervisorSignal(job, agent, pane, nowMs) {
   }
   if (!missionSupervisorIdentityMatches(job, pane)) {
     return { transition: 'needs_you', reason: 'replaced', blocker: 'Mission Supervisor detected that the assigned worker identity changed.' };
+  }
+  if (pane.dead === true) {
+    return { transition: 'needs_you', reason: 'error', blocker: 'Mission Supervisor found that the assigned Codex worker exited.' };
   }
   if (pane.currentCommand !== 'node') {
     return { transition: 'needs_you', reason: 'error', blocker: 'Mission Supervisor found that the assigned Codex worker stopped.' };
@@ -4112,7 +4737,7 @@ async function reconcileMissionQueueOnStartup() {
       job.revision += 1;
       job.updatedAt = now;
       job.needsYouAt = now;
-      job.blocker = 'Dashboard restarted during dispatch. Inspect the assigned terminal before choosing Assume Running or Requeue.';
+      job.blocker = 'Dashboard restarted during dispatch. Inspect the assigned terminal before choosing Assume Running or Requeue. PaneFleet will not resend automatically.';
       updateMissionAttempt(job, { status: 'outcome_unknown' });
       missionEvent(store, job, 'mission.reconcile_required', 'dispatching', 'reconcile_required', 'restart_during_dispatch');
     }
@@ -4196,25 +4821,6 @@ async function sshRescuePlan(req = null) {
       preservedCount: inboundRules.filter((rule) => !rule.cleanupEligible).length,
       broadRuleCount: inboundRules.filter((rule) => rule.broad).length
     }
-  };
-}
-
-function rescueStateFromContext(context, ttlMs, baselinePeerCidrs) {
-  const openedAt = new Date();
-  const expiresAt = new Date(openedAt.getTime() + ttlMs);
-  return {
-    active: true,
-    openedAt: openedAt.toISOString(),
-    expiresAt: expiresAt.toISOString(),
-    region: context.region,
-    instanceId: context.instanceId,
-    publicIp: context.publicIp,
-    publicDns: context.publicDns,
-    groupId: context.groupId,
-    groupName: context.groupName,
-    ports: sshRescuePorts,
-    baselinePeerCidrs,
-    lockedCidrs: []
   };
 }
 
@@ -4450,7 +5056,10 @@ async function lockSshRescueToCidrs(cidrs, reason = 'manual', req = null) {
   const targetCidrs = [...new Set(cidrs.filter((cidr) => cidr && !isLoopbackOrPrivateCidr(cidr)))];
   if (!targetCidrs.length) return { status: 409, body: { error: 'no_lte_target_detected' } };
 
-  const context = contextFromRescueState(sshRescueState) || await ec2Context();
+  const rescueState = sshRescueState?.active ? sshRescueState : null;
+  if (!rescueState) return { status: 409, body: { error: 'rescue_not_active' } };
+
+  const context = contextFromRescueState(rescueState) || await ec2Context();
   const initialRules = await securityGroupRules(context);
   const mirrorPlan = ltePortPlan(initialRules);
   const authorizeResults = [];
@@ -4465,7 +5074,7 @@ async function lockSshRescueToCidrs(cidrs, reason = 'manual', req = null) {
     .map((port) => ({ cidr, port })));
   if (failed.length || missingCoverage.length) {
     await writeSshRescueState({
-      ...(sshRescueState || rescueStateFromContext(context, SSH_RESCUE_DEFAULT_TTL_MS, keepCidrs)),
+      ...rescueState,
       lockFailedAt: new Date().toISOString(),
       lockReason: reason,
       pendingLockedCidrs: targetCidrs
@@ -4491,11 +5100,8 @@ async function lockSshRescueToCidrs(cidrs, reason = 'manual', req = null) {
   ];
   const revoke = await revokeRuleIds(context, removableRules.map((rule) => rule.SecurityGroupRuleId).filter(Boolean));
   if (!revoke.ok) {
-    const retryState = sshRescueState?.active
-      ? sshRescueState
-      : rescueStateFromContext(context, SSH_RESCUE_DEFAULT_TTL_MS, await currentSshPeerCidrs());
     await writeSshRescueState({
-      ...retryState,
+      ...rescueState,
       active: true,
       lockFailedAt: new Date().toISOString(),
       lockReason: reason,
@@ -4646,7 +5252,7 @@ async function reviewStatus(ttyProcessMap, services) {
     'list-panes',
     '-a',
     '-F',
-    '#{session_name}|#{session_created}|#{window_index}|#{pane_index}|#{session_attached}|#{pane_active}|#{pane_pid}|#{pane_tty}|#{pane_id}|#{pane_current_command}|#{pane_current_path}|#{pane_title}'
+    TMUX_PANE_LIST_FORMAT
   ]);
   const panes = paneResult.ok ? parseTmuxPanes(paneResult.stdout, ttyProcessMap, services) : [];
   const pane = panes.find((item) => item.session === REVIEW_SESSION) || null;
@@ -4825,10 +5431,10 @@ async function startReviewAgent(req) {
   return { status: 200, body: { ok: true, session: REVIEW_SESSION, tmuxSocket: MANAGED_TMUX_SOCKET, ...meta } };
 }
 
-async function snapshot({ includeMissionDetails = true, runSupervisor = true } = {}) {
+async function snapshot({ includeMissionDetails = true, runSupervisor = true, runPromptQueue = true } = {}) {
   const services = await loadServices();
   const [tmuxResult, psResult, listenerResult, topResult, audit, securityRescue] = await Promise.all([
-    run('tmux', ['list-panes', '-a', '-F', '#{session_name}|#{session_created}|#{window_index}|#{pane_index}|#{session_attached}|#{pane_active}|#{pane_pid}|#{pane_tty}|#{pane_id}|#{pane_current_command}|#{pane_current_path}|#{pane_title}']),
+    run('tmux', ['list-panes', '-a', '-F', TMUX_PANE_LIST_FORMAT]),
     run('ps', ['-eo', 'pid,ppid,tty,stat,pcpu,pmem,rss,cmd']),
     run('ss', ['-ltnp']),
     run('ps', ['-eo', 'pid,ppid,stat,etime,pcpu,pmem,rss,cmd', '--sort=-rss']),
@@ -4846,7 +5452,9 @@ async function snapshot({ includeMissionDetails = true, runSupervisor = true } =
     reviewStatus(ttyProcessMap, services)
   ]);
   if (runSupervisor) await superviseMissionQueue(agents);
+  if (runPromptQueue) await processPromptQueue(agents);
   const missions = await missionQueueSnapshot(agents, { includeJobs: includeMissionDetails });
+  const promptQueue = await promptQueueSnapshot(agents);
   const host = {
       hostname: os.hostname(),
       platform: `${os.type()} ${os.release()}`,
@@ -4894,6 +5502,8 @@ async function snapshot({ includeMissionDetails = true, runSupervisor = true } =
       ipRuleManagement: true,
       missionSupervisor: true,
       missionQueue: true,
+      multiAgentPrompt: true,
+      promptQueue: true,
       notificationOutbox: true,
       pickerUiKeys: true,
       projectDesk: true,
@@ -4910,6 +5520,7 @@ async function snapshot({ includeMissionDetails = true, runSupervisor = true } =
     services: serviceSummaries,
     review,
     missions,
+    promptQueue,
     attention,
     notifications,
     security,
@@ -4966,20 +5577,29 @@ function activeMissionForSession(session) {
   ) || null;
 }
 
+function sessionDispatchReserved(session) {
+  return missionDispatchReservations.has(session) || promptQueueDispatchReservations.has(session);
+}
+
+function sessionDispatchError(session) {
+  return missionDispatchReservations.has(session) ? 'mission_dispatch_in_progress' : 'prompt_queue_dispatch_in_progress';
+}
+
 async function deliverTextToAgent(session, textValue, {
   expectedSessionCreatedAt = '',
   expectedPaneId = '',
   expectedTmuxPaneId = '',
   expectedPanePid = null,
   allowMissionDispatch = false,
-  confirmationMarker = ''
+  confirmationMarker = '',
+  confirmationStartMarker = ''
 } = {}) {
   if (!session || textValue.length < 1) return { ok: false, status: 400, stage: 'preflight', error: 'missing_session_or_text' };
   if (textValue.length > MAX_SEND_CHARS) return { ok: false, status: 400, stage: 'preflight', error: 'text_too_long' };
-  if (!allowMissionDispatch && missionDispatchReservations.has(session)) {
-    return { ok: false, status: 409, stage: 'preflight', error: 'mission_dispatch_in_progress' };
+  if (!allowMissionDispatch && sessionDispatchReserved(session)) {
+    return { ok: false, status: 409, stage: 'preflight', error: sessionDispatchError(session) };
   }
-  const pane = await findPromptableCodexPane(session, expectedPaneId);
+  let pane = await findPromptableCodexPane(session, expectedPaneId);
   if (!pane) return { ok: false, status: 403, stage: 'preflight', error: 'not_allowlisted_agent' };
   if (expectedSessionCreatedAt && pane.sessionCreatedAt !== expectedSessionCreatedAt) {
     return { ok: false, status: 409, stage: 'preflight', error: 'agent_session_replaced', pane };
@@ -4993,13 +5613,40 @@ async function deliverTextToAgent(session, textValue, {
   if (confirmationMarker && (!pane.tmuxPaneId || !Number.isInteger(pane.panePid))) {
     return { ok: false, status: 409, stage: 'preflight', error: 'agent_pane_identity_unavailable', pane };
   }
+  const lifecycleGuard = await protectPromptDeliveryPane(
+    pane,
+    confirmationStartMarker
+      ? 'prompt_queue_worker_identity_changed'
+      : confirmationMarker
+        ? 'mission_worker_identity_changed'
+        : 'agent_pane_identity_changed'
+  );
+  if (!lifecycleGuard.ok) {
+    return {
+      ok: false,
+      status: 409,
+      stage: 'lifecycle_guard',
+      error: lifecycleGuard.error,
+      pane,
+      textTyped: false,
+      submitted: false
+    };
+  }
+  pane = lifecycleGuard.pane;
   const target = `${pane.session}:${pane.windowIndex}.${pane.paneIndex}`;
-  if (!allowMissionDispatch && missionDispatchReservations.has(session)) {
-    return { ok: false, status: 409, stage: 'preflight', error: 'mission_dispatch_in_progress', pane };
+  if (!allowMissionDispatch && sessionDispatchReserved(session)) {
+    return { ok: false, status: 409, stage: 'preflight', error: sessionDispatchError(session), pane };
   }
   const inputTarget = confirmationMarker ? pane.tmuxPaneId : target;
   const delivery = await enqueuePaneInput(target, () => confirmationMarker
-    ? typeMissionTextAndConfirm(inputTarget, session, pane, textValue, confirmationMarker)
+    ? confirmationStartMarker
+      ? typeMarkedTextAndConfirm(inputTarget, session, pane, textValue, confirmationMarker, {
+          identityError: 'prompt_queue_worker_identity_changed',
+          renderedPredicate: (output) =>
+            terminalWitnessVisible(output, confirmationStartMarker) && terminalWitnessVisible(output, confirmationMarker),
+          renderCaptureLines: Math.max(300, textValue.split('\n').length + 80)
+        })
+      : typeMissionTextAndConfirm(inputTarget, session, pane, textValue, confirmationMarker)
     : typeTextAndSubmit(target, textValue));
   const { sent, entered, confirmed, submitKey, settleMs } = delivery;
   if (!sent.ok) {
@@ -5074,8 +5721,9 @@ async function sendToAgent(body, req) {
     return { status: 400, body: { error: 'invalid_agent_identity' } };
   }
   const activeMission = activeMissionForSession(session);
-  if (activeMission?.status === 'dispatching' || missionDispatchReservations.has(session)) {
-    return { status: 409, body: { error: 'mission_dispatch_in_progress', missionId: activeMission?.id || '' } };
+  if (activeMission?.status === 'dispatching' || sessionDispatchReserved(session)) {
+    const error = activeMission?.status === 'dispatching' ? 'mission_dispatch_in_progress' : sessionDispatchError(session);
+    return { status: 409, body: { error, missionId: activeMission?.id || '' } };
   }
   if (activeMission?.status === 'reconcile_required') {
     return { status: 409, body: { error: 'mission_dispatch_needs_reconciliation', missionId: activeMission.id } };
@@ -5107,6 +5755,1430 @@ async function sendToAgent(body, req) {
   }
   await appendAudit(req, { action: 'agent.send', target: session, ok: true, detail: `typed_input chars=${textValue.length}, submit=${delivery.submitKey}, delay=${delivery.settleMs}ms${activeMission ? `, mission=${activeMission.id}` : ''}` });
   return { status: 200, body: { ok: true, session, submitted: true, mode: 'terminal-input', missionId: activeMission?.id || null } };
+}
+
+function requestedMultiAgentPromptTargets(body) {
+  if (!Array.isArray(body?.targets) || body.targets.length < 2) {
+    return { error: 'multi_agent_prompt_targets_required' };
+  }
+  if (body.targets.length > MAX_MULTI_AGENT_PROMPT_TARGETS) {
+    return { error: 'multi_agent_prompt_target_limit', maxTargets: MAX_MULTI_AGENT_PROMPT_TARGETS };
+  }
+  const sessions = new Set();
+  const targets = [];
+  for (let index = 0; index < body.targets.length; index += 1) {
+    const source = body.targets[index] || {};
+    const session = String(source.session || '').trim();
+    const identity = requestedExactAgentIdentity(source, session, { required: true });
+    if (!identity) return { error: 'multi_agent_prompt_exact_target_required', targetIndex: index };
+    if (sessions.has(session)) return { error: 'multi_agent_prompt_duplicate_target', targetIndex: index };
+    sessions.add(session);
+    targets.push({
+      session,
+      sessionCreatedAt: identity.sessionCreatedAt,
+      paneId: identity.id,
+      tmuxPaneId: identity.tmuxPaneId,
+      panePid: identity.panePid,
+      missionId: String(source.missionId || '').trim()
+    });
+  }
+  return { targets };
+}
+
+async function resolveLiveMultiAgentPromptTargets(targets) {
+  const live = await snapshot({ includeMissionDetails: false, runSupervisor: false, runPromptQueue: false });
+  for (const target of targets) {
+    const identity = requestedExactAgentIdentity(target, target.session, { required: true });
+    const agent = live.agents.find((candidate) => identity && paneIdentityFieldsMatch(candidate, identity)) || null;
+    if (!agent || !agent.canSend || !agentHasCodexProcess(agent)) {
+      return { error: 'multi_agent_prompt_target_missing_or_replaced', session: target.session };
+    }
+  }
+  return { live };
+}
+
+async function sendToAgents(body, req) {
+  if (body?.confirm !== 'send-multiple') return { status: 400, body: { error: 'confirmation_required' } };
+  const parsed = requestedMultiAgentPromptTargets(body);
+  if (parsed.error) return { status: 400, body: parsed };
+  const textValue = String(body.text || '');
+  if (!textValue) return { status: 400, body: { error: 'missing_session_or_text' } };
+  if (textValue.length > MAX_SEND_CHARS) return { status: 400, body: { error: 'text_too_long' } };
+  const resolved = await resolveLiveMultiAgentPromptTargets(parsed.targets);
+  if (resolved.error) return { status: 409, body: resolved };
+
+  const results = await Promise.all(parsed.targets.map(async (target) => {
+    const result = await sendToAgent({ ...target, text: textValue }, req);
+    return {
+      session: target.session,
+      ok: result.body?.ok === true,
+      status: result.status,
+      ...(result.body?.error ? { error: result.body.error } : {}),
+      ...(result.body?.stage ? { stage: result.body.stage } : {})
+    };
+  }));
+  const successCount = results.filter((result) => result.ok).length;
+  const failedCount = results.length - successCount;
+  await appendAudit(req, {
+    action: 'agent.send_multiple',
+    target: `${results.length} agents`,
+    ok: failedCount === 0,
+    detail: `targets=${results.length}; succeeded=${successCount}; failed=${failedCount}; promptChars=${textValue.length}; no_retry=true`
+  });
+  return {
+    status: failedCount ? 207 : 200,
+    body: { ok: failedCount === 0, mode: 'send', successCount, failedCount, results }
+  };
+}
+
+function promptQueueEnvelope(item, attemptId) {
+  const startMarker = `[PaneFleet Queued Prompt ${item.id}]`;
+  const confirmationMarker = `[PaneFleet Queue Dispatch ${attemptId}]`;
+  const text = `${startMarker} ${item.text} ${confirmationMarker}`;
+  return text.length <= MAX_SEND_CHARS ? { text, startMarker, confirmationMarker } : null;
+}
+
+function promptQueueGreen(agent) {
+  return agent?.queueReady === true;
+}
+
+function publicPromptQueueItem(item, agents = [], linePosition = 1) {
+  const agent = agents.find((candidate) => paneIdentityFieldsMatch(candidate, promptQueueIdentity(item))) || null;
+  const identityMatches = Boolean(agent);
+  return {
+    ...item,
+    linePosition,
+    target: {
+      present: Boolean(agent),
+      identityMatches,
+      state: agent?.agentStatus?.state || 'missing',
+      tone: agent?.agentStatus?.tone || 'bad',
+      reason: agent?.agentStatus?.reason || (identityMatches ? '' : 'exact terminal is unavailable'),
+      green: identityMatches && promptQueueGreen(agent),
+      displayName: agent?.displayName || item.session
+    }
+  };
+}
+
+function promptScheduleIdentity(schedule) {
+  return {
+    session: schedule.session,
+    sessionCreatedAt: schedule.sessionCreatedAt,
+    id: schedule.paneId,
+    tmuxPaneId: schedule.tmuxPaneId,
+    panePid: schedule.panePid
+  };
+}
+
+function publicPromptSchedule(schedule, agents = []) {
+  const agent = agents.find((candidate) => paneIdentityFieldsMatch(candidate, promptScheduleIdentity(schedule))) || null;
+  return {
+    ...schedule,
+    target: {
+      present: Boolean(agent),
+      identityMatches: Boolean(agent),
+      displayName: agent?.displayName || schedule.session,
+      state: agent?.agentStatus?.state || 'missing',
+      tone: agent?.agentStatus?.tone || 'bad'
+    }
+  };
+}
+
+async function promptQueueSnapshot(agents = []) {
+  const store = await ensurePromptQueue();
+  const positions = new Map();
+  const items = [...store.items]
+    .sort((left, right) => {
+      const leftFinal = promptQueueItemFinal(left);
+      const rightFinal = promptQueueItemFinal(right);
+      if (leftFinal !== rightFinal) return Number(leftFinal) - Number(rightFinal);
+      return leftFinal
+        ? Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+        : left.position - right.position;
+    })
+    .map((item) => {
+      const position = (positions.get(item.session) || 0) + 1;
+      positions.set(item.session, position);
+      return publicPromptQueueItem(item, agents, position);
+    });
+  return {
+    revision: store.revision,
+    counts: {
+      queued: items.filter((item) => item.status === 'queued').length,
+      dispatching: items.filter((item) => item.status === 'dispatching').length,
+      needsReview: items.filter((item) => item.status === 'needs_review').length,
+      finishing: items.filter(promptQueueItemAwaitingCompletion).length,
+      sent: items.filter((item) => item.status === 'sent').length,
+      pending: items.filter(promptQueueItemOpen).length,
+      scheduled: store.schedules.filter((schedule) => schedule.enabled).length
+    },
+    items,
+    schedules: [...store.schedules]
+      .sort((left, right) => Date.parse(left.nextRunAt) - Date.parse(right.nextRunAt) || left.createdAt.localeCompare(right.createdAt))
+      .map((schedule) => publicPromptSchedule(schedule, agents))
+  };
+}
+
+function newPromptQueueItem(identity, text, position, now = new Date().toISOString()) {
+  return {
+    id: `prompt-${Date.now().toString(36)}-${randomBytes(5).toString('hex')}`,
+    revision: 1,
+    position,
+    status: 'queued',
+    session: identity.session,
+    sessionCreatedAt: identity.sessionCreatedAt,
+    paneId: identity.id,
+    tmuxPaneId: identity.tmuxPaneId,
+    panePid: identity.panePid,
+    text,
+    attemptId: null,
+    blocker: '',
+    deliveryStage: '',
+    createdAt: now,
+    updatedAt: now,
+    claimedAt: null,
+    sentAt: null,
+    completionSummary: '',
+    completionSnapshot: '',
+    summaryState: 'pending',
+    completedAt: null
+  };
+}
+
+async function createPromptQueueItem(body, req) {
+  const session = String(body.session || '').trim();
+  const identity = requestedExactAgentIdentity(body, session, { required: true });
+  if (!identity) return { status: 400, body: { error: 'prompt_queue_exact_target_required' } };
+  const text = missionText(body.text, MAX_SEND_CHARS, 'prompt_queue_text_required');
+  const live = await snapshot({ includeMissionDetails: false, runSupervisor: false, runPromptQueue: false });
+  const agent = live.agents.find((candidate) => paneIdentityFieldsMatch(candidate, identity)) || null;
+  if (!agent || !agent.canSend || !agentHasCodexProcess(agent)) {
+    return { status: 409, body: { error: 'prompt_queue_target_missing_or_replaced' } };
+  }
+
+  return enqueuePromptQueueOperation(async () => {
+    const current = await ensurePromptQueue();
+    const now = new Date().toISOString();
+    const item = newPromptQueueItem(
+      identity,
+      text,
+      Math.max(0, ...current.items.map((candidate) => candidate.position || 0)) + 1,
+      now
+    );
+    const placeholderAttempt = 'queue-attempt-0000000000-00000000';
+    if (!promptQueueEnvelope(item, placeholderAttempt)) {
+      return { status: 400, body: { error: 'prompt_queue_text_too_long', maxChars: MAX_SEND_CHARS } };
+    }
+    const store = clonePromptQueue(current);
+    store.items.push(item);
+    store.revision += 1;
+    trimPromptQueueHistory(store);
+    await persistPromptQueue(store);
+    await appendAudit(req, {
+      action: 'prompt_queue.create',
+      target: session,
+      ok: true,
+      detail: `item=${item.id}; pane=${item.tmuxPaneId}; promptChars=${text.length}; auto_send=stable_green_only`
+    });
+    return { status: 200, body: { ok: true, item: publicPromptQueueItem(item, live.agents) } };
+  });
+}
+
+async function createPromptQueueBatch(body, req) {
+  if (body?.confirm !== 'queue-multiple') return { status: 400, body: { error: 'confirmation_required' } };
+  const parsed = requestedMultiAgentPromptTargets(body);
+  if (parsed.error) return { status: 400, body: parsed };
+  const text = missionText(body.text, MAX_SEND_CHARS, 'prompt_queue_text_required');
+  const resolved = await resolveLiveMultiAgentPromptTargets(parsed.targets);
+  if (resolved.error) return { status: 409, body: resolved };
+
+  return enqueuePromptQueueOperation(async () => {
+    const current = await ensurePromptQueue();
+    if (current.items.length + parsed.targets.length > MAX_PROMPT_QUEUE_ITEMS) {
+      return { status: 409, body: { error: 'prompt_queue_limit_reached' } };
+    }
+    const now = new Date().toISOString();
+    const firstPosition = Math.max(0, ...current.items.map((candidate) => candidate.position || 0)) + 1;
+    const items = parsed.targets.map((target, index) => {
+      const identity = requestedExactAgentIdentity(target, target.session, { required: true });
+      return newPromptQueueItem(identity, text, firstPosition + index, now);
+    });
+    const placeholderAttempt = 'queue-attempt-0000000000-00000000';
+    if (items.some((item) => !promptQueueEnvelope(item, placeholderAttempt))) {
+      return { status: 400, body: { error: 'prompt_queue_text_too_long', maxChars: MAX_SEND_CHARS } };
+    }
+    const store = clonePromptQueue(current);
+    store.items.push(...items);
+    store.revision += 1;
+    trimPromptQueueHistory(store);
+    await persistPromptQueue(store);
+    for (const item of items) {
+      await appendAudit(req, {
+        action: 'prompt_queue.create',
+        target: item.session,
+        ok: true,
+        detail: `item=${item.id}; pane=${item.tmuxPaneId}; promptChars=${text.length}; batch=true; auto_send=stable_green_only`
+      });
+    }
+    await appendAudit(req, {
+      action: 'prompt_queue.create_multiple',
+      target: `${items.length} agents`,
+      ok: true,
+      detail: `targets=${items.length}; promptChars=${text.length}; atomic=true; auto_send=stable_green_only`
+    });
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        mode: 'queue',
+        count: items.length,
+        items: items.map((item) => publicPromptQueueItem(item, resolved.live.agents))
+      }
+    };
+  });
+}
+
+async function createPromptSchedule(body, req) {
+  const session = String(body.session || '').trim();
+  const identity = requestedExactAgentIdentity(body, session, { required: true });
+  if (!identity) return { status: 400, body: { error: 'prompt_schedule_exact_target_required' } };
+  const text = missionText(body.text, MAX_SEND_CHARS, 'prompt_schedule_text_required');
+  let cron;
+  let nextRunAt;
+  try {
+    cron = parsePromptCron(body.cron).cron;
+    nextRunAt = nextPromptCronAt(cron);
+  } catch (error) {
+    return { status: 400, body: { error: error?.message || 'prompt_schedule_cron_invalid' } };
+  }
+  const live = await snapshot({ includeMissionDetails: false, runSupervisor: false, runPromptQueue: false });
+  const agent = live.agents.find((candidate) => paneIdentityFieldsMatch(candidate, identity)) || null;
+  if (!agent || !agent.canSend || !agentHasCodexProcess(agent)) {
+    return { status: 409, body: { error: 'prompt_schedule_target_missing_or_replaced' } };
+  }
+  if (!promptQueueEnvelope(
+    { id: 'prompt-0000000000000-0000000000', text },
+    'queue-attempt-0000000000000-00000000'
+  )) {
+    return { status: 400, body: { error: 'prompt_schedule_text_too_long', maxChars: MAX_SEND_CHARS } };
+  }
+
+  return enqueuePromptQueueOperation(async () => {
+    const current = await ensurePromptQueue();
+    if (current.schedules.length >= MAX_PROMPT_SCHEDULES) return { status: 409, body: { error: 'prompt_schedule_limit_reached' } };
+    const now = new Date().toISOString();
+    const schedule = {
+      id: `schedule-${Date.now().toString(36)}-${randomBytes(5).toString('hex')}`,
+      revision: 1,
+      enabled: true,
+      session,
+      sessionCreatedAt: identity.sessionCreatedAt,
+      paneId: identity.id,
+      tmuxPaneId: identity.tmuxPaneId,
+      panePid: identity.panePid,
+      text,
+      cron,
+      nextRunAt,
+      lastRunAt: null,
+      lastScheduledFor: null,
+      lastOutcome: '',
+      runCount: 0,
+      occurrenceCount: 0,
+      coalescedCount: 0,
+      skippedCount: 0,
+      createdAt: now,
+      updatedAt: now
+    };
+    const store = clonePromptQueue(current);
+    store.schedules.push(schedule);
+    store.revision += 1;
+    await persistPromptQueue(store);
+    await appendAudit(req, {
+      action: 'prompt_schedule.create',
+      target: session,
+      ok: true,
+      detail: `schedule=${schedule.id}; pane=${schedule.tmuxPaneId}; cron=${schedule.cron}; promptChars=${text.length}; queue_only=true`
+    });
+    return { status: 200, body: { ok: true, schedule: publicPromptSchedule(schedule, live.agents) } };
+  });
+}
+
+async function updatePromptSchedule(id, body, req) {
+  return enqueuePromptQueueOperation(async () => {
+    const current = await ensurePromptQueue();
+    const currentSchedule = current.schedules.find((schedule) => schedule.id === id);
+    if (!currentSchedule) return { status: 404, body: { error: 'prompt_schedule_not_found' } };
+    if (Number(body.expectedRevision) !== currentSchedule.revision) return { status: 409, body: { error: 'prompt_schedule_revision_conflict' } };
+    const enabled = body.enabled === true;
+    if (body.enabled !== true && body.enabled !== false) return { status: 400, body: { error: 'prompt_schedule_enabled_required' } };
+    const store = clonePromptQueue(current);
+    const schedule = store.schedules.find((candidate) => candidate.id === id);
+    const now = new Date().toISOString();
+    schedule.enabled = enabled;
+    schedule.nextRunAt = enabled ? nextPromptCronAt(schedule.cron) : schedule.nextRunAt;
+    schedule.updatedAt = now;
+    schedule.revision += 1;
+    store.revision += 1;
+    await persistPromptQueue(store);
+    await appendAudit(req, { action: enabled ? 'prompt_schedule.resume' : 'prompt_schedule.pause', target: schedule.session, ok: true, detail: `schedule=${schedule.id}; no_input=true` });
+    return { status: 200, body: { ok: true, schedule } };
+  });
+}
+
+async function deletePromptSchedule(id, body, req) {
+  return enqueuePromptQueueOperation(async () => {
+    const current = await ensurePromptQueue();
+    const schedule = current.schedules.find((candidate) => candidate.id === id);
+    if (!schedule) return { status: 404, body: { error: 'prompt_schedule_not_found' } };
+    if (Number(body.expectedRevision) !== schedule.revision) return { status: 409, body: { error: 'prompt_schedule_revision_conflict' } };
+    if (body.confirm !== 'delete-schedule') return { status: 400, body: { error: 'prompt_schedule_delete_confirmation_required' } };
+    const store = clonePromptQueue(current);
+    store.schedules = store.schedules.filter((candidate) => candidate.id !== id);
+    store.revision += 1;
+    await persistPromptQueue(store);
+    await appendAudit(req, { action: 'prompt_schedule.delete', target: schedule.session, ok: true, detail: `schedule=${schedule.id}; pending_items_unchanged=true; no_input=true` });
+    return { status: 200, body: { ok: true, id } };
+  });
+}
+
+async function cancelPromptQueueItem(id, body, req) {
+  return enqueuePromptQueueOperation(async () => {
+    const current = await ensurePromptQueue();
+    const currentItem = current.items.find((item) => item.id === id);
+    if (!currentItem) return { status: 404, body: { error: 'prompt_queue_item_not_found' } };
+    if (Number(body.expectedRevision) !== currentItem.revision) {
+      return { status: 409, body: { error: 'prompt_queue_revision_conflict', item: currentItem } };
+    }
+    if (!['queued', 'needs_review'].includes(currentItem.status)) {
+      return { status: 409, body: { error: 'prompt_queue_item_not_cancelable', status: currentItem.status } };
+    }
+    const store = clonePromptQueue(current);
+    const item = store.items.find((candidate) => candidate.id === id);
+    const now = new Date().toISOString();
+    item.status = 'canceled';
+    item.revision += 1;
+    item.updatedAt = now;
+    item.blocker = ['cancel-reviewed', 'dismiss-reviewed'].includes(body.confirm)
+      ? 'Canceled after terminal review.'
+      : 'Canceled before dispatch.';
+    item.summaryState = 'unavailable';
+    promptQueueReadyObservations.delete(item.id);
+    promptQueueCompletionObservations.delete(item.id);
+    promptQueueReturnObservations.delete(item.id);
+    promptQueueMissingFinalObservations.delete(item.id);
+    store.revision += 1;
+    trimPromptQueueHistory(store);
+    await persistPromptQueue(store);
+    await appendAudit(req, {
+      action: 'prompt_queue.cancel',
+      target: item.session,
+      ok: true,
+      detail: `item=${item.id}; previous=${currentItem.status}; no_input=true`
+    });
+    return { status: 200, body: { ok: true, item } };
+  });
+}
+
+async function retargetPromptQueueItem(id, body, req) {
+  return enqueuePromptQueueOperation(async () => {
+    const current = await ensurePromptQueue();
+    const currentItem = current.items.find((item) => item.id === id);
+    if (!currentItem) return { status: 404, body: { error: 'prompt_queue_item_not_found' } };
+    if (Number(body.expectedRevision) !== currentItem.revision) {
+      return { status: 409, body: { error: 'prompt_queue_revision_conflict', item: currentItem } };
+    }
+    if (body.confirm !== 'retarget-queued-prompt') {
+      return { status: 400, body: { error: 'prompt_queue_retarget_confirmation_required' } };
+    }
+    if (currentItem.status !== 'queued') {
+      return { status: 409, body: { error: 'prompt_queue_item_not_retargetable', status: currentItem.status } };
+    }
+    const session = String(body.session || '').trim();
+    if (session !== currentItem.session) {
+      return { status: 409, body: { error: 'prompt_queue_retarget_session_mismatch' } };
+    }
+    const identity = requestedExactAgentIdentity(body, session, { required: true });
+    if (!identity) return { status: 400, body: { error: 'prompt_queue_exact_target_required' } };
+    const live = await snapshot({ includeMissionDetails: false, runSupervisor: false, runPromptQueue: false });
+    const agent = live.agents.find((candidate) => paneIdentityFieldsMatch(candidate, identity)) || null;
+    if (!agent || !agent.canSend || !agentHasCodexProcess(agent)) {
+      return { status: 409, body: { error: 'prompt_queue_target_missing_or_replaced' } };
+    }
+
+    const store = clonePromptQueue(current);
+    const item = store.items.find((candidate) => candidate.id === id);
+    const previousPane = item.tmuxPaneId;
+    const now = new Date().toISOString();
+    item.sessionCreatedAt = identity.sessionCreatedAt;
+    item.paneId = identity.id;
+    item.tmuxPaneId = identity.tmuxPaneId;
+    item.panePid = identity.panePid;
+    item.blocker = '';
+    item.deliveryStage = '';
+    item.updatedAt = now;
+    item.revision += 1;
+    promptQueueReadyObservations.delete(item.id);
+    promptQueueCompletionObservations.delete(item.id);
+    promptQueueReturnObservations.delete(item.id);
+    promptQueueMissingFinalObservations.delete(item.id);
+    store.revision += 1;
+    await persistPromptQueue(store);
+    await appendAudit(req, {
+      action: 'prompt_queue.retarget',
+      target: item.session,
+      ok: true,
+      detail: 'item=' + item.id + '; previousPane=' + previousPane + '; pane=' + item.tmuxPaneId + '; never_sent=true; no_input=true'
+    });
+    return { status: 200, body: { ok: true, item: publicPromptQueueItem(item, live.agents) } };
+  });
+}
+
+async function retargetPromptSchedule(id, body, req) {
+  return enqueuePromptQueueOperation(async () => {
+    const current = await ensurePromptQueue();
+    const currentSchedule = current.schedules.find((schedule) => schedule.id === id);
+    if (!currentSchedule) return { status: 404, body: { error: 'prompt_schedule_not_found' } };
+    if (Number(body.expectedRevision) !== currentSchedule.revision) {
+      return { status: 409, body: { error: 'prompt_schedule_revision_conflict' } };
+    }
+    if (body.confirm !== 'retarget-schedule') {
+      return { status: 400, body: { error: 'prompt_schedule_retarget_confirmation_required' } };
+    }
+    const session = String(body.session || '').trim();
+    if (session !== currentSchedule.session) {
+      return { status: 409, body: { error: 'prompt_schedule_retarget_session_mismatch' } };
+    }
+    const identity = requestedExactAgentIdentity(body, session, { required: true });
+    if (!identity) return { status: 400, body: { error: 'prompt_schedule_exact_target_required' } };
+    const live = await snapshot({ includeMissionDetails: false, runSupervisor: false, runPromptQueue: false });
+    const agent = live.agents.find((candidate) => paneIdentityFieldsMatch(candidate, identity)) || null;
+    if (!agent || !agent.canSend || !agentHasCodexProcess(agent)) {
+      return { status: 409, body: { error: 'prompt_schedule_target_missing_or_replaced' } };
+    }
+
+    const store = clonePromptQueue(current);
+    const schedule = store.schedules.find((candidate) => candidate.id === id);
+    const previousPane = schedule.tmuxPaneId;
+    const now = new Date().toISOString();
+    schedule.sessionCreatedAt = identity.sessionCreatedAt;
+    schedule.paneId = identity.id;
+    schedule.tmuxPaneId = identity.tmuxPaneId;
+    schedule.panePid = identity.panePid;
+    schedule.nextRunAt = schedule.enabled ? nextPromptCronAt(schedule.cron) : schedule.nextRunAt;
+    schedule.lastOutcome = 'retargeted';
+    schedule.updatedAt = now;
+    schedule.revision += 1;
+    store.revision += 1;
+    await persistPromptQueue(store);
+    await appendAudit(req, {
+      action: 'prompt_schedule.retarget',
+      target: schedule.session,
+      ok: true,
+      detail: 'schedule=' + schedule.id + '; previousPane=' + previousPane + '; pane=' + schedule.tmuxPaneId + '; counters_preserved=true; no_input=true'
+    });
+    return { status: 200, body: { ok: true, schedule: publicPromptSchedule(schedule, live.agents) } };
+  });
+}
+
+async function releasePromptQueueAfterReview(id, body, req) {
+  return enqueuePromptQueueOperation(async () => {
+    const current = await ensurePromptQueue();
+    const currentItem = current.items.find((item) => item.id === id);
+    if (!currentItem) return { status: 404, body: { error: 'prompt_queue_item_not_found' } };
+    if (Number(body.expectedRevision) !== currentItem.revision) {
+      return { status: 409, body: { error: 'prompt_queue_revision_conflict', item: currentItem } };
+    }
+    if (!['release-after-review', 'confirm-complete'].includes(body.confirm)) {
+      return { status: 400, body: { error: 'prompt_queue_release_confirmation_required' } };
+    }
+    if (
+      currentItem.status !== 'needs_review' ||
+      !['final_boundary_missing', 'completion_marker_missing', 'completion_superseded', 'completion_timeout'].includes(currentItem.deliveryStage)
+    ) {
+      return { status: 409, body: { error: 'prompt_queue_item_not_confirmable', status: currentItem.status } };
+    }
+    const pane = await findExactTmuxPane(currentItem.session, currentItem.paneId);
+    if (!exactPaneIdentityMatches(pane, promptQueueIdentity(currentItem))) {
+      return { status: 409, body: { error: 'prompt_queue_target_missing_or_replaced' } };
+    }
+
+    const store = clonePromptQueue(current);
+    const item = store.items.find((candidate) => candidate.id === id);
+    const now = new Date().toISOString();
+    item.status = 'sent';
+    item.summaryState = 'operator_released';
+    item.completionSummary = 'The operator inspected the exact terminal and released the queue. PaneFleet does not claim the underlying task completed.';
+    item.completionSnapshot = '';
+    item.completedAt = now;
+    item.updatedAt = now;
+    item.deliveryStage = 'operator_released';
+    item.blocker = '';
+    item.revision += 1;
+    promptQueueReadyObservations.delete(item.id);
+    promptQueueCompletionObservations.delete(item.id);
+    promptQueueReturnObservations.delete(item.id);
+    promptQueueMissingFinalObservations.delete(item.id);
+    store.revision += 1;
+    trimPromptQueueHistory(store);
+    await persistPromptQueue(store);
+    await appendAudit(req, {
+      action: 'prompt_queue.review_released',
+      target: item.session,
+      ok: true,
+      detail: `item=${item.id}; exact_pane=true; operator_released=true; semantic_completion=false; no_input=true`
+    });
+    return { status: 200, body: { ok: true, item } };
+  });
+}
+
+async function clearCompletedPromptQueueItems(body, req) {
+  return enqueuePromptQueueOperation(async () => {
+    const current = await ensurePromptQueue();
+    if (Number(body.expectedRevision) !== current.revision) {
+      return { status: 409, body: { error: 'prompt_queue_revision_conflict', revision: current.revision } };
+    }
+    if (body.confirm !== 'clear-completed') {
+      return { status: 400, body: { error: 'prompt_queue_clear_confirmation_required' } };
+    }
+    const completedIds = new Set(current.items
+      .filter((item) => item.status === 'sent' && ['captured', 'returned', 'operator_confirmed', 'operator_released'].includes(item.summaryState))
+      .map((item) => item.id));
+    if (!completedIds.size) return { status: 200, body: { ok: true, removed: 0 } };
+
+    const store = clonePromptQueue(current);
+    store.items = store.items.filter((item) => !completedIds.has(item.id));
+    store.revision += 1;
+    for (const id of completedIds) {
+      promptQueueReadyObservations.delete(id);
+      promptQueueCompletionObservations.delete(id);
+      promptQueueReturnObservations.delete(id);
+      promptQueueMissingFinalObservations.delete(id);
+    }
+    await persistPromptQueue(store);
+    await appendAudit(req, {
+      action: 'prompt_queue.completed_cleared',
+      target: 'prompt-queue',
+      ok: true,
+      detail: `removed=${completedIds.size}; active_unchanged=true; no_input=true`
+    });
+    return { status: 200, body: { ok: true, removed: completedIds.size } };
+  });
+}
+
+async function clearPromptQueueHistory(body, req) {
+  return enqueuePromptQueueOperation(async () => {
+    const current = await ensurePromptQueue();
+    if (Number(body.expectedRevision) !== current.revision) {
+      return { status: 409, body: { error: 'prompt_queue_revision_conflict', revision: current.revision } };
+    }
+    if (body.confirm !== 'clear-history') {
+      return { status: 400, body: { error: 'prompt_queue_history_clear_confirmation_required' } };
+    }
+    const historyIds = new Set(current.items.filter(promptQueueItemFinal).map((item) => item.id));
+    if (!historyIds.size) return { status: 200, body: { ok: true, removed: 0 } };
+
+    const store = clonePromptQueue(current);
+    store.items = store.items.filter((item) => !historyIds.has(item.id));
+    store.revision += 1;
+    for (const id of historyIds) {
+      promptQueueReadyObservations.delete(id);
+      promptQueueCompletionObservations.delete(id);
+      promptQueueReturnObservations.delete(id);
+      promptQueueMissingFinalObservations.delete(id);
+    }
+    await persistPromptQueue(store);
+    await appendAudit(req, {
+      action: 'prompt_queue.history_cleared',
+      target: 'prompt-queue',
+      ok: true,
+      detail: `removed=${historyIds.size}; active_unchanged=true; schedules_unchanged=true; no_input=true`
+    });
+    return { status: 200, body: { ok: true, removed: historyIds.size } };
+  });
+}
+
+function stablePromptQueueReady(item, agent, nowMs) {
+  if (!promptQueueGreen(agent) || !paneIdentityFieldsMatch(agent, promptQueueIdentity(item))) {
+    promptQueueReadyObservations.delete(item.id);
+    return false;
+  }
+  const fingerprint = `${item.sessionCreatedAt}|${item.paneId}|${item.tmuxPaneId}|${item.panePid}`;
+  const previous = promptQueueReadyObservations.get(item.id);
+  if (!previous || previous.fingerprint !== fingerprint) {
+    promptQueueReadyObservations.set(item.id, { fingerprint, firstObservedAt: nowMs, sampleCount: 1 });
+    return false;
+  }
+  previous.sampleCount += 1;
+  return previous.sampleCount >= 2 && nowMs - previous.firstObservedAt >= PROMPT_QUEUE_READY_MIN_MS;
+}
+
+function promptQueueDispatchBlocker(delivery) {
+  if (delivery.stage === 'lifecycle_guard') {
+    return 'PaneFleet could not protect and revalidate the exact terminal, so it sent no input. Inspect the terminal; PaneFleet will not retry.';
+  }
+  if (delivery.stage === 'literal_confirmation') {
+    return 'The prompt may be visible, but Enter was not sent because full rendering could not be confirmed. Inspect the terminal; PaneFleet will not retry.';
+  }
+  if (delivery.stage === 'submit') {
+    return 'The prompt was typed but Enter failed. Inspect the terminal; PaneFleet will not retry.';
+  }
+  if (delivery.stage === 'confirmation') {
+    if (/identity_changed/.test(String(delivery.error || ''))) {
+      return 'Enter was sent, then the exact Codex worker stopped or changed before acceptance could be confirmed. Inspect the terminal; PaneFleet will not retry.';
+    }
+    return 'Enter was sent, but acceptance could not be confirmed. Inspect the terminal; PaneFleet will not retry.';
+  }
+  return 'Automatic delivery stopped before a confirmed result. Inspect the exact terminal; PaneFleet will not retry.';
+}
+
+function boundedPromptQueueCompletion(value) {
+  const cleaned = redactSensitive(String(value || ''))
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (cleaned.length <= MAX_PROMPT_QUEUE_COMPLETION_CHARS) return cleaned;
+  return `${cleaned.slice(0, MAX_PROMPT_QUEUE_COMPLETION_CHARS - 1).trimEnd()}…`;
+}
+
+function promptQueueCompletionMarkerVisible(item, agent) {
+  const output = String(agent?.completionOutput || agent?.summaryOutput || agent?.lastOutput || '');
+  const marker = item?.attemptId ? `[PaneFleet Queue Dispatch ${item.attemptId}]` : '';
+  return Boolean(marker && terminalWitnessMatch(output, marker));
+}
+
+function codexWorkedFooter(line) {
+  return /^\s*[─━═-]*\s*Worked for\s+\d/i.test(String(line || ''));
+}
+
+function codexStatusBar(line) {
+  const value = String(line || '');
+  return (
+    /\b(?:gpt|codex)-[a-z0-9._-]+\b/i.test(value) &&
+    /\b(?:minimal|low|medium|high|xhigh|max|ultra)\b/i.test(value) &&
+    /[•·]/.test(value)
+  );
+}
+
+function codexAnswerSeparator(line) {
+  return /^\s*[─━═-]{12,}\s*$/.test(String(line || ''));
+}
+
+function promptQueueCompletionEvidence(item, agent) {
+  const output = String(agent?.completionOutput || agent?.summaryOutput || agent?.lastOutput || '');
+  const marker = item.attemptId ? `[PaneFleet Queue Dispatch ${item.attemptId}]` : '';
+  const markerMatch = marker ? terminalWitnessMatch(output, marker) : null;
+  if (!markerMatch) return null;
+
+  const trailing = output.slice(markerMatch.end);
+  const lines = trailing.split('\n');
+  const workedIndex = lines.findIndex(codexWorkedFooter);
+  if (workedIndex < 0) return null;
+  const followingPromptIndex = lines.findIndex((line, index) => (
+    index > workedIndex && /^\s*›\s/.test(line)
+  ));
+  if (followingPromptIndex < 0) return null;
+
+  const finalOutput = lines.slice(0, workedIndex + 1).join('\n');
+  return {
+    finalOutput,
+    fingerprint: createHash('sha256').update(finalOutput).digest('hex').slice(0, 20)
+  };
+}
+
+function promptQueueReturnEvidence(item, agent) {
+  const output = String(agent?.completionOutput || agent?.summaryOutput || agent?.lastOutput || '');
+  const marker = item.attemptId ? `[PaneFleet Queue Dispatch ${item.attemptId}]` : '';
+  const markerMatch = marker ? terminalWitnessMatch(output, marker) : null;
+  if (!markerMatch) return null;
+
+  const trailing = output.slice(markerMatch.end);
+  const lines = trailing.split('\n');
+  const statusIndex = lines.findLastIndex(codexStatusBar);
+  const promptIndexes = lines.flatMap((line, index) => (
+    index < statusIndex && /^\s*›\s/.test(line) ? [index] : []
+  ));
+  if (promptIndexes.length !== 1) return null;
+  const [promptIndex] = promptIndexes;
+  if (statusIndex <= promptIndex) return null;
+  if (lines.slice(promptIndex + 1, statusIndex).some((line) => (
+    /\b(?:Working|Pursuing goal)\s*\(/i.test(line) ||
+    /\bWaiting for background terminal\b/i.test(line) ||
+    /\besc to interrupt\b/i.test(line)
+  ))) return null;
+
+  const responseLines = lines.slice(0, promptIndex);
+  let responseEnd = responseLines.findLastIndex((line) => line.trim());
+  if (responseEnd < 0) return null;
+  const separators = responseLines.flatMap((line, index) => codexAnswerSeparator(line) ? [index] : []);
+  const closingSeparator = separators.at(-1) === responseEnd;
+  const answerStart = closingSeparator ? separators.at(-2) : separators.at(-1);
+  const boundedLines = Number.isInteger(answerStart)
+    ? responseLines.slice(answerStart, responseEnd + 1)
+    : responseLines.slice(0, responseEnd + 1);
+  const finalOutput = boundedLines.join('\n');
+  if (!usefulOutputLines(finalOutput).length) return null;
+  const responseOutput = responseLines.slice(0, responseEnd + 1).join('\n');
+  return {
+    finalOutput,
+    fingerprint: createHash('sha256').update(responseOutput).digest('hex').slice(0, 20)
+  };
+}
+
+function promptQueueFinalBlockOutput(item, agent) {
+  return promptQueueCompletionEvidence(item, agent)?.finalOutput
+    || promptQueueReturnEvidence(item, agent)?.finalOutput
+    || '';
+}
+
+function boundedPromptQueueSnapshot(value) {
+  const cleaned = redactSensitive(String(value || ''))
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{4,}/g, '\n\n\n')
+    .trim();
+  if (cleaned.length <= MAX_PROMPT_QUEUE_COMPLETION_SNAPSHOT_CHARS) return cleaned;
+  const tail = cleaned.slice(-(MAX_PROMPT_QUEUE_COMPLETION_SNAPSHOT_CHARS - 2)).trimStart();
+  return `…\n${tail}`;
+}
+
+function promptQueueCompletionSnapshot(item, agent) {
+  const strictEvidence = promptQueueCompletionEvidence(item, agent);
+  const returnEvidence = strictEvidence ? null : promptQueueReturnEvidence(item, agent);
+  const trailing = strictEvidence?.finalOutput || returnEvidence?.finalOutput || '';
+  const lines = trailing.split('\n').map((line) => line.replace(/\s+$/g, ''));
+  const workedIndex = lines.findLastIndex(codexWorkedFooter);
+  let end = workedIndex >= 0 ? workedIndex : lines.length - 1;
+  if (workedIndex < 0) {
+    const idlePromptIndex = lines.findLastIndex((line) => /^\s*›\s*(?:Ask Codex anything)?\s*$/i.test(line));
+    if (idlePromptIndex > 0) end = idlePromptIndex - 1;
+    while (end >= 0 && (
+      !lines[end].trim() ||
+      /\b(?:gpt|codex)-[a-z0-9._-]+\b/i.test(lines[end]) ||
+      /\b\d+%\s+left\b|\bview transcript\b|\bbackground term/i.test(lines[end])
+    )) end -= 1;
+  }
+  if (end < 0) return '';
+
+  let start = -1;
+  if (returnEvidence) {
+    start = 0;
+  } else if (workedIndex >= 0) {
+    for (let index = workedIndex - 1; index >= Math.max(0, workedIndex - 36); index -= 1) {
+      if (codexAnswerSeparator(lines[index])) {
+        start = index;
+        break;
+      }
+    }
+  }
+  if (start < 0) {
+    const reportStart = lines.findLastIndex((line, index) => index <= end && /^\s*STATUS\s*:/i.test(line));
+    start = reportStart >= 0 ? reportStart : Math.max(0, end - 23);
+  }
+
+  const selected = lines.slice(start, end + 1).filter((line) => {
+    const value = line.trim();
+    if (!value) return true;
+    if (/^OpenAI Codex\b/i.test(value) || /^\s*›\s/.test(line)) return false;
+    if (/PaneFleet (?:Queued Prompt|Queue Dispatch)/i.test(value)) return false;
+    if (/^\s*(?:Working|Pursuing goal)\s*\(/i.test(value) || /^esc to interrupt$/i.test(value)) return false;
+    if (/\b(?:gpt|codex)-[a-z0-9._-]+\b/i.test(value) && /\b(?:minimal|low|medium|high|xhigh|max|ultra)\b/i.test(value)) return false;
+    if (/\b\d+%\s+left\b|\bview transcript\b|\bbackground term/i.test(value)) return false;
+    return true;
+  });
+  while (selected.length && !selected[0].trim()) selected.shift();
+  while (selected.length && !selected.at(-1).trim()) selected.pop();
+  return boundedPromptQueueSnapshot(selected.join('\n'));
+}
+
+function promptQueueCompletionSummary(item, agent) {
+  const trailing = promptQueueFinalBlockOutput(item, agent);
+  const report = parseMissionSupervisorReport(trailing);
+  if (report) {
+    return boundedPromptQueueCompletion([
+      `Result: ${report.result}`,
+      `Evidence: ${report.evidence}`,
+      `Next: ${report.nextAction}`
+    ].join('\n'));
+  }
+  const lines = usefulOutputLines(trailing)
+    .filter((line) => !/PaneFleet (?:Queued Prompt|Queue Dispatch)/i.test(line))
+    .slice(-8);
+  return boundedPromptQueueCompletion(lines.join('\n'));
+}
+
+function stablePromptQueueCompletion(item, agent, nowMs) {
+  const evidence = promptQueueCompletionEvidence(item, agent);
+  const pending = item.status === 'sent' && item.summaryState === 'pending';
+  const recoverableReview = promptQueueRecoverableCompletionReview(item);
+  if (
+    (!pending && !recoverableReview) ||
+    !evidence ||
+    !paneIdentityFieldsMatch(agent, promptQueueIdentity(item))
+  ) {
+    promptQueueCompletionObservations.delete(item.id);
+    return false;
+  }
+  const fingerprint = `${item.attemptId}|${item.sessionCreatedAt}|${item.paneId}|${item.tmuxPaneId}|${item.panePid}|${evidence.fingerprint}`;
+  const previous = promptQueueCompletionObservations.get(item.id);
+  if (!previous || previous.fingerprint !== fingerprint) {
+    promptQueueCompletionObservations.set(item.id, { fingerprint, firstObservedAt: nowMs, sampleCount: 1 });
+    return false;
+  }
+  previous.sampleCount += 1;
+  return previous.sampleCount >= 2 && nowMs - previous.firstObservedAt >= PROMPT_QUEUE_READY_MIN_MS;
+}
+
+function stablePromptQueueReturn(item, agent, nowMs) {
+  const output = String(agent?.completionOutput || agent?.summaryOutput || agent?.lastOutput || '');
+  const marker = item.attemptId ? `[PaneFleet Queue Dispatch ${item.attemptId}]` : '';
+  const sentAtMs = Date.parse(item.sentAt || '');
+  const pending = item.status === 'sent' && item.summaryState === 'pending';
+  const recoverableReview = promptQueueRecoverableCompletionReview(item);
+  if (
+    (!pending && !recoverableReview) ||
+    !agent?.queueReady ||
+    !marker ||
+    !terminalWitnessMatch(output, marker) ||
+    promptQueueCompletionEvidence(item, agent) ||
+    !promptQueueReturnEvidence(item, agent) ||
+    !paneIdentityFieldsMatch(agent, promptQueueIdentity(item)) ||
+    !Number.isFinite(sentAtMs) ||
+    (pending && nowMs - sentAtMs < PROMPT_QUEUE_MISSING_FINAL_MS)
+  ) {
+    promptQueueReturnObservations.delete(item.id);
+    return false;
+  }
+  const fingerprint = `${item.attemptId}|${item.sessionCreatedAt}|${item.paneId}|${item.tmuxPaneId}|${item.panePid}`;
+  const previous = promptQueueReturnObservations.get(item.id);
+  if (!previous || previous.fingerprint !== fingerprint) {
+    promptQueueReturnObservations.set(item.id, { fingerprint, firstObservedAt: nowMs, sampleCount: 1 });
+    return false;
+  }
+  previous.sampleCount += 1;
+  return previous.sampleCount >= 2 && nowMs - previous.firstObservedAt >= PROMPT_QUEUE_READY_MIN_MS;
+}
+
+function stablePromptQueueMissingFinal(item, agent, nowMs) {
+  const output = String(agent?.completionOutput || agent?.summaryOutput || agent?.lastOutput || '');
+  const marker = item.attemptId ? `[PaneFleet Queue Dispatch ${item.attemptId}]` : '';
+  const markerVisible = marker ? Boolean(terminalWitnessMatch(output, marker)) : false;
+  const sentAtMs = Date.parse(item.sentAt || '');
+  if (
+    item.status !== 'sent' ||
+    item.summaryState !== 'pending' ||
+    !agent?.queueReady ||
+    !marker ||
+    promptQueueCompletionEvidence(item, agent) ||
+    promptQueueReturnEvidence(item, agent) ||
+    !paneIdentityFieldsMatch(agent, promptQueueIdentity(item)) ||
+    !Number.isFinite(sentAtMs) ||
+    nowMs - sentAtMs < PROMPT_QUEUE_MISSING_FINAL_MS
+  ) {
+    promptQueueMissingFinalObservations.delete(item.id);
+    return false;
+  }
+  const fingerprint = `${item.attemptId}|${item.sessionCreatedAt}|${item.paneId}|${item.tmuxPaneId}|${item.panePid}|marker=${markerVisible}`;
+  const previous = promptQueueMissingFinalObservations.get(item.id);
+  if (!previous || previous.fingerprint !== fingerprint) {
+    promptQueueMissingFinalObservations.set(item.id, { fingerprint, firstObservedAt: nowMs, sampleCount: 1 });
+    return false;
+  }
+  previous.sampleCount += 1;
+  return previous.sampleCount >= 2 && nowMs - previous.firstObservedAt >= PROMPT_QUEUE_READY_MIN_MS;
+}
+
+function stablePromptQueueLateAcceptance(item, agent, nowMs) {
+  const output = String(agent?.completionOutput || agent?.summaryOutput || agent?.lastOutput || '');
+  const marker = item.attemptId ? `[PaneFleet Queue Dispatch ${item.attemptId}]` : '';
+  if (
+    item.status !== 'needs_review' ||
+    item.summaryState !== 'unavailable' ||
+    item.deliveryStage !== 'confirmation' ||
+    !marker ||
+    !missionAcceptanceVisible(output, marker) ||
+    !paneIdentityFieldsMatch(agent, promptQueueIdentity(item))
+  ) {
+    promptQueueAcceptanceObservations.delete(item.id);
+    return false;
+  }
+  const fingerprint = `${item.attemptId}|${item.sessionCreatedAt}|${item.paneId}|${item.tmuxPaneId}|${item.panePid}`;
+  const previous = promptQueueAcceptanceObservations.get(item.id);
+  if (!previous || previous.fingerprint !== fingerprint) {
+    promptQueueAcceptanceObservations.set(item.id, { fingerprint, firstObservedAt: nowMs, sampleCount: 1 });
+    return false;
+  }
+  previous.sampleCount += 1;
+  return previous.sampleCount >= 2 && nowMs - previous.firstObservedAt >= PROMPT_QUEUE_READY_MIN_MS;
+}
+
+function promptQueueSupersedingInteraction(item, agent) {
+  const sentAtMs = Date.parse(item?.sentAt || '');
+  const interactionAtMs = Date.parse(agent?.lastInteractionAt || '');
+  const kind = String(agent?.lastInteractionKind || '');
+  return Boolean(
+    Number.isFinite(sentAtMs) &&
+    Number.isFinite(interactionAtMs) &&
+    interactionAtMs > sentAtMs &&
+    PROMPT_QUEUE_SUPERSEDING_INTERACTIONS.has(kind)
+  );
+}
+
+async function promptQueueCompletionAgent(item, agent) {
+  if (!agent) return null;
+  const identity = promptQueueIdentity(item);
+  const paneBefore = await findExactTmuxPane(item.session, item.paneId);
+  if (!exactPaneIdentityMatches(paneBefore, identity)) return null;
+
+  const preview = await panePreview(paneBefore, PROMPT_QUEUE_COMPLETION_CAPTURE_LINES);
+  const paneAfter = await findExactTmuxPane(item.session, item.paneId);
+  if (!exactPaneIdentityMatches(paneAfter, identity)) return null;
+  if (!preview.ok) return agent;
+
+  let completionOutput = preview.output;
+  let completionCaptureLines = PROMPT_QUEUE_COMPLETION_CAPTURE_LINES;
+  const recoverable = promptQueueItemAwaitingCompletion(item) || promptQueueRecoverableCompletionReview(item);
+  const primaryAgent = { ...agent, completionOutput };
+  const shouldRecoverDeeper = recoverable &&
+    agent.queueReady === true &&
+    !promptQueueCompletionMarkerVisible(item, primaryAgent) &&
+    !promptQueueSupersedingInteraction(item, agent);
+  if (shouldRecoverDeeper) {
+    const recovery = await panePreview(paneAfter, PROMPT_QUEUE_COMPLETION_RECOVERY_CAPTURE_LINES);
+    const paneAfterRecovery = await findExactTmuxPane(item.session, item.paneId);
+    if (!exactPaneIdentityMatches(paneAfterRecovery, identity)) return null;
+    if (recovery.ok) {
+      completionOutput = recovery.output;
+      completionCaptureLines = PROMPT_QUEUE_COMPLETION_RECOVERY_CAPTURE_LINES;
+    }
+  }
+
+  return { ...agent, completionOutput, completionCaptureLines };
+}
+
+async function capturePromptQueueCompletions(current, agents) {
+  const pending = current.items.filter((item) => item.status === 'sent' && item.summaryState === 'pending');
+  const recoverableReviews = current.items.filter((item) => (
+    (item.status === 'needs_review' && item.summaryState === 'unavailable' && item.deliveryStage === 'confirmation') ||
+    promptQueueRecoverableCompletionReview(item)
+  ));
+  const candidates = [...pending, ...recoverableReviews];
+  const candidateIds = new Set(candidates.map((item) => item.id));
+  for (const itemId of promptQueueCompletionObservations.keys()) {
+    if (!candidateIds.has(itemId)) promptQueueCompletionObservations.delete(itemId);
+  }
+  for (const itemId of promptQueueReturnObservations.keys()) {
+    if (!candidateIds.has(itemId)) promptQueueReturnObservations.delete(itemId);
+  }
+  for (const itemId of promptQueueMissingFinalObservations.keys()) {
+    if (!candidateIds.has(itemId)) promptQueueMissingFinalObservations.delete(itemId);
+  }
+  for (const itemId of promptQueueAcceptanceObservations.keys()) {
+    if (!candidateIds.has(itemId)) promptQueueAcceptanceObservations.delete(itemId);
+  }
+  if (!candidates.length) return current;
+
+  const store = clonePromptQueue(current);
+  const nowMs = Date.now();
+  const now = new Date(nowMs).toISOString();
+  let changed = false;
+  for (const sourceItem of candidates) {
+    const item = store.items.find((candidate) => candidate.id === sourceItem.id);
+    if (!item) continue;
+    const agent = agents.find((candidate) => paneIdentityFieldsMatch(candidate, promptQueueIdentity(item))) || null;
+    const sameNameReplacement = agents.some((candidate) => candidate.session === item.session) && !agent;
+    const sentAtMs = Date.parse(item.sentAt || '');
+    const expired = Number.isFinite(sentAtMs) && nowMs - sentAtMs >= PROMPT_QUEUE_COMPLETION_TIMEOUT_MS;
+    if (item.status === 'sent' && (sameNameReplacement || expired)) {
+      item.status = 'needs_review';
+      item.summaryState = 'unavailable';
+      item.completionSnapshot = '';
+      item.completionSummary = sameNameReplacement
+        ? 'The original terminal was replaced before PaneFleet could capture its finish summary.'
+        : 'No stable finish summary was available before the capture window closed.';
+      item.completedAt = null;
+      item.updatedAt = now;
+      item.deliveryStage = sameNameReplacement ? 'completion_target_replaced' : 'completion_timeout';
+      item.blocker = sameNameReplacement
+        ? 'The exact terminal was replaced before completion could be verified. Inspect the replacement; PaneFleet will not resend or advance this line.'
+        : 'Completion could not be verified before the capture window closed. Inspect the exact terminal; PaneFleet will not resend or advance this line.';
+      item.revision += 1;
+      promptQueueCompletionObservations.delete(item.id);
+      promptQueueReturnObservations.delete(item.id);
+      promptQueueMissingFinalObservations.delete(item.id);
+      changed = true;
+      await appendAudit(null, {
+        action: 'prompt_queue.needs_review',
+        target: item.session,
+        ok: false,
+        detail: `item=${item.id}; stage=${item.deliveryStage}; no_retry=true; no_input=true`
+      });
+      continue;
+    }
+    const completionAgent = await promptQueueCompletionAgent(item, agent);
+    if (item.deliveryStage === 'confirmation') {
+      if (!stablePromptQueueLateAcceptance(item, completionAgent, nowMs)) continue;
+      item.status = 'sent';
+      item.summaryState = 'pending';
+      item.sentAt = item.claimedAt || now;
+      item.updatedAt = now;
+      item.deliveryStage = 'accepted_late';
+      item.blocker = '';
+      item.revision += 1;
+      promptQueueAcceptanceObservations.delete(item.id);
+      changed = true;
+      await appendAudit(null, {
+        action: 'prompt_queue.acceptance_recovered',
+        target: item.session,
+        ok: true,
+        detail: `item=${item.id}; stable_samples=2; exact_pane=true; marker_visible=true; no_retry=true; no_input=true`
+      });
+      continue;
+    }
+    const strictCompletionEvidence = promptQueueCompletionEvidence(item, completionAgent);
+    if (!stablePromptQueueCompletion(item, completionAgent, nowMs)) {
+      if (strictCompletionEvidence) continue;
+      if (item.status === 'sent' && promptQueueSupersedingInteraction(item, agent)) {
+        item.status = 'needs_review';
+        item.summaryState = 'unavailable';
+        item.completionSnapshot = '';
+        item.completionSummary = 'Newer operator activity reached this exact terminal before PaneFleet captured a trustworthy finish for this ticket.';
+        item.completedAt = null;
+        item.updatedAt = now;
+        item.deliveryStage = 'completion_superseded';
+        item.blocker = 'This exact terminal received newer manual activity after the queued prompt. Inspect it; release the queue after review or cancel this ticket. PaneFleet will not attribute the newer work to this ticket or resend it.';
+        item.revision += 1;
+        promptQueueCompletionObservations.delete(item.id);
+        promptQueueReturnObservations.delete(item.id);
+        promptQueueMissingFinalObservations.delete(item.id);
+        changed = true;
+        await appendAudit(null, {
+          action: 'prompt_queue.needs_review',
+          target: item.session,
+          ok: false,
+          detail: `item=${item.id}; stage=completion_superseded; newer_interaction=${agent.lastInteractionKind}; semantic_completion=false; no_retry=true; no_input=true`
+        });
+        continue;
+      }
+      if (stablePromptQueueReturn(item, completionAgent, nowMs)) {
+        item.status = 'sent';
+        item.completionSnapshot = promptQueueCompletionSnapshot(item, completionAgent);
+        item.completionSummary = promptQueueCompletionSummary(item, completionAgent)
+          || boundedPromptQueueCompletion(item.completionSnapshot)
+          || 'The accepted turn returned to the exact terminal composer without a footer.';
+        if (!item.completionSnapshot) item.completionSnapshot = item.completionSummary;
+        item.summaryState = 'returned';
+        item.completedAt = now;
+        item.updatedAt = now;
+        item.deliveryStage = 'returned_to_ready';
+        item.blocker = '';
+        item.revision += 1;
+        promptQueueCompletionObservations.delete(item.id);
+        promptQueueReturnObservations.delete(item.id);
+        promptQueueMissingFinalObservations.delete(item.id);
+        changed = true;
+        await appendAudit(null, {
+          action: 'prompt_queue.turn_returned',
+          target: item.session,
+          ok: true,
+          detail: `item=${item.id}; footer=false; stable_idle=true; exact_pane=true; semantic_completion=false; no_input=true`
+        });
+        continue;
+      }
+      if (item.status !== 'sent' || !stablePromptQueueMissingFinal(item, completionAgent, nowMs)) continue;
+      item.status = 'needs_review';
+      item.summaryState = 'unavailable';
+      item.completionSnapshot = '';
+      const markerVisible = promptQueueCompletionMarkerVisible(item, completionAgent);
+      item.completionSummary = markerVisible
+        ? 'The exact terminal returned to a stable ready composer without a uniquely trustworthy response boundary.'
+        : 'The exact terminal returned to ready after this ticket became older than the bounded capture window.';
+      item.completedAt = null;
+      item.updatedAt = now;
+      item.deliveryStage = markerVisible ? 'final_boundary_missing' : 'completion_marker_missing';
+      item.blocker = markerVisible
+        ? 'The terminal is ready, but PaneFleet found neither a final footer nor one uniquely bounded return to the composer. Inspect it; release the queue after review or cancel this ticket. PaneFleet will not resend.'
+        : 'The terminal is ready, but this ticket\'s dispatch marker has scrolled beyond PaneFleet\'s bounded capture. Inspect the exact terminal; release the queue after review or cancel this ticket. PaneFleet will not resend.';
+      item.revision += 1;
+      promptQueueCompletionObservations.delete(item.id);
+      promptQueueReturnObservations.delete(item.id);
+      promptQueueMissingFinalObservations.delete(item.id);
+      changed = true;
+      await appendAudit(null, {
+        action: 'prompt_queue.needs_review',
+        target: item.session,
+        ok: false,
+        detail: `item=${item.id}; stage=${item.deliveryStage}; marker_visible=${markerVisible}; stable_idle=true; no_retry=true; no_input=true`
+      });
+      continue;
+    }
+    const recoveredFromReview = promptQueueRecoverableCompletionReview(item);
+    item.status = 'sent';
+    item.completionSnapshot = promptQueueCompletionSnapshot(item, completionAgent);
+    item.completionSummary = promptQueueCompletionSummary(item, completionAgent)
+      || boundedPromptQueueCompletion(item.completionSnapshot)
+      || 'The agent returned to ready without a readable finish summary.';
+    if (!item.completionSnapshot) item.completionSnapshot = item.completionSummary;
+    item.summaryState = 'captured';
+    item.completedAt = now;
+    item.updatedAt = now;
+    item.deliveryStage = recoveredFromReview ? 'completion_recovered' : item.deliveryStage;
+    item.blocker = '';
+    item.revision += 1;
+    promptQueueCompletionObservations.delete(item.id);
+    promptQueueReturnObservations.delete(item.id);
+    promptQueueMissingFinalObservations.delete(item.id);
+    changed = true;
+    await appendAudit(null, {
+      action: 'prompt_queue.summary_captured',
+      target: item.session,
+      ok: true,
+      detail: `item=${item.id}; summaryChars=${item.completionSummary.length}; snapshotChars=${item.completionSnapshot.length}; captureLines=${Number(completionAgent?.completionCaptureLines || PROMPT_QUEUE_COMPLETION_CAPTURE_LINES)}; recovered=${recoveredFromReview}; exact_pane=true; no_input=true`
+    });
+  }
+  if (!changed) return current;
+  store.revision += 1;
+  return persistPromptQueue(store);
+}
+
+async function enqueueDuePromptSchedules(current, agents, nowMs = Date.now()) {
+  const due = current.schedules.filter((schedule) => schedule.enabled && Date.parse(schedule.nextRunAt) <= nowMs);
+  if (!due.length) return current;
+  const store = clonePromptQueue(current);
+  trimPromptQueueHistory(store);
+  const now = new Date(nowMs).toISOString();
+  const auditEntries = [];
+  for (const dueSchedule of due) {
+    const schedule = store.schedules.find((candidate) => candidate.id === dueSchedule.id);
+    if (!schedule || !schedule.enabled || Date.parse(schedule.nextRunAt) > nowMs) continue;
+    const scheduledFor = schedule.nextRunAt;
+    const agent = agents.find((candidate) => paneIdentityFieldsMatch(candidate, promptScheduleIdentity(schedule))) || null;
+    const alreadyOpen = store.items.some((item) => item.scheduleId === schedule.id && promptQueueItemOpen(item));
+    let outcome;
+    schedule.occurrenceCount += 1;
+    if (!agent || !agent.canSend || !agentHasCodexProcess(agent)) {
+      outcome = 'skipped_target_unavailable';
+    } else if (alreadyOpen) {
+      outcome = 'coalesced_existing_pending';
+      schedule.coalescedCount += 1;
+    } else if (store.items.length >= MAX_PROMPT_QUEUE_ITEMS) {
+      outcome = 'skipped_queue_full';
+    } else {
+      const item = {
+        id: `prompt-${Date.now().toString(36)}-${randomBytes(5).toString('hex')}`,
+        revision: 1,
+        position: Math.max(0, ...store.items.map((candidate) => candidate.position || 0)) + 1,
+        status: 'queued',
+        session: schedule.session,
+        sessionCreatedAt: schedule.sessionCreatedAt,
+        paneId: schedule.paneId,
+        tmuxPaneId: schedule.tmuxPaneId,
+        panePid: schedule.panePid,
+        text: schedule.text,
+        attemptId: null,
+        blocker: '',
+        deliveryStage: '',
+        createdAt: now,
+        updatedAt: now,
+        claimedAt: null,
+        sentAt: null,
+        completionSummary: '',
+        completionSnapshot: '',
+        summaryState: 'pending',
+        completedAt: null,
+        scheduleId: schedule.id,
+        scheduledFor
+      };
+      store.items.push(item);
+      schedule.runCount += 1;
+      outcome = 'queued';
+    }
+    schedule.lastRunAt = now;
+    schedule.lastScheduledFor = scheduledFor;
+    schedule.lastOutcome = outcome;
+    if (outcome.startsWith('skipped_')) schedule.skippedCount += 1;
+    schedule.nextRunAt = nextPromptCronAt(schedule.cron, nowMs);
+    schedule.updatedAt = now;
+    schedule.revision += 1;
+    auditEntries.push({
+      action: outcome === 'queued' ? 'prompt_schedule.queued' : outcome === 'coalesced_existing_pending' ? 'prompt_schedule.coalesced' : 'prompt_schedule.skipped',
+      target: schedule.session,
+      ok: outcome === 'queued' || outcome === 'coalesced_existing_pending',
+      detail: `schedule=${schedule.id}; outcome=${outcome}; occurrence=${schedule.occurrenceCount}; queued=${schedule.runCount}; coalesced=${schedule.coalescedCount}; skipped=${schedule.skippedCount}; scheduledFor=${scheduledFor}; nextRunAt=${schedule.nextRunAt}; no_input=true`
+    });
+  }
+  store.revision += 1;
+  const persisted = await persistPromptQueue(store);
+  for (const entry of auditEntries) await appendAudit(null, entry);
+  return persisted;
+}
+
+async function processPromptQueue(agents = []) {
+  return enqueuePromptQueueOperation(async () => {
+    let current = await ensurePromptQueue();
+    current = await enqueueDuePromptSchedules(current, agents);
+    current = await capturePromptQueueCompletions(current, agents);
+    const openItems = [...current.items]
+      .filter(promptQueueItemOpen)
+      .sort((left, right) => left.position - right.position);
+    const heads = [];
+    const seenSessions = new Set();
+    for (const item of openItems) {
+      if (seenSessions.has(item.session)) continue;
+      seenSessions.add(item.session);
+      heads.push(item);
+    }
+
+    for (const head of heads) {
+      if (head.status !== 'queued' || sessionDispatchReserved(head.session) || activeMissionForSession(head.session)) {
+        promptQueueReadyObservations.delete(head.id);
+        continue;
+      }
+      const agent = agents.find((candidate) => paneIdentityFieldsMatch(candidate, promptQueueIdentity(head))) || null;
+      if (!stablePromptQueueReady(head, agent, Date.now())) continue;
+
+      const attemptId = `queue-attempt-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
+      const envelope = promptQueueEnvelope(head, attemptId);
+      if (!envelope) continue;
+      const claimStore = clonePromptQueue(promptQueueStore);
+      const claimed = claimStore.items.find((item) => item.id === head.id);
+      if (!claimed || claimed.status !== 'queued') continue;
+      const claimedAt = new Date().toISOString();
+      claimed.status = 'dispatching';
+      claimed.revision += 1;
+      claimed.updatedAt = claimedAt;
+      claimed.claimedAt = claimedAt;
+      claimed.attemptId = attemptId;
+      claimed.deliveryStage = 'dispatching';
+      claimed.blocker = '';
+      claimStore.revision += 1;
+      await persistPromptQueue(claimStore);
+      promptQueueReadyObservations.delete(head.id);
+
+      promptQueueDispatchReservations.add(head.session);
+      let delivery;
+      try {
+        delivery = await deliverTextToAgent(head.session, envelope.text, {
+          expectedSessionCreatedAt: head.sessionCreatedAt,
+          expectedPaneId: head.paneId,
+          expectedTmuxPaneId: head.tmuxPaneId,
+          expectedPanePid: head.panePid,
+          allowMissionDispatch: true,
+          confirmationMarker: envelope.confirmationMarker,
+          confirmationStartMarker: envelope.startMarker
+        });
+      } catch (error) {
+        delivery = { ok: false, stage: 'unknown', error: redactSensitive(error?.message || error) };
+      } finally {
+        promptQueueDispatchReservations.delete(head.session);
+      }
+
+      const finalStore = clonePromptQueue(promptQueueStore);
+      const item = finalStore.items.find((candidate) => candidate.id === head.id);
+      if (!item || item.status !== 'dispatching' || item.attemptId !== attemptId) continue;
+      const now = new Date().toISOString();
+      item.revision += 1;
+      item.updatedAt = now;
+      item.deliveryStage = delivery.stage || 'unknown';
+      if (delivery.ok) {
+        item.status = 'sent';
+        item.sentAt = now;
+        item.blocker = '';
+        item.completionSummary = '';
+        item.completionSnapshot = '';
+        item.summaryState = 'pending';
+        item.completedAt = null;
+      } else {
+        item.status = 'needs_review';
+        item.summaryState = 'unavailable';
+        item.blocker = promptQueueDispatchBlocker(delivery);
+      }
+      finalStore.revision += 1;
+      trimPromptQueueHistory(finalStore);
+      try {
+        await persistPromptQueue(finalStore);
+      } catch (firstPersistError) {
+        try { await persistPromptQueue(finalStore); } catch { throw firstPersistError; }
+      }
+      await appendAudit(null, {
+        action: delivery.ok ? 'prompt_queue.sent' : 'prompt_queue.needs_review',
+        target: head.session,
+        ok: delivery.ok,
+        detail: `item=${head.id}; attempt=${attemptId}; stage=${delivery.stage || 'unknown'}; promptChars=${head.text.length}; no_retry=true`
+      });
+      if (delivery.ok) {
+        try { await recordAgentInteraction(head.session, 'prompt_queue.sent', now); } catch { /* best effort */ }
+      }
+    }
+  });
+}
+
+async function monitorPromptQueue() {
+  if (promptQueueMonitorRunning) return;
+  promptQueueMonitorRunning = true;
+  try {
+    const current = await ensurePromptQueue();
+    const scheduleDue = current.schedules.some((schedule) => schedule.enabled && Date.parse(schedule.nextRunAt) <= Date.now());
+    const recoverableReturn = current.items.some((item) => (
+      (item.status === 'needs_review' && item.summaryState === 'unavailable' && item.deliveryStage === 'confirmation') ||
+      promptQueueRecoverableCompletionReview(item)
+    ));
+    if (!scheduleDue && !recoverableReturn && !current.items.some((item) => item.status === 'queued' || (item.status === 'sent' && item.summaryState === 'pending'))) return;
+    const live = await snapshot({ includeMissionDetails: false, runSupervisor: false, runPromptQueue: false });
+    await processPromptQueue(live.agents);
+  } catch (error) {
+    console.error(`Prompt queue monitor failed: ${redactSensitive(error?.message || error)}`);
+  } finally {
+    promptQueueMonitorRunning = false;
+  }
+}
+
+async function reconcilePromptQueueOnStartup() {
+  return enqueuePromptQueueOperation(async () => {
+    const current = await ensurePromptQueue();
+    const dispatching = current.items.filter((item) => item.status === 'dispatching');
+    const prematureCaptures = current.items.filter((item) => (
+      item.status === 'sent' && (
+        (item.summaryState === 'captured' && !String(item.completionSnapshot || '').split('\n').some(codexWorkedFooter)) ||
+        (item.summaryState === 'unavailable' && /earlier capture did not contain a trustworthy final-response boundary/i.test(String(item.completionSummary || '')))
+      )
+    ));
+    if (!dispatching.length && !prematureCaptures.length) return;
+    const store = clonePromptQueue(current);
+    const now = new Date().toISOString();
+    for (const item of store.items.filter((candidate) => dispatching.some((source) => source.id === candidate.id))) {
+      item.status = 'needs_review';
+      item.revision += 1;
+      item.updatedAt = now;
+      item.deliveryStage = 'restart_reconciliation';
+      item.blocker = 'PaneFleet restarted during delivery. Inspect the exact terminal; the prompt will not be resent automatically.';
+      item.summaryState = 'unavailable';
+      await appendAudit(null, {
+        action: 'prompt_queue.needs_review',
+        target: item.session,
+        ok: false,
+        detail: `item=${item.id}; restart_during_dispatch=true; no_resend=true`
+      });
+    }
+    for (const item of store.items.filter((candidate) => prematureCaptures.some((source) => source.id === candidate.id))) {
+      item.status = 'needs_review';
+      item.summaryState = 'unavailable';
+      item.completionSnapshot = '';
+      item.completionSummary = 'The earlier capture did not contain a trustworthy final-response boundary, so PaneFleet no longer labels this work completed.';
+      item.completedAt = null;
+      item.blocker = 'PaneFleet previously captured intermediate output as a finish. Inspect this exact terminal before dismissing the item; later prompts stay blocked.';
+      item.revision += 1;
+      item.updatedAt = now;
+      await appendAudit(null, {
+        action: 'prompt_queue.completion_reconciled',
+        target: item.session,
+        ok: true,
+        detail: `item=${item.id}; previous=captured; current=needs_review; missing_final_boundary=true; no_input=true`
+      });
+    }
+    store.revision += 1;
+    await persistPromptQueue(store);
+  });
 }
 
 function missionWorkspacesConflict(left, right) {
@@ -5150,7 +7222,7 @@ function requestedMissionAdoptionIdentity(body) {
 }
 
 function agentHasCodexProcess(agent) {
-  return (agent?.processes || []).some((process) =>
+  return agent?.dead !== true && (agent?.processes || []).some((process) =>
     /(?:^|[\s/])codex(?:[\s/]|$)|@openai\/codex/i.test(String(process.command || ''))
   );
 }
@@ -5191,7 +7263,7 @@ async function adoptExistingMission(id, body, req) {
     if (workerLock) {
       return { status: 409, body: { error: 'mission_worker_locked', lockedBy: workerLock.id } };
     }
-    if (missionDispatchReservations.has(requestedIdentity.session)) {
+    if (sessionDispatchReserved(requestedIdentity.session)) {
       return { status: 409, body: { error: 'mission_worker_input_in_progress' } };
     }
 
@@ -5199,7 +7271,7 @@ async function adoptExistingMission(id, body, req) {
     if (!pane || !paneIdentityFieldsMatch(pane, requestedIdentity)) {
       return { status: 409, body: { error: 'mission_worker_missing_or_replaced' } };
     }
-    if (pane.currentCommand !== 'node') {
+    if (pane.dead === true || pane.currentCommand !== 'node') {
       return { status: 409, body: { error: 'mission_worker_stopped' } };
     }
     const target = `${pane.session}:${pane.windowIndex}.${pane.paneIndex}`;
@@ -5245,7 +7317,7 @@ async function adoptExistingMission(id, body, req) {
     if (!confirmedPane || !exactPaneIdentityMatches(confirmedPane, requestedIdentity)) {
       return { status: 409, body: { error: 'mission_worker_missing_or_replaced' } };
     }
-    if (paneInputQueues.has(target) || missionDispatchReservations.has(requestedIdentity.session)) {
+    if (paneInputQueues.has(target) || sessionDispatchReserved(requestedIdentity.session)) {
       return { status: 409, body: { error: 'mission_worker_input_in_progress' } };
     }
 
@@ -5320,7 +7392,7 @@ async function dispatchMission(id, body, req) {
     if (currentJob.status !== 'ready') return { status: 409, body: { error: 'mission_not_ready', status: currentJob.status } };
     const session = String(body.session || currentJob.assignedSession || '').trim();
     if (!isAgentInteractionTarget(session)) return { status: 400, body: { error: 'valid_worker_session_required' } };
-    if (missionDispatchReservations.has(session)) return { status: 409, body: { error: 'mission_dispatch_in_progress' } };
+    if (sessionDispatchReserved(session)) return { status: 409, body: { error: sessionDispatchError(session) } };
     missionDispatchReservations.add(session);
     try {
     const workspace = await resolveAllowedWorkspace(currentJob.workspace);
@@ -5482,8 +7554,9 @@ async function sendAgentUiKey(body, req) {
   const tmuxKey = AGENT_UI_KEYS[keyId];
   if (!session || !tmuxKey) return { status: 400, body: { error: 'invalid_agent_ui_key' } };
   const activeMission = activeMissionForSession(session);
-  if (missionDispatchReservations.has(session) || activeMission?.status === 'dispatching') {
-    return { status: 409, body: { error: 'mission_dispatch_in_progress' } };
+  if (sessionDispatchReserved(session) || activeMission?.status === 'dispatching') {
+    const error = activeMission?.status === 'dispatching' ? 'mission_dispatch_in_progress' : sessionDispatchError(session);
+    return { status: 409, body: { error } };
   }
   if (activeMission?.status === 'reconcile_required') {
     return { status: 409, body: { error: 'mission_dispatch_needs_reconciliation' } };
@@ -5501,8 +7574,8 @@ async function sendAgentUiKey(body, req) {
     return { status: 409, body: { error: 'agent_session_replaced' } };
   }
   const target = `${pane.session}:${pane.windowIndex}.${pane.paneIndex}`;
-  if (missionDispatchReservations.has(session)) {
-    return { status: 409, body: { error: 'mission_dispatch_in_progress' } };
+  if (sessionDispatchReserved(session)) {
+    return { status: 409, body: { error: sessionDispatchError(session) } };
   }
   const result = await enqueuePaneInput(target, () => run('tmux', ['send-keys', '-t', target, tmuxKey]));
   const detail = result.ok ? `picker_key=${keyId}` : redactSensitive(result.stderr || result.error || 'ui_key_failed');
@@ -5552,7 +7625,7 @@ async function createAgent(body, req) {
     workspace = verifiedWorkspace;
   }
   const command = codexLaunchCommand('', selection);
-  const start = await run('tmux', ['new-session', '-d', '-s', session, '-c', workspace, `bash -lc ${shellQuote(command)}`]);
+  const start = await run('tmux', ['new-session', '-d', '-s', session, '-c', workspace, persistentCodexShellCommand(command)]);
   if (!start.ok) {
     const detail = redactSensitive(start.stderr || start.error);
     await appendAudit(req, { action: 'agent.create', target: session, ok: false, detail });
@@ -5583,44 +7656,48 @@ async function createAgent(body, req) {
       if (!ready.ok) {
         promptError = ready.error || 'agent_prompt_not_ready';
       } else {
-        const markerToken = randomBytes(8).toString('hex');
-        const startMarker = `[PaneFleet Initial Prompt ${markerToken} Start]`;
-        const marker = `[PaneFleet Initial Prompt ${markerToken} End]`;
-        const markedPrompt = `${startMarker}\n\n${prompt}\n\n${marker}`;
-        const queueTarget = `${pane.session}:${pane.windowIndex}.${pane.paneIndex}`;
-        const inputTarget = pane.tmuxPaneId;
-        const { sent, entered, confirmed } = await enqueuePaneInput(queueTarget, () => typeMarkedTextAndConfirm(
-          inputTarget,
-          session,
-          pane,
-          markedPrompt,
-          marker,
-          {
-            identityError: 'agent_prompt_identity_changed',
-            renderCaptureLines: Math.max(300, prompt.split('\n').length + 80),
-            renderedPredicate: (output) => {
-              const renderedText = String(output || '');
-              return renderedText.includes(startMarker) && renderedText.includes(marker);
-            }
-          }
-        ));
-        if (!sent?.ok) {
-          promptState = sent?.anyTyped ? 'typed_not_submitted' : 'not_typed';
-          promptError = sent?.error === 'agent_prompt_identity_changed'
-            ? sent.error
-            : 'terminal_literal_input_failed';
-        } else if (!entered) {
-          promptState = 'typed_not_submitted';
-          promptError = confirmed?.error || 'terminal_literal_unconfirmed';
-        } else if (!entered.ok) {
-          promptState = 'outcome_unknown';
-          promptError = 'terminal_submit_failed';
-        } else if (!confirmed?.ok) {
-          promptState = 'outcome_unknown';
-          promptError = confirmed?.error || 'terminal_submit_unconfirmed';
+        const lifecycleGuard = await protectPromptDeliveryPane(pane, 'agent_prompt_identity_changed');
+        if (!lifecycleGuard.ok) {
+          promptError = lifecycleGuard.error;
         } else {
-          promptSent = true;
-          promptState = 'accepted';
+          const guardedPane = lifecycleGuard.pane;
+          const markerToken = randomBytes(8).toString('hex');
+          const startMarker = `[PaneFleet Initial Prompt ${markerToken} Start]`;
+          const marker = `[PaneFleet Initial Prompt ${markerToken} End]`;
+          const markedPrompt = `${startMarker}\n\n${prompt}\n\n${marker}`;
+          const queueTarget = `${guardedPane.session}:${guardedPane.windowIndex}.${guardedPane.paneIndex}`;
+          const inputTarget = guardedPane.tmuxPaneId;
+          const { sent, entered, confirmed } = await enqueuePaneInput(queueTarget, () => typeMarkedTextAndConfirm(
+            inputTarget,
+            session,
+            guardedPane,
+            markedPrompt,
+            marker,
+            {
+              identityError: 'agent_prompt_identity_changed',
+              renderCaptureLines: Math.max(300, prompt.split('\n').length + 80),
+              renderedPredicate: (output) =>
+                terminalWitnessVisible(output, startMarker) && terminalWitnessVisible(output, marker)
+            }
+          ));
+          if (!sent?.ok) {
+            promptState = sent?.anyTyped ? 'typed_not_submitted' : 'not_typed';
+            promptError = sent?.error === 'agent_prompt_identity_changed'
+              ? sent.error
+              : 'terminal_literal_input_failed';
+          } else if (!entered) {
+            promptState = 'typed_not_submitted';
+            promptError = confirmed?.error || 'terminal_literal_unconfirmed';
+          } else if (!entered.ok) {
+            promptState = 'outcome_unknown';
+            promptError = 'terminal_submit_failed';
+          } else if (!confirmed?.ok) {
+            promptState = 'outcome_unknown';
+            promptError = confirmed?.error || 'terminal_submit_unconfirmed';
+          } else {
+            promptSent = true;
+            promptState = 'accepted';
+          }
         }
       }
     }
@@ -5641,6 +7718,10 @@ async function sendKeyToSession(session, key, action, req) {
     await appendAudit(req, { action, target: session, ok: false, detail: 'pane_not_found' });
     return { status: 404, body: { error: 'pane_not_found' } };
   }
+  if (pane.dead === true) {
+    await appendAudit(req, { action, target: session, ok: false, detail: 'pane_process_exited' });
+    return { status: 409, body: { error: 'pane_process_exited' } };
+  }
   const result = await run('tmux', ['send-keys', '-t', `${pane.session}:${pane.windowIndex}.${pane.paneIndex}`, key]);
   const detail = redactSensitive(result.stderr || result.error || key);
   await appendAudit(req, { action, target: session, ok: result.ok, detail });
@@ -5657,6 +7738,10 @@ async function resumeAgent(session, body, req) {
   if (!/^codex(?:[\w-]*)?$/.test(pane.session)) {
     await appendAudit(req, { action: 'agent.resume', target: session, ok: false, detail: 'unsupported_agent_session' });
     return { status: 403, body: { error: 'unsupported_agent_session' } };
+  }
+  if (pane.dead === true) {
+    await appendAudit(req, { action: 'agent.resume', target: session, ok: false, detail: 'pane_process_exited' });
+    return { status: 409, body: { error: 'pane_process_exited' } };
   }
   if (pane.currentCommand === 'node') {
     await appendAudit(req, { action: 'agent.resume', target: session, ok: false, detail: 'already_running' });
@@ -5827,12 +7912,60 @@ async function handleApi(req, res) {
   }
   if (req.method === 'GET' && url.pathname === '/api/options') return json(res, 200, await optionsSnapshot());
   if (req.method === 'GET' && url.pathname === '/api/events') {
-    if (!hasControlSession(req)) return json(res, 401, { error: 'control_session_required' });
     return serveEvents(req, res);
   }
   if (req.method === 'GET' && url.pathname === '/api/audit') return json(res, 200, { audit: await readAudit(url.searchParams.get('limit') || 50) });
+  if (req.method === 'GET' && url.pathname === '/api/prompt-queue') {
+    const current = await snapshot({ includeMissionDetails: false });
+    return json(res, 200, { promptQueue: current.promptQueue });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/prompt-queue') {
+    const result = await createPromptQueueItem(await readJson(req), req);
+    return json(res, result.status, result.body);
+  }
+  if (req.method === 'POST' && url.pathname === '/api/prompt-queue/batch') {
+    const result = await createPromptQueueBatch(await readJson(req), req);
+    return json(res, result.status, result.body);
+  }
+  if (req.method === 'POST' && url.pathname === '/api/prompt-queue/clear-completed') {
+    const result = await clearCompletedPromptQueueItems(await readJson(req), req);
+    return json(res, result.status, result.body);
+  }
+  if (req.method === 'POST' && url.pathname === '/api/prompt-queue/clear-history') {
+    const result = await clearPromptQueueHistory(await readJson(req), req);
+    return json(res, result.status, result.body);
+  }
+  const promptQueueActionMatch = url.pathname.match(/^\/api\/prompt-queue\/(prompt-[a-z0-9-]{8,64})\/cancel$/);
+  if (req.method === 'POST' && promptQueueActionMatch) {
+    const result = await cancelPromptQueueItem(promptQueueActionMatch[1], await readJson(req), req);
+    return json(res, result.status, result.body);
+  }
+  const promptQueueRetargetMatch = url.pathname.match(/^\/api\/prompt-queue\/(prompt-[a-z0-9-]{8,64})\/retarget$/);
+  if (req.method === 'POST' && promptQueueRetargetMatch) {
+    const result = await retargetPromptQueueItem(promptQueueRetargetMatch[1], await readJson(req), req);
+    return json(res, result.status, result.body);
+  }
+  const promptQueueReleaseMatch = url.pathname.match(/^\/api\/prompt-queue\/(prompt-[a-z0-9-]{8,64})\/(?:release|confirm-complete)$/);
+  if (req.method === 'POST' && promptQueueReleaseMatch) {
+    const result = await releasePromptQueueAfterReview(promptQueueReleaseMatch[1], await readJson(req), req);
+    return json(res, result.status, result.body);
+  }
+  if (req.method === 'POST' && url.pathname === '/api/prompt-schedules') {
+    const result = await createPromptSchedule(await readJson(req), req);
+    return json(res, result.status, result.body);
+  }
+  const promptScheduleActionMatch = url.pathname.match(/^\/api\/prompt-schedules\/(schedule-[a-z0-9-]{8,64})\/(toggle|delete|retarget)$/);
+  if (req.method === 'POST' && promptScheduleActionMatch) {
+    const [, scheduleId, action] = promptScheduleActionMatch;
+    const body = await readJson(req);
+    const result = action === 'toggle'
+      ? await updatePromptSchedule(scheduleId, body, req)
+      : action === 'retarget'
+        ? await retargetPromptSchedule(scheduleId, body, req)
+        : await deletePromptSchedule(scheduleId, body, req);
+    return json(res, result.status, result.body);
+  }
   if (req.method === 'GET' && url.pathname === '/api/missions') {
-    if (!hasControlSession(req)) return json(res, 401, { error: 'control_session_required' });
     const current = await snapshot();
     return json(res, 200, { missions: current.missions });
   }
@@ -5861,7 +7994,6 @@ async function handleApi(req, res) {
   }
   if (req.method === 'GET' && url.pathname === '/api/security/ssh-rescue') return json(res, 200, { rescue: await sshRescueSummary() });
   if (req.method === 'GET' && url.pathname === '/api/security/ssh-rescue/plan') {
-    if (!safeTokenEqual(cookieValue(req, CONTROL_COOKIE), CONTROL_SESSION_TOKEN)) return json(res, 401, { error: 'control_session_required' });
     return json(res, 200, { plan: await sshRescuePlan(req) });
   }
   if (req.method === 'POST' && url.pathname === '/api/security/ssh-rescue/open') {
@@ -5901,7 +8033,6 @@ async function handleApi(req, res) {
   }
   const projectArtifactMatch = url.pathname.match(/^\/api\/project-desk\/([^/]+)\/artifacts\/([^/]+)$/);
   if (req.method === 'GET' && projectArtifactMatch) {
-    if (!hasControlSession(req)) return json(res, 401, { error: 'control_session_required' });
     return serveProjectDeskArtifact(req, res, decodePathComponent(projectArtifactMatch[1]), {
       sessionCreatedAt: url.searchParams.get('sessionCreatedAt'),
       paneId: url.searchParams.get('paneId'),
@@ -5912,7 +8043,6 @@ async function handleApi(req, res) {
   }
   const projectDeskMatch = url.pathname.match(/^\/api\/project-desk\/([^/]+)$/);
   if (req.method === 'GET' && projectDeskMatch) {
-    if (!hasControlSession(req)) return json(res, 401, { error: 'control_session_required' });
     const result = await projectDeskSnapshot(decodePathComponent(projectDeskMatch[1]), {
       sessionCreatedAt: url.searchParams.get('sessionCreatedAt'),
       paneId: url.searchParams.get('paneId'),
@@ -5922,7 +8052,6 @@ async function handleApi(req, res) {
     return json(res, result.status, result.body);
   }
   if (req.method === 'GET' && url.pathname.startsWith('/api/pane/')) {
-    if (!hasControlSession(req)) return json(res, 401, { error: 'control_session_required' });
     const session = decodePathComponent(url.pathname.replace('/api/pane/', '').replace(/\/capture$/, ''));
     if (!url.pathname.endsWith('/capture')) return notFound(res);
     const result = await capturePane(
@@ -5935,6 +8064,10 @@ async function handleApi(req, res) {
   }
   if (req.method === 'POST' && url.pathname === '/api/agent/send') {
     const result = await sendToAgent(await readJson(req), req);
+    return json(res, result.status, result.body);
+  }
+  if (req.method === 'POST' && url.pathname === '/api/agent/send-batch') {
+    const result = await sendToAgents(await readJson(req), req);
     return json(res, result.status, result.body);
   }
   if (req.method === 'POST' && url.pathname === '/api/agent/touch') {
@@ -6040,13 +8173,37 @@ if (REQUIRE_HTTP_AUTH) {
 await loadServices();
 await ensureAgentInteractions();
 await ensureMissionQueue();
+await ensurePromptQueue();
 await ensureNotificationState();
 await reconcileMissionQueueOnStartup();
+await reconcilePromptQueueOnStartup();
 await rotateAuditIfLarge();
 sshRescueState = await readSshRescueState();
 setInterval(() => {
   monitorSshRescue();
 }, SSH_RESCUE_MONITOR_MS).unref();
+setInterval(() => {
+  monitorPromptQueue();
+}, PROMPT_QUEUE_MONITOR_MS).unref();
+
+let shutdownStarted = false;
+function shutdownServer() {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  const forcedExit = setTimeout(() => process.exit(1), 5000);
+  forcedExit.unref();
+  server.close(() => {
+    clearTimeout(forcedExit);
+    if (process.env.NODE_V8_COVERAGE) {
+      try { takeCoverage(); } catch { /* best-effort test instrumentation */ }
+    }
+    process.exit(0);
+  });
+  server.closeAllConnections?.();
+}
+
+process.once('SIGTERM', shutdownServer);
+process.once('SIGINT', shutdownServer);
 
 server.listen(PORT, HOST, () => {
   console.log(`PaneFleet listening on http://${HOST}:${PORT}`);

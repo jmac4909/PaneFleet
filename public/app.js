@@ -1,4 +1,12 @@
-import { agentCreateOutcome, agentDraftSignature, attentionForSession, nextDrawer, terminalFullHeightBounds, terminalLayoutSlots } from './ui-state.js';
+import { agentCreateOutcome, agentDraftSignature, attentionForSession, connectionStatePresentation, cycledItemIndex, dashboardDocumentTitle, dashboardShortcut, filterPromptHistory, isNewAgentSubmitShortcut, isPromptQueueSubmitShortcut, isTerminalFindShortcut, modalFocusIndex, nextDrawer, normalizedPromptQueueDraft, normalizedTerminalRestoreState, noticeAutoDismissMs, preferredDashboardView, projectContextCacheFresh, promptHistoryOrigin, promptQueueComposerPresentation, promptQueueSectionTarget, sessionFilterCategory, sessionFilterMatches, sessionPinPresentation, sessionResultCountPresentation, sessionSearchKeyAction, sessionStatusPresentation, shouldStickTerminalOutput, terminalComposerPresentation, terminalDraftPresentation, terminalFindOffsets, terminalFocusKind, terminalFullHeightBounds, terminalLatestPresentation, terminalLayoutSlots, terminalRefreshPresentation, terminalSwitcherLabel, terminalTabKeyIndex, terminalTabScrollLeft, terminalWorkspaceFrame, workspaceFocusApplies, workspaceFocusPresentation } from './ui-state.js';
+
+const PROJECT_CONTEXT_CACHE_MS = 5_000;
+const PROJECT_ARTIFACT_TYPES = Object.freeze({
+  pdf: '.pdf',
+  markdown: '.md',
+  html: '.html'
+});
+const PROJECT_ARTIFACT_CONTENT_TYPES = new Set(['application/pdf', 'text/markdown', 'text/html']);
 
 const state = {
   snapshot: null,
@@ -11,17 +19,32 @@ const state = {
   snapshotVersion: 0,
   snapshotRequestsInFlight: 0,
   initialViewSelected: false,
+  activeView: 'agents',
   openMissionDetails: new Set(),
+  openPromptQueueDetails: new Set(),
   missionHistoryOpen: false,
   missionHistoryLimit: 24,
   activeTerminalId: null,
   selectedSession: null,
   openDrawer: null,
   drawerReturnFocus: null,
+  shortcutHelpReturnFocus: null,
   activeToolView: 'overview',
   terminalLayout: 'free',
   terminalFullHeight: false,
+  terminalFontScale: 1,
+  terminalWrap: true,
+  terminalRestoreRecords: [],
+  terminalRestoreApplied: false,
+  terminalRestoreInProgress: false,
+  appBadgeCount: null,
+  workspaceFocus: false,
+  sessionPanelVisible: true,
+  inspectorPanelVisible: true,
   agentFilter: '',
+  sessionFilter: 'all',
+  promptHistoryOriginFilter: 'all',
+  promptHistoryQuery: '',
   pinnedSessions: new Set(),
   recentAgentSession: null,
   agentInteractions: new Map(),
@@ -60,7 +83,15 @@ const state = {
     priority: 'normal',
     goal: '',
     verificationCriteria: 'Review the result and record the evidence that proves the requested outcome.'
-  }
+  },
+  promptQueueDraft: {
+    session: '',
+    sessions: [],
+    text: '',
+    cron: ''
+  },
+  promptQueueDraftStorageAvailable: true,
+  promptQueueDraftUndo: null
 };
 
 const DETAIL_REFRESH_MS = 2500;
@@ -68,8 +99,23 @@ const SEND_TEXT_MAX = 4000;
 const PROJECT_NOTES_MAX = 8000;
 const SCRATCHPAD_SNIPPETS_KEY = 'host-control:prompt-snippets:v1';
 const SCRATCHPAD_SNIPPET_LIMIT = 50;
+const ACTIVE_VIEW_STORAGE_KEY = 'host-control:active-view';
+const ACTIVE_TOOL_VIEW_STORAGE_KEY = 'host-control:active-tool-view';
+const SESSION_FILTER_STORAGE_KEY = 'host-control:session-filter';
+const PROMPT_HISTORY_ORIGIN_STORAGE_KEY = 'host-control:prompt-history-origin';
+const PROMPT_QUEUE_DRAFT_STORAGE_KEY = 'host-control:prompt-queue-draft:v1';
+const WORKSPACE_FOCUS_STORAGE_KEY = 'host-control:workspace-focus';
+const SESSION_PANEL_STORAGE_KEY = 'host-control:session-panel-visible';
+const INSPECTOR_PANEL_STORAGE_KEY = 'host-control:inspector-panel-visible';
+const TERMINAL_FONT_SCALE_STORAGE_KEY = 'host-control:terminal-font-scale';
+const TERMINAL_WRAP_STORAGE_KEY = 'host-control:terminal-wrap';
+const TERMINAL_RESTORE_STORAGE_KEY = 'host-control:open-terminals:v1';
+const TERMINAL_FONT_SCALE_MIN = 0.8;
+const TERMINAL_FONT_SCALE_MAX = 1.4;
+const TERMINAL_FONT_SCALE_STEP = 0.1;
 const TERMINAL_SEND_HINT = 'Enter sends. Use ↵ or Tab while composing on mobile.';
 const TERMINAL_DESKTOP_QUERY = '(min-width: 760px)';
+const TERMINAL_ULTRAWIDE_QUERY = '(min-width: 1800px)';
 const TERMINAL_PICKER_KEY_MAP = new Map([
   ['ArrowUp', 'up'],
   ['ArrowDown', 'down'],
@@ -81,11 +127,23 @@ const TERMINAL_PICKER_KEY_MAP = new Map([
 const NON_SERVICE_TMUX_SESSIONS = new Set(['agent-orchestrator-watchdog']);
 const IDLE_SHELL_COMMANDS = new Set(['bash', 'sh', 'zsh']);
 let controlSessionRefreshPromise = null;
+let noticeDismissTimer = null;
+let noticeRevision = 0;
 
 const els = {
+  appShell: document.querySelector('#app'),
+  workspace: document.querySelector('.workspace'),
+  topbar: document.querySelector('.topbar'),
+  workspaceEyebrow: document.querySelector('#workspace-eyebrow'),
+  workspaceTitle: document.querySelector('#workspace-title'),
   subtitle: document.querySelector('#host-subtitle'),
   refresh: document.querySelector('#refresh-button'),
+  shortcutHelp: document.querySelector('#shortcut-help'),
+  shortcutHelpBackdrop: document.querySelector('#shortcut-help-backdrop'),
+  connectionPill: document.querySelector('#connection-pill'),
+  connectionLabel: document.querySelector('#connection-label'),
   notice: document.querySelector('#notice'),
+  noticeMessage: document.querySelector('#notice-message'),
   snapshotError: document.querySelector('#snapshot-error'),
   agentCount: document.querySelector('#agent-count'),
   serviceCount: document.querySelector('#service-count'),
@@ -103,10 +161,15 @@ const els = {
   views: [...document.querySelectorAll('.view')],
   sessionCount: document.querySelector('#session-count'),
   sessionSearch: document.querySelector('#session-search'),
+  sessionFilters: [...document.querySelectorAll('.session-filter')],
   sessionList: document.querySelector('#session-list'),
   newAgentContainer: document.querySelector('#new-agent-container'),
   openTerminalCount: document.querySelector('#open-terminal-count'),
   terminalWorkspace: document.querySelector('.terminal-workspace'),
+  workspaceFocusToggle: document.querySelector('#workspace-focus-toggle'),
+  sessionPanelToggle: document.querySelector('#session-panel-toggle'),
+  inspectorPanelToggle: document.querySelector('#inspector-panel-toggle'),
+  terminalJumpSelect: document.querySelector('#terminal-jump-select'),
   terminalTabs: document.querySelector('#terminal-tabs'),
   terminalStage: document.querySelector('#terminal-stage'),
   terminalEmpty: document.querySelector('#terminal-empty'),
@@ -148,7 +211,6 @@ const els = {
   terminalLayer: document.querySelector('#terminal-layer'),
   terminalDock: document.querySelector('#terminal-dock'),
   drawerBackdrop: document.querySelector('#drawer-backdrop'),
-  queueDrawer: document.querySelector('#queue-drawer'),
   toolsDrawer: document.querySelector('#tools-drawer'),
   toolsOverview: document.querySelector('#tools-overview'),
   security: document.querySelector('#security-view'),
@@ -161,8 +223,42 @@ try {
   if (Array.isArray(storedPins)) state.pinnedSessions = new Set(storedPins.map(String));
   const storedLayout = window.localStorage.getItem('host-control:terminal-layout');
   if (['free', 'focus', 'split', 'grid'].includes(storedLayout)) state.terminalLayout = storedLayout;
+  const storedToolView = window.localStorage.getItem(ACTIVE_TOOL_VIEW_STORAGE_KEY);
+  if (['overview', 'services', 'security', 'system'].includes(storedToolView)) state.activeToolView = storedToolView;
+  const storedSessionFilter = window.localStorage.getItem(SESSION_FILTER_STORAGE_KEY);
+  if (['all', 'needs', 'active', 'idle'].includes(storedSessionFilter)) state.sessionFilter = storedSessionFilter;
+  const storedPromptHistoryOrigin = window.localStorage.getItem(PROMPT_HISTORY_ORIGIN_STORAGE_KEY);
+  if (['all', 'mine', 'automated'].includes(storedPromptHistoryOrigin)) state.promptHistoryOriginFilter = storedPromptHistoryOrigin;
+  state.workspaceFocus = window.localStorage.getItem(WORKSPACE_FOCUS_STORAGE_KEY) === 'true';
+  state.sessionPanelVisible = window.localStorage.getItem(SESSION_PANEL_STORAGE_KEY) !== 'false';
+  state.inspectorPanelVisible = window.localStorage.getItem(INSPECTOR_PANEL_STORAGE_KEY) !== 'false';
+  const storedTerminalFontScale = Number(window.localStorage.getItem(TERMINAL_FONT_SCALE_STORAGE_KEY));
+  if (Number.isFinite(storedTerminalFontScale)) {
+    state.terminalFontScale = Math.min(TERMINAL_FONT_SCALE_MAX, Math.max(TERMINAL_FONT_SCALE_MIN, storedTerminalFontScale));
+  }
+  state.terminalWrap = window.localStorage.getItem(TERMINAL_WRAP_STORAGE_KEY) !== 'false';
 } catch {
   // Storage is optional; the terminal remains fully usable without it.
+}
+
+try {
+  state.terminalRestoreRecords = normalizedTerminalRestoreState(JSON.parse(window.localStorage.getItem(TERMINAL_RESTORE_STORAGE_KEY) || 'null'));
+} catch {
+  state.terminalRestoreRecords = [];
+}
+
+syncWorkspaceFocus();
+syncWorkspacePanels();
+syncTerminalFontScale();
+syncTerminalWrap();
+
+const storedPromptQueueDraft = safeStorageGet(PROMPT_QUEUE_DRAFT_STORAGE_KEY);
+if (storedPromptQueueDraft) {
+  try {
+    state.promptQueueDraft = normalizedPromptQueueDraft(JSON.parse(storedPromptQueueDraft));
+  } catch {
+    state.promptQueueDraftStorageAvailable = safeStorageSet(PROMPT_QUEUE_DRAFT_STORAGE_KEY, '');
+  }
 }
 
 function formatBytes(bytes) {
@@ -322,15 +418,34 @@ function sleep(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function dismissNotice() {
+  noticeRevision += 1;
+  if (noticeDismissTimer) window.clearTimeout(noticeDismissTimer);
+  noticeDismissTimer = null;
+  els.notice.classList.add('hidden');
+  els.noticeMessage.textContent = '';
+  delete els.notice.dataset.kind;
+  els.notice.setAttribute('role', 'status');
+}
+
 function setNotice(message, kind = 'info') {
   if (!message) {
-    els.notice.classList.add('hidden');
-    els.notice.textContent = '';
+    dismissNotice();
     return;
   }
-  els.notice.textContent = message;
+  const revision = ++noticeRevision;
+  if (noticeDismissTimer) window.clearTimeout(noticeDismissTimer);
+  noticeDismissTimer = null;
+  els.noticeMessage.textContent = message;
   els.notice.classList.remove('hidden');
   els.notice.dataset.kind = kind;
+  els.notice.setAttribute('role', kind === 'error' || kind === 'warning' ? 'alert' : 'status');
+  const dismissAfter = noticeAutoDismissMs(kind);
+  if (dismissAfter) {
+    noticeDismissTimer = window.setTimeout(() => {
+      if (revision === noticeRevision) dismissNotice();
+    }, dismissAfter);
+  }
 }
 
 function setSnapshotError(message) {
@@ -412,6 +527,7 @@ async function loadSnapshot(source = 'manual') {
   const version = ++state.snapshotVersion;
   state.snapshotRequestsInFlight += 1;
   els.refresh.disabled = true;
+  els.refresh.setAttribute('aria-busy', 'true');
   try {
     const snapshot = await api('/api/snapshot');
     if (version !== state.snapshotVersion) return;
@@ -425,6 +541,7 @@ async function loadSnapshot(source = 'manual') {
   } finally {
     state.snapshotRequestsInFlight = Math.max(0, state.snapshotRequestsInFlight - 1);
     els.refresh.disabled = state.snapshotRequestsInFlight > 0;
+    els.refresh.setAttribute('aria-busy', state.snapshotRequestsInFlight > 0 ? 'true' : 'false');
   }
 }
 
@@ -438,8 +555,15 @@ async function loadOptions() {
 }
 
 function setLiveState(value) {
+  const presentation = connectionStatePresentation(value);
   els.liveState.textContent = value;
   els.liveState.dataset.state = value;
+  els.connectionLabel.textContent = presentation.label;
+  els.connectionPill.dataset.state = value;
+  els.connectionPill.dataset.tone = presentation.tone;
+  els.connectionPill.setAttribute('aria-label', presentation.description);
+  els.connectionPill.title = presentation.description;
+  syncWorkspaceHeading();
 }
 
 function stopPolling() {
@@ -513,20 +637,29 @@ function render({ preserveActiveEditor = false } = {}) {
   const visibleServices = data.services.filter(isDisplayableService);
   const runningServices = visibleServices.filter((item) => item.running).length;
   const missionCapability = data.capabilities?.missionQueue === true;
+  const promptQueueCapability = data.capabilities?.promptQueue === true;
   const attention = normalizedAttention(data);
   const decisionCount = attentionDecisionCount(data, attention);
+  const promptQueueCount = Number(data.promptQueue?.counts?.pending || 0);
   els.subtitle.textContent = `${data.host.hostname} · up ${formatUptime(data.host.uptimeSeconds)} · ${new Date(data.host.time).toLocaleTimeString()}`;
   els.agentCount.textContent = workerAgents.length;
   els.serviceCount.textContent = `${runningServices}/${visibleServices.length}`;
   els.portCount.textContent = data.listeners.length;
-  els.queueBadge.textContent = String(decisionCount);
-  els.queueBadge.classList.toggle('hidden', !missionCapability || decisionCount === 0);
-  els.queueBadge.setAttribute('aria-label', `${decisionCount} decision${decisionCount === 1 ? '' : 's'} needed`);
+  const queueBadgeCount = promptQueueCapability ? promptQueueCount : decisionCount;
+  els.queueBadge.textContent = String(queueBadgeCount);
+  els.queueBadge.classList.toggle('hidden', !(promptQueueCapability || missionCapability) || queueBadgeCount === 0);
+  els.queueBadge.setAttribute('aria-label', promptQueueCapability
+    ? `${queueBadgeCount} queued prompt${queueBadgeCount === 1 ? '' : 's'}`
+    : `${decisionCount} decision${decisionCount === 1 ? '' : 's'} needed`);
+  syncWorkspaceHeading();
   if (!state.initialViewSelected) {
     state.initialViewSelected = true;
-    switchView('agents');
+    switchView(preferredDashboardView(window.location.hash, safeStorageGet(ACTIVE_VIEW_STORAGE_KEY, 'agents')));
   }
-  if (protectedViewId !== 'queue-view') renderMissionQueue(data.missions, workerAgents, missionCapability, data);
+  if (protectedViewId !== 'queue-view') {
+    if (promptQueueCapability) renderPromptQueue(data.promptQueue, workerAgents);
+    else renderMissionQueue(data.missions, workerAgents, missionCapability, data);
+  }
   if (protectedViewId !== 'agents-view') {
     renderAgents(workerAgents, data.orchestration, data.security, visibleServices);
     revealRecentAgentCard();
@@ -539,6 +672,7 @@ function render({ preserveActiveEditor = false } = {}) {
   if (protectedViewId !== 'security-view') renderSecurityTools(data.security);
   renderToolsOverview(data, visibleServices, attention);
   scheduleHealthChecks();
+  restoreTerminalWorkspace();
   syncOpenTerminalWindows({ protectedEditor: protectedTerminalEditor });
 }
 
@@ -1081,6 +1215,536 @@ function missionCreateForm() {
   `;
 }
 
+function promptQueueTargets(agents) {
+  return agents.filter((agent) =>
+    agent.canSend &&
+    agent.sessionCreatedAt &&
+    agent.id &&
+    /^%\d+$/.test(String(agent.tmuxPaneId || '')) &&
+    Number.isInteger(agent.panePid)
+  );
+}
+
+function preferredPromptQueueSessions(targets) {
+  const available = new Set(targets.map((agent) => agent.session));
+  const selected = (state.promptQueueDraft.sessions || [state.promptQueueDraft.session])
+    .filter((session, index, sessions) => available.has(session) && sessions.indexOf(session) === index)
+    .slice(0, 12);
+  if (selected.length) return selected;
+  if (available.has(state.selectedSession)) return [state.selectedSession];
+  return targets[0]?.session ? [targets[0].session] : [];
+}
+
+function promptQueueAgentSignal(agent) {
+  const status = agent.agentStatus || {};
+  if (agent.queueReady === true) return { tone: 'good', label: 'Green · ready' };
+  if (status.state === 'busy') return { tone: 'busy', label: 'Blue · working' };
+  if (status.state === 'waiting') return { tone: 'warn', label: 'Orange · needs input' };
+  if (status.tone === 'bad') return { tone: 'bad', label: 'Red · inspect' };
+  return { tone: 'neutral', label: status.state ? `Gray · ${status.state}` : 'Gray · unavailable' };
+}
+
+function promptQueueAwaitingFinish(item) {
+  return item.status === 'sent' && item.summaryState === 'pending';
+}
+
+function promptQueueFinished(item) {
+  return item.status === 'sent' && ['captured', 'returned', 'operator_confirmed', 'operator_released'].includes(item.summaryState);
+}
+
+function promptQueueTerminalBoard(agents, items) {
+  const targets = promptQueueTargets(agents);
+  const selectedSessions = preferredPromptQueueSessions(targets);
+  const selected = new Set(selectedSessions);
+  state.promptQueueDraft.sessions = selectedSessions;
+  state.promptQueueDraft.session = selectedSessions[0] || '';
+  const openItems = items.filter((item) => ['queued', 'dispatching', 'needs_review'].includes(item.status) || promptQueueAwaitingFinish(item));
+  const waitingQueueCount = openItems.filter((item) => item.status === 'queued').length;
+  const finishingCount = openItems.filter(promptQueueAwaitingFinish).length;
+  const readyCount = targets.filter((agent) => agent.queueReady === true).length;
+  const workingCount = targets.filter((agent) => agent.agentStatus?.state === 'busy').length;
+  const attentionCount = targets.filter((agent) => agent.agentStatus?.state === 'waiting' || agent.agentStatus?.tone === 'bad').length;
+  return `
+    <section class="prompt-target-board" aria-labelledby="prompt-target-board-title">
+      <div class="prompt-target-board-head">
+        <div><span class="eyebrow">Live terminal board</span><h3 id="prompt-target-board-title">Pick one or more terminals</h3><p>Every selected card is one exact tmux pane. Queue delivery still uses each terminal's independent readiness gate.</p></div>
+        <div class="prompt-target-metrics" aria-label="Terminal readiness summary">
+          <span class="selected"><strong>${selectedSessions.length}</strong> selected</span>
+          <span class="good"><strong>${readyCount}</strong> ready</span>
+          <span class="busy"><strong>${workingCount}</strong> working</span>
+          <span class="warn"><strong>${attentionCount}</strong> needs input</span>
+          <span><strong>${waitingQueueCount}</strong> waiting</span>
+          <span class="busy"><strong>${finishingCount}</strong> finishing</span>
+        </div>
+      </div>
+      <div class="prompt-target-grid">
+        ${targets.length ? targets.map((agent) => {
+          const signal = promptQueueAgentSignal(agent);
+          const line = openItems.filter((item) => item.session === agent.session);
+          const next = line.find(promptQueueAwaitingFinish) || line.find((item) => item.status === 'needs_review') || line.find((item) => ['dispatching', 'queued'].includes(item.status));
+          const active = line.filter((item) => item.status === 'dispatching' || promptQueueAwaitingFinish(item)).length;
+          const blocked = line.filter((item) => item.status === 'needs_review').length;
+          const waiting = line.filter((item) => item.status === 'queued').length;
+          const lineSummary = blocked
+            ? `Blocked · ${waiting} waiting`
+            : active
+              ? `${active} active · ${waiting} waiting`
+              : waiting
+                ? `${waiting} waiting`
+                : 'Queue empty';
+          const isSelected = selected.has(agent.session);
+          return `
+            <button class="prompt-target-card ${escapeHtml(signal.tone)} ${isSelected ? 'selected' : ''}" data-action="prompt-queue-select-target" data-session="${escapeHtml(agent.session)}" type="button" aria-pressed="${isSelected ? 'true' : 'false'}">
+              <span class="prompt-target-card-head"><span class="prompt-target-dot" aria-hidden="true"></span><strong>${escapeHtml(displayNameForSession(agent.session))}</strong><em>${escapeHtml(signal.label)}</em></span>
+              <span class="prompt-target-session">tmux ${escapeHtml(agent.session)} · ${escapeHtml(shortPath(agent.currentPath))}</span>
+              <span class="prompt-target-reason">${escapeHtml(agent.agentStatus?.reason || 'No live state available')}</span>
+              <span class="prompt-target-foot"><b>${escapeHtml(lineSummary)}</b><small>${next ? `Line head #${Number(next.linePosition || 1)}` : isSelected ? 'Selected' : 'Tap to add'}</small></span>
+            </button>
+          `;
+        }).join('') : '<div class="prompt-target-empty">No exact live Codex terminals are available.</div>'}
+      </div>
+      ${targets.length > 1 ? `<div class="prompt-target-bulk-actions"><span>${selectedSessions.length} of ${targets.length} selected</span><button class="action-button" data-action="prompt-queue-select-all" type="button" ${selectedSessions.length === targets.length ? 'disabled' : ''}>Select all live</button></div>` : ''}
+    </section>
+  `;
+}
+
+function promptQueueStateLabel(item) {
+  if (item.status === 'dispatching') return 'Sending now';
+  if (item.status === 'needs_review' && item.deliveryStage === 'final_boundary_missing') return 'Final response missing';
+  if (item.status === 'needs_review' && item.deliveryStage === 'completion_marker_missing') return 'Capture boundary expired';
+  if (item.status === 'needs_review' && item.deliveryStage === 'completion_superseded') return 'Newer activity detected';
+  if (item.status === 'needs_review' && item.deliveryStage === 'completion_timeout') return 'Completion timed out';
+  if (item.status === 'needs_review' && item.deliveryStage === 'completion_target_replaced') return 'Terminal replaced';
+  if (item.status === 'needs_review') return 'Inspect terminal';
+  if (promptQueueAwaitingFinish(item) && item.target?.green) return 'Green · verifying return';
+  if (promptQueueAwaitingFinish(item) && item.target?.state === 'busy') return 'Blue · agent working';
+  if (promptQueueAwaitingFinish(item) && item.target?.state === 'waiting') return 'Orange · agent needs input';
+  if (promptQueueAwaitingFinish(item) && item.target?.tone === 'bad') return 'Red · inspect agent';
+  if (promptQueueAwaitingFinish(item)) return 'Waiting for turn to finish';
+  if (item.status === 'sent') return 'Sent';
+  if (item.status === 'canceled') return 'Canceled';
+  if (item.target?.green) return 'Green confirmed once';
+  if (!item.target?.identityMatches) return 'Exact terminal unavailable';
+  if (item.target?.state === 'busy') return 'Blue · working';
+  if (item.target?.state === 'waiting') return 'Waiting for input';
+  return `Waiting · ${item.target?.state || 'unknown'}`;
+}
+
+function promptQueueTone(item) {
+  if (item.status === 'needs_review') return 'bad';
+  if (item.status === 'dispatching') return 'busy';
+  if (promptQueueAwaitingFinish(item) && item.target?.green) return 'good';
+  if (promptQueueAwaitingFinish(item)) return item.target?.tone === 'bad' ? 'bad' : item.target?.state === 'waiting' ? 'warn' : 'busy';
+  if (item.status === 'sent') return 'good';
+  if (item.status === 'canceled') return 'warn';
+  if (item.target?.green) return 'good';
+  return item.target?.tone || 'neutral';
+}
+
+function promptQueueDurationLabel(value) {
+  const milliseconds = Number(value || 0);
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return 'unknown';
+  if (milliseconds < 60_000) return `${Math.max(1, Math.round(milliseconds / 1000))}s`;
+  if (milliseconds < 60 * 60_000) return `${Math.round(milliseconds / 60_000)}m`;
+  return `${(milliseconds / (60 * 60_000)).toFixed(milliseconds < 10 * 60 * 60_000 ? 1 : 0)}h`;
+}
+
+function promptQueueStats(data) {
+  const items = data.items || [];
+  const waitingNow = items.filter((item) => item.status === 'queued').length;
+  const finishingNow = items.filter(promptQueueAwaitingFinish).length;
+  const delivered = items.filter((item) => item.status === 'sent');
+  const finished = delivered.filter(promptQueueFinished);
+  const finishedToday = finished.filter((item) => {
+    const finished = new Date(item.completedAt || item.updatedAt || 0);
+    return !Number.isNaN(finished.getTime()) && finished.toDateString() === new Date().toDateString();
+  }).length;
+  const waits = delivered
+    .map((item) => timestampMs(item.sentAt) - timestampMs(item.createdAt))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  const averageWait = waits.length ? waits.reduce((sum, value) => sum + value, 0) / waits.length : null;
+  const lastFinished = finished[0]?.completedAt || finished[0]?.updatedAt || null;
+  const verified = finished.filter((item) => item.summaryState === 'captured').length;
+  const returned = finished.filter((item) => item.summaryState === 'returned').length;
+  return `
+    <section class="prompt-queue-stats" aria-label="Prompt queue statistics">
+      ${digestMetric('Waiting now', waitingNow, 'not yet sent', waitingNow ? 'busy' : 'good')}
+      ${digestMetric('Finishing now', finishingNow, 'accepted turns awaiting capture', finishingNow ? 'busy' : 'good')}
+      ${digestMetric('Finished turns', finished.length, `${verified} footer verified · ${returned} safely returned`, finished.length ? 'good' : 'neutral')}
+      ${digestMetric('Finished today', finishedToday, lastFinished ? `last ${missionTimeLabel(lastFinished)}` : 'none yet', finishedToday ? 'good' : 'neutral')}
+      ${digestMetric('Average queue wait', averageWait == null ? '—' : promptQueueDurationLabel(averageWait), 'queued to accepted delivery', 'neutral')}
+      ${digestMetric('Needs review', Number(data.counts?.needsReview || 0), 'never automatically retried', Number(data.counts?.needsReview || 0) ? 'bad' : 'good')}
+    </section>
+  `;
+}
+
+function promptQueueHistoryRow(item) {
+  const delivered = item.status === 'sent';
+  const finishedAt = item.completedAt || item.sentAt || item.updatedAt;
+  const elapsed = timestampMs(item.sentAt || item.updatedAt) - timestampMs(item.createdAt);
+  const exactTerminalAvailable = item.target?.identityMatches === true;
+  const summaryState = item.summaryState || 'unavailable';
+  const finished = promptQueueFinished(item);
+  const origin = promptHistoryOrigin(item);
+  const originLabel = origin === 'automated' ? 'Automated' : 'I wrote';
+  const finishLabel = summaryState === 'captured'
+    ? 'Verified final response'
+    : summaryState === 'returned'
+      ? 'Returned to ready · no footer'
+    : summaryState === 'operator_confirmed'
+      ? 'Operator confirmed after review'
+      : summaryState === 'operator_released'
+        ? 'Operator released after review'
+      : 'Final snapshot unavailable';
+  const finishSnapshot = item.completionSnapshot || item.completionSummary || (summaryState === 'pending'
+    ? 'Waiting for this exact terminal to return stably ready.'
+    : 'Final terminal snapshot was not captured for this earlier delivery.');
+  return `
+    <article class="prompt-history-row ${delivered ? 'good' : 'warn'}" data-prompt-queue-id="${escapeHtml(item.id)}">
+      <div class="prompt-history-state"><span aria-hidden="true">${delivered ? '✓' : '—'}</span><strong>${delivered ? (finished ? (summaryState === 'returned' ? 'Returned' : 'Finished') : 'Delivered') : 'Canceled'}</strong></div>
+      <div class="prompt-history-copy">
+        <div class="prompt-history-title"><h3>${escapeHtml(item.target?.displayName || displayNameForSession(item.session))}</h3><span class="prompt-history-origin ${escapeHtml(origin)}">${originLabel}</span></div>
+        <p class="prompt-history-request"><b>Prompt</b> ${escapeHtml(item.text)}</p>
+        ${delivered ? `<div class="prompt-history-finish ${escapeHtml(summaryState)}"><strong>${escapeHtml(finishLabel)}</strong><pre>${escapeHtml(finishSnapshot)}</pre></div>` : ''}
+      </div>
+      <div class="prompt-history-meta"><strong>${escapeHtml(missionTimeLabel(finishedAt))}</strong><small>${delivered ? `waited ${promptQueueDurationLabel(elapsed)}` : 'no terminal input'}</small></div>
+      ${exactTerminalAvailable ? `<button class="action-button" data-action="prompt-queue-open-agent" data-session="${escapeHtml(item.session)}" data-pane-id="${escapeHtml(item.paneId)}" type="button">Open terminal</button>` : '<span class="prompt-history-unavailable">Previous terminal</span>'}
+    </article>
+  `;
+}
+
+function promptQueueHistory(items, queueRevision) {
+  const allFinished = items.filter(promptQueueFinished);
+  const mineCount = allFinished.filter((item) => promptHistoryOrigin(item) === 'mine').length;
+  const automatedCount = allFinished.length - mineCount;
+  const originFinished = filterPromptHistory(allFinished, state.promptHistoryOriginFilter);
+  const finished = filterPromptHistory(allFinished, state.promptHistoryOriginFilter, state.promptHistoryQuery);
+  const visibleFinished = finished.slice(0, 12);
+  const olderFinished = finished.slice(12);
+  const unconfirmed = items.filter((item) => item.status === 'sent' && !promptQueueAwaitingFinish(item) && !promptQueueFinished(item));
+  const canceled = items.filter((item) => item.status === 'canceled');
+  const historyCount = allFinished.length + unconfirmed.length + canceled.length;
+  const emptyTitle = state.promptHistoryQuery
+    ? 'No finished turns match this search.'
+    : state.promptHistoryOriginFilter === 'automated'
+    ? 'No automated turns have finished yet.'
+    : state.promptHistoryOriginFilter === 'mine'
+      ? 'No prompts you wrote have finished yet.'
+      : 'No finished turns yet.';
+  const countLabel = state.promptHistoryQuery
+    ? `${finished.length}/${originFinished.length}`
+    : state.promptHistoryOriginFilter === 'all'
+      ? String(allFinished.length)
+      : `${originFinished.length}/${allFinished.length}`;
+  return `
+    <section id="prompt-queue-history" class="prompt-queue-history" aria-labelledby="prompt-queue-history-title" tabindex="-1">
+      <div class="prompt-queue-history-head">
+        <div><span class="eyebrow">Retained history</span><h2 id="prompt-queue-history-title">Finished queue turns</h2><p>A turn can have a verified footer, a safely bounded return to ready, or an operator release. This records terminal flow; it never claims the underlying project task is Done.</p></div>
+        <div class="prompt-queue-history-actions">
+          <strong title="${finished.length} shown of ${originFinished.length} in this origin · ${allFinished.length} total">${countLabel}</strong>
+          ${historyCount ? `<button class="action-button danger" data-action="prompt-queue-clear-history" data-revision="${Number(queueRevision || 0)}" type="button">Clear history</button>` : ''}
+        </div>
+      </div>
+      <div class="prompt-history-toolbar">
+        <div class="prompt-history-filter-bar" role="group" aria-label="Filter finished prompts by origin">
+          <button class="prompt-history-origin-filter ${state.promptHistoryOriginFilter === 'all' ? 'active' : ''}" data-action="prompt-history-origin" data-origin="all" type="button" aria-pressed="${state.promptHistoryOriginFilter === 'all'}"><span>All</span><em>${allFinished.length}</em></button>
+          <button class="prompt-history-origin-filter ${state.promptHistoryOriginFilter === 'mine' ? 'active' : ''}" data-action="prompt-history-origin" data-origin="mine" type="button" aria-pressed="${state.promptHistoryOriginFilter === 'mine'}"><span>I wrote</span><em>${mineCount}</em></button>
+          <button class="prompt-history-origin-filter ${state.promptHistoryOriginFilter === 'automated' ? 'active' : ''}" data-action="prompt-history-origin" data-origin="automated" type="button" aria-pressed="${state.promptHistoryOriginFilter === 'automated'}"><span>Automated</span><em>${automatedCount}</em></button>
+        </div>
+        <form id="prompt-history-search-form" class="prompt-history-search-form" role="search">
+          <label class="sr-only" for="prompt-history-search">Search finished prompts</label>
+          <input id="prompt-history-search" name="query" type="search" maxlength="200" autocomplete="off" enterkeyhint="search" value="${escapeHtml(state.promptHistoryQuery)}" placeholder="Search terminal, prompt, or result">
+          <button class="action-button" type="submit">Search</button>
+          <button class="action-button ${state.promptHistoryQuery ? '' : 'hidden'}" data-action="prompt-history-search-clear" type="button">Clear</button>
+        </form>
+      </div>
+      <div class="prompt-history-list">${visibleFinished.length ? visibleFinished.map(promptQueueHistoryRow).join('') : `<div class="prompt-history-empty"><strong>${emptyTitle}</strong><span>${state.promptHistoryQuery ? 'Try another term or clear search.' : 'Choose another origin or wait for a queued turn to finish.'}</span></div>`}</div>
+      ${olderFinished.length ? `<details class="prompt-canceled-history prompt-older-history" data-queue-detail="older" ${state.openPromptQueueDetails.has('older') ? 'open' : ''}><summary>${olderFinished.length} older finished turn${olderFinished.length === 1 ? '' : 's'}</summary><div class="prompt-history-list">${olderFinished.map(promptQueueHistoryRow).join('')}</div></details>` : ''}
+      ${unconfirmed.length ? `<details class="prompt-canceled-history" data-queue-detail="unconfirmed" ${state.openPromptQueueDetails.has('unconfirmed') ? 'open' : ''}><summary>${unconfirmed.length} delivered without a confirmed final response</summary><div class="prompt-history-list">${unconfirmed.map(promptQueueHistoryRow).join('')}</div></details>` : ''}
+      ${canceled.length ? `<details class="prompt-canceled-history" data-queue-detail="canceled" ${state.openPromptQueueDetails.has('canceled') ? 'open' : ''}><summary>${canceled.length} canceled prompt${canceled.length === 1 ? '' : 's'}</summary><div class="prompt-history-list">${canceled.map(promptQueueHistoryRow).join('')}</div></details>` : ''}
+    </section>
+  `;
+}
+
+function setPromptHistoryOriginFilter(filter) {
+  const next = ['all', 'mine', 'automated'].includes(filter) ? filter : 'all';
+  state.promptHistoryOriginFilter = next;
+  safeStorageSet(PROMPT_HISTORY_ORIGIN_STORAGE_KEY, next);
+  render();
+  window.requestAnimationFrame(() => {
+    document.querySelector(`[data-action="prompt-history-origin"][data-origin="${next}"]`)?.focus({ preventScroll: true });
+  });
+}
+
+function setPromptHistoryQuery(value) {
+  state.promptHistoryQuery = String(value || '').slice(0, 200);
+  render();
+  window.requestAnimationFrame(() => {
+    const input = document.querySelector('#prompt-history-search');
+    input?.focus({ preventScroll: true });
+    input?.select();
+  });
+}
+
+function promptQueueComposer(agents) {
+  const targets = promptQueueTargets(agents);
+  const selectedSessions = preferredPromptQueueSessions(targets);
+  const selectedTargets = targets.filter((agent) => selectedSessions.includes(agent.session));
+  state.promptQueueDraft.sessions = selectedSessions;
+  state.promptQueueDraft.session = selectedSessions[0] || '';
+  const presentation = promptQueueComposerPresentation(state.promptQueueDraft, targets.length > 0);
+  const undoAvailable = Boolean(state.promptQueueDraftUndo);
+  const draftStatus = presentation.hasDraft ? 'Saved in this browser' : undoAvailable ? 'Draft cleared' : 'Draft stays in this browser';
+  return `
+    <form id="prompt-queue-form" class="prompt-queue-form">
+      <div class="prompt-queue-selected-targets" aria-live="polite">
+        <span>Selected terminals</span>
+        <strong>${selectedTargets.length ? `${selectedTargets.length} exact agent${selectedTargets.length === 1 ? '' : 's'}` : 'None available'}</strong>
+        <p>${selectedTargets.length ? selectedTargets.map((agent) => escapeHtml(displayNameForSession(agent.session))).join(' · ') : 'Choose live terminals from the board above.'}</p>
+      </div>
+      <label class="prompt-queue-prompt-field">
+        <span class="prompt-queue-label-row"><span>Prompt</span><span class="prompt-queue-input-meta"><kbd aria-hidden="true">Ctrl/⌘ Enter</kbd><em class="prompt-queue-counter" data-full="${presentation.full}" aria-label="${state.promptQueueDraft.text.length} of 4000 characters used">${presentation.count}</em></span></span>
+        <textarea name="text" rows="5" maxlength="4000" required aria-keyshortcuts="Control+Enter Meta+Enter" placeholder="This will wait for the exact terminal to turn green.">${escapeHtml(state.promptQueueDraft.text)}</textarea>
+      </label>
+      <label class="prompt-queue-schedule-field">Repeat schedule <span>optional · UTC</span>
+        <input name="cron" maxlength="80" list="prompt-cron-presets" inputmode="text" autocomplete="off" placeholder="0 * * * *  (every hour)" value="${escapeHtml(state.promptQueueDraft.cron || '')}">
+        <small>${selectedTargets.length > 1 ? 'Recurring schedules require exactly one terminal. Clear this field to use multiple agents.' : 'Five fields: minute, hour, day, month, weekday. Leave empty to queue once.'}</small>
+        <datalist id="prompt-cron-presets">
+          <option value="*/15 * * * *">Every 15 minutes</option>
+          <option value="0 * * * *">Every hour</option>
+          <option value="0 */4 * * *">Every 4 hours</option>
+          <option value="0 9 * * *">Daily at 09:00 UTC</option>
+          <option value="0 9 * * 1-5">Weekdays at 09:00 UTC</option>
+        </datalist>
+      </label>
+      <div class="prompt-queue-draft-row">
+        <strong class="prompt-queue-draft-state ${presentation.hasDraft ? 'has-draft' : ''}" role="status">${draftStatus}</strong>
+        <div class="prompt-queue-draft-actions">
+          <button class="action-button ${presentation.hasDraft ? '' : 'hidden'}" data-action="prompt-queue-draft-clear" type="button">Clear draft</button>
+          <button class="action-button ${undoAvailable ? '' : 'hidden'}" data-action="prompt-queue-draft-undo" type="button">Undo clear</button>
+        </div>
+      </div>
+      <div class="prompt-queue-form-actions">
+        <span>Queue creates one independent FIFO item per terminal · Send now cannot be rolled back · neither mode retries uncertain input</span>
+        <div class="prompt-queue-submit-actions">
+          <button class="action-button" name="mode" value="send" type="submit" ${presentation.sendDisabled ? 'disabled' : ''}>${presentation.sendLabel}</button>
+          <button class="primary-button" name="mode" value="queue" type="submit" ${presentation.disabled ? 'disabled' : ''}>${presentation.label}</button>
+        </div>
+      </div>
+    </form>
+  `;
+}
+
+function promptScheduleTimeLabel(value) {
+  const time = timestampMs(value);
+  if (!time) return 'unknown';
+  const delta = time - Date.now();
+  if (delta <= 0) return 'due now';
+  if (delta < 60 * 60_000) return `in ${Math.max(1, Math.ceil(delta / 60_000))}m`;
+  if (delta < 24 * 60 * 60_000) return `in ${Math.ceil(delta / (60 * 60_000))}h`;
+  return new Date(time).toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+function promptScheduleAbsoluteLabel(value) {
+  const time = timestampMs(value);
+  if (!time) return 'Unknown';
+  const date = new Date(time);
+  const options = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' };
+  const local = date.toLocaleString([], options);
+  const utc = date.toLocaleString([], { ...options, timeZone: 'UTC' });
+  return local === utc ? utc : `${local} · ${utc}`;
+}
+
+function promptScheduleOutcomeLabel(value) {
+  return ({
+    queued: 'Added to queue',
+    coalesced_existing_pending: 'Skipped duplicate',
+    skipped_target_unavailable: 'Exact terminal unavailable',
+    skipped_queue_full: 'Queue was full'
+  })[value] || (value ? String(value).replaceAll('_', ' ') : 'Not run yet');
+}
+
+function promptScheduleErrorLabel(error) {
+  return ({
+    prompt_schedule_cron_invalid: 'Use five UTC cron fields, for example 0 * * * * for hourly.',
+    prompt_schedule_has_no_run_within_two_years: 'That schedule has no supported run in the next two years.',
+    prompt_schedule_target_missing_or_replaced: 'The selected exact terminal was replaced or closed. Select its current card and try again.',
+    prompt_schedule_limit_reached: 'The recurring prompt limit has been reached. Delete an unused schedule first.',
+    prompt_schedule_revision_conflict: 'This schedule changed in another window. The Queue page has been refreshed.'
+  })[error?.message] || error?.message || 'Unknown schedule error';
+}
+
+function replacementAgentForSession(session) {
+  return (state.snapshot?.agents || []).find((agent) => (
+    agent.session === session && agent.canSend && !isReviewAgent(agent)
+  )) || null;
+}
+
+function promptScheduleCard(schedule, items = []) {
+  const available = schedule.target?.identityMatches === true;
+  const replacement = available ? null : replacementAgentForSession(schedule.session);
+  const tone = !available ? 'bad' : schedule.enabled ? 'good' : 'neutral';
+  const openOccurrence = items.find((item) => item.scheduleId === schedule.id && (
+    ['queued', 'dispatching', 'needs_review'].includes(item.status) || promptQueueAwaitingFinish(item)
+  ));
+  const nextRunTitle = promptScheduleAbsoluteLabel(schedule.nextRunAt);
+  return `
+    <article class="prompt-schedule-card ${escapeHtml(tone)}" data-prompt-schedule-id="${escapeHtml(schedule.id)}">
+      <div class="prompt-schedule-card-head">
+        <div><span class="eyebrow">${schedule.enabled ? 'Active schedule' : 'Paused schedule'}</span><h3>${escapeHtml(schedule.target?.displayName || displayNameForSession(schedule.session))}</h3></div>
+        <span class="status ${escapeHtml(tone)}">${available ? (schedule.enabled ? 'Scheduled' : 'Paused') : 'Retarget required'}</span>
+      </div>
+      <code class="prompt-schedule-cron">${escapeHtml(schedule.cron)} <small>UTC</small></code>
+      <p class="prompt-schedule-text">${escapeHtml(schedule.text)}</p>
+      <div class="prompt-schedule-facts">
+        <span><b>Next</b> ${schedule.enabled ? escapeHtml(promptScheduleTimeLabel(schedule.nextRunAt)) : 'paused'}<small>${escapeHtml(nextRunTitle)}</small></span>
+        <span><b>Occurrences</b> ${Number(schedule.occurrenceCount || 0)}<small>${schedule.lastRunAt ? `last ${escapeHtml(missionTimeLabel(schedule.lastRunAt))}` : 'not run yet'}</small></span>
+        <span><b>Queued</b> ${Number(schedule.runCount || 0)}<small>${escapeHtml(promptScheduleOutcomeLabel(schedule.lastOutcome))}</small></span>
+        <span><b>Coalesced</b> ${Number(schedule.coalescedCount || 0)}<small>${Number(schedule.skippedCount || 0)} skipped for other reasons</small></span>
+      </div>
+      ${openOccurrence ? `<p class="prompt-schedule-pending ${openOccurrence.status === 'needs_review' ? 'warn' : ''}"><strong>${openOccurrence.status === 'needs_review' ? 'Scheduled occurrence needs review' : 'One occurrence is already in the queue'}</strong><span>Line #${Number(openOccurrence.linePosition || 1)} · later occurrences coalesce until this one finishes or is reviewed.</span></p>` : ''}
+      ${available ? '' : '<p class="mission-alert">This exact tmux pane was replaced or closed. Occurrences will be skipped, never retargeted.</p>'}
+      <div class="mission-actions prompt-schedule-actions">
+        ${available ? `<button class="action-button" data-action="prompt-queue-open-agent" data-session="${escapeHtml(schedule.session)}" data-pane-id="${escapeHtml(schedule.paneId)}" type="button">Open terminal</button>` : ''}
+        ${replacement ? `<button class="action-button good" data-action="prompt-schedule-retarget" data-prompt-schedule-id="${escapeHtml(schedule.id)}" type="button">Retarget current session</button>` : ''}
+        <button class="action-button ${schedule.enabled ? 'warn' : ''}" data-action="prompt-schedule-toggle" data-prompt-schedule-id="${escapeHtml(schedule.id)}" type="button" ${available ? '' : 'disabled title="Retarget this schedule before resuming it"'}>${schedule.enabled ? 'Pause' : 'Resume'}</button>
+        <button class="action-button danger" data-action="prompt-schedule-delete" data-prompt-schedule-id="${escapeHtml(schedule.id)}" type="button">Delete</button>
+      </div>
+    </article>
+  `;
+}
+
+function promptScheduleDisplayOrder(left, right) {
+  const enabledDelta = Number(right.enabled) - Number(left.enabled);
+  if (enabledDelta) return enabledDelta;
+  if (left.enabled && right.enabled) {
+    const nextRunDelta = timestampMs(left.nextRunAt) - timestampMs(right.nextRunAt);
+    if (nextRunDelta) return nextRunDelta;
+  }
+  return timestampMs(right.updatedAt) - timestampMs(left.updatedAt) || String(left.id).localeCompare(String(right.id));
+}
+
+function promptSchedulePanel(schedules, items = []) {
+  const active = schedules.filter((schedule) => schedule.enabled).length;
+  const orderedSchedules = [...schedules].sort(promptScheduleDisplayOrder);
+  return `
+    <section id="prompt-queue-schedules" class="prompt-schedule-panel" aria-labelledby="prompt-schedule-title" tabindex="-1">
+      <div class="prompt-queue-section-head prompt-schedule-panel-head">
+        <div><span class="eyebrow">Automatic queue intake</span><h2 id="prompt-schedule-title">Recurring prompts</h2><p>A due schedule adds one ordinary prompt to its exact terminal line. If one is already pending, PaneFleet coalesces that occurrence.</p></div>
+        <strong>${active}</strong>
+      </div>
+      <div class="prompt-schedule-grid">${orderedSchedules.length ? orderedSchedules.map((schedule) => promptScheduleCard(schedule, items)).join('') : '<div class="prompt-history-empty"><strong>No recurring prompts.</strong><span>Add a UTC cron expression in the composer to create one.</span></div>'}</div>
+    </section>
+  `;
+}
+
+function promptQueueCard(item) {
+  const cancelable = ['queued', 'needs_review'].includes(item.status);
+  const exactTerminalAvailable = item.target?.identityMatches === true;
+  const replacement = exactTerminalAvailable ? null : replacementAgentForSession(item.session);
+  const retargetable = item.status === 'queued' && Boolean(replacement);
+  const releasable = item.status === 'needs_review' &&
+    ['final_boundary_missing', 'completion_marker_missing', 'completion_superseded', 'completion_timeout'].includes(item.deliveryStage) &&
+    exactTerminalAvailable;
+  const cancelLabel = item.status === 'needs_review' ? 'Cancel ticket' : 'Cancel';
+  const terminalControl = exactTerminalAvailable
+    ? `<button class="action-button" data-action="prompt-queue-open-agent" data-session="${escapeHtml(item.session)}" data-pane-id="${escapeHtml(item.paneId)}" type="button">Open exact terminal</button>`
+    : retargetable
+      ? `<button class="action-button" data-action="prompt-queue-open-agent" data-session="${escapeHtml(item.session)}" data-pane-id="${escapeHtml(replacement.id)}" type="button">Open replacement</button>`
+      : '<button class="action-button" type="button" disabled title="The exact terminal for this ticket was replaced or closed">Exact terminal unavailable</button>';
+  return `
+    <article class="mission-card prompt-queue-card ${escapeHtml(promptQueueTone(item))}" data-prompt-queue-id="${escapeHtml(item.id)}">
+      <div class="mission-card-head">
+        <div><h3>${escapeHtml(item.target?.displayName || displayNameForSession(item.session))}</h3><p>#${Number(item.linePosition || 1)} for this terminal · ${escapeHtml(missionTimeLabel(item.createdAt))}</p></div>
+        <span class="status ${escapeHtml(promptQueueTone(item))}">${escapeHtml(promptQueueStateLabel(item))}</span>
+      </div>
+      <p class="prompt-queue-text">${escapeHtml(item.text)}</p>
+      ${item.blocker ? `<p class="mission-alert">${escapeHtml(item.blocker)}</p>` : ''}
+      <div class="mission-actions">
+        ${terminalControl}
+        ${retargetable ? `<button class="action-button good" data-action="prompt-queue-retarget" data-prompt-queue-id="${escapeHtml(item.id)}" type="button">Retarget queued prompt</button>` : ''}
+        ${releasable ? `<button class="action-button good" data-action="prompt-queue-release" data-prompt-queue-id="${escapeHtml(item.id)}" data-revision="${item.revision}" type="button">Release queue</button>` : ''}
+        ${cancelable ? `<button class="action-button ${item.status === 'needs_review' ? 'warn' : 'danger'}" data-action="prompt-queue-cancel" data-prompt-queue-id="${escapeHtml(item.id)}" data-revision="${item.revision}" data-review="${item.status === 'needs_review' ? '1' : '0'}" type="button">${cancelLabel}</button>` : ''}
+      </div>
+    </article>
+  `;
+}
+
+function promptQueueLane(title, detail, items) {
+  if (!items.length) return '';
+  return `
+    <section class="mission-lane">
+      <div class="mission-lane-head"><div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(detail)}</p></div><strong>${items.length}</strong></div>
+      <div class="mission-list">${items.map(promptQueueCard).join('')}</div>
+    </section>
+  `;
+}
+
+function captureScrollPositions(root, selectors) {
+  return selectors.map((selector) => {
+    const element = selector === ':root' ? root : root.querySelector(selector);
+    return element ? { selector, left: element.scrollLeft, top: element.scrollTop } : null;
+  }).filter(Boolean);
+}
+
+function restoreScrollPositions(root, positions) {
+  for (const position of positions) {
+    const element = position.selector === ':root' ? root : root.querySelector(position.selector);
+    if (!element) continue;
+    element.scrollLeft = position.left;
+    element.scrollTop = position.top;
+  }
+}
+
+function renderPromptQueue(promptQueue, agents) {
+  const scrollPositions = captureScrollPositions(els.queue, [':root', '.prompt-queue-stats', '.prompt-target-grid']);
+  const data = promptQueue || { counts: {}, items: [], schedules: [] };
+  const items = data.items || [];
+  const schedules = data.schedules || [];
+  const needsReview = items.filter((item) => item.status === 'needs_review');
+  const pending = items.filter((item) => ['queued', 'dispatching'].includes(item.status));
+  const finishing = items.filter(promptQueueAwaitingFinish);
+  const activeLanes = [
+    promptQueueLane('Needs review', 'This terminal line is paused. Inspect the exact terminal, then release the queue or cancel the ticket. PaneFleet never resends it.', needsReview),
+    promptQueueLane('Accepted turns', 'Live badges distinguish blue agent work from green return verification. The line advances only after a stable exact-pane boundary.', finishing),
+    promptQueueLane('Waiting to send', 'Each prompt stays bound to one exact tmux pane and waits for stable green readiness.', pending)
+  ].filter(Boolean);
+  const activeCount = needsReview.length + finishing.length + pending.length;
+  const finishedCount = items.filter(promptQueueFinished).length;
+  const activeQueueSection = `
+    <section id="prompt-queue-active" class="prompt-queue-active" aria-labelledby="prompt-queue-active-title" tabindex="-1">
+      <div class="prompt-queue-section-head"><div><span class="eyebrow">Current work</span><h2 id="prompt-queue-active-title">In the queue</h2></div><strong>${activeCount}</strong></div>
+      <div class="mission-lanes">${activeLanes.length ? activeLanes.join('') : '<div class="today-clear"><strong>The active queue is clear.</strong><span>Choose a terminal above to add its next instruction.</span></div>'}</div>
+    </section>
+  `;
+  els.queue.innerHTML = `
+    <section class="mission-console prompt-queue-console">
+      <header class="prompt-queue-page-head">
+        <div><span class="eyebrow">Green-light delivery workspace</span><h1>Prompt Queue</h1><p>Plan work across exact terminals, follow live readiness, and review every completed delivery.</p></div>
+        <span class="prompt-queue-page-rule">Stable green · literal text + Enter · one attempt</span>
+      </header>
+      ${promptQueueStats(data)}
+      <nav class="prompt-queue-jump-nav" aria-label="Jump to Prompt Queue section">
+        <button data-action="prompt-queue-jump" data-queue-section="compose" aria-controls="prompt-queue-compose" type="button"><span>Compose</span><em>New</em></button>
+        <button data-action="prompt-queue-jump" data-queue-section="active" aria-controls="prompt-queue-active" type="button"><span>Active</span><em>${activeCount}</em></button>
+        <button data-action="prompt-queue-jump" data-queue-section="schedules" aria-controls="prompt-queue-schedules" type="button"><span>Schedules</span><em>${schedules.length}</em></button>
+        <button data-action="prompt-queue-jump" data-queue-section="history" aria-controls="prompt-queue-history" type="button"><span>Finished</span><em>${finishedCount}</em></button>
+      </nav>
+      ${activeLanes.length ? activeQueueSection : ''}
+      <section id="prompt-queue-compose" class="mission-hero prompt-queue-hero" tabindex="-1">
+        <div class="mission-hero-head"><div><span class="eyebrow">Compose</span><h2>Send when ready</h2><p>Add plain prompts to exact terminals. Blue keeps waiting; stable green releases one.</p></div></div>
+        <div class="prompt-queue-legend"><span class="good">● Green · ready</span><span class="busy">● Blue · working</span><span class="warn">● Orange · needs input</span></div>
+        ${promptQueueTerminalBoard(agents, items)}
+        ${promptQueueComposer(agents)}
+      </section>
+      ${promptSchedulePanel(schedules, items)}
+      ${activeLanes.length ? '' : activeQueueSection}
+      ${promptQueueHistory(items, data.revision)}
+    </section>
+  `;
+  restoreScrollPositions(els.queue, scrollPositions);
+}
+
 function renderMissionQueue(missions, agents, available, snapshot = state.snapshot || {}) {
   if (!available) {
     els.queue.innerHTML = `<article class="row-card"><h2>Queue</h2><p class="muted">Restart the dashboard backend to activate the durable queue.</p></article>`;
@@ -1141,19 +1805,20 @@ function renderMissionQueue(missions, agents, available, snapshot = state.snapsh
 }
 
 function renderAgents(agents, orchestration, security, services = []) {
+  const sessionScrollPositions = captureScrollPositions(els.sessionList, [':root']);
   const draft = state.agentDraft;
   const workspaceMode = draft.workspace && draft.workspace !== '__new__' ? 'existing' : 'new';
   const model = draft.model || '';
   const reasoning = normalizedReasoning(model, draft.reasoning);
   const createCard = `
     <article class="row-card create-card">
-      <details class="new-agent-panel" ${draft.open ? 'open' : ''}>
+      <details class="new-agent-panel" ${draft.open ? 'open role="dialog" aria-modal="true"' : ''} aria-label="New Agent launcher">
         <summary>
           <span>
             <strong>New Agent</strong>
             <small>${escapeHtml(draft.name || draft.directoryName || draft.preset || state.options.suggestedName || 'persistent tmux session')}</small>
           </span>
-          <span class="summary-hint">Launcher</span>
+          <span class="summary-hint">${draft.open ? 'Close' : 'Launcher'}</span>
         </summary>
         <form id="new-agent-form" class="create-agent-form" data-workspace-mode="${workspaceMode}">
           <label>
@@ -1198,20 +1863,23 @@ function renderAgents(agents, orchestration, security, services = []) {
             <textarea name="prompt" rows="3" maxlength="8000" placeholder="Tell the new agent what to work on">${escapeHtml(draft.prompt)}</textarea>
           </label>
           <div class="launcher-actions form-wide">
-            <button class="primary-button" type="submit">Start Agent</button>
-            <span class="muted">Starts in tmux and stays alive after you close this page.</span>
+            <button class="action-button" data-action="new-agent-cancel" type="button">Cancel</button>
+            <button class="primary-button" type="submit" aria-describedby="new-agent-launcher-safety new-agent-launcher-shortcut">Start Agent</button>
+            <span id="new-agent-launcher-safety" class="muted">Starts in tmux and stays alive after you close this page. Closing this launcher keeps your draft.</span>
+            <span id="new-agent-launcher-shortcut" class="launcher-shortcut"><kbd>Ctrl</kbd><span>/</span><kbd>⌘</kbd><span>+</span><kbd>Enter</kbd></span>
           </div>
         </form>
       </details>
+      <div class="new-agent-backdrop" data-action="new-agent-cancel" aria-hidden="true"></div>
     </article>
   `;
-  els.sessionCount.textContent = String(agents.length);
   els.sessionList.innerHTML = agents.length
-    ? agents.map((agent) => sessionRailItem(agent, orchestration)).join('')
+    ? `${agents.map((agent) => sessionRailItem(agent, orchestration)).join('')}<button class="session-no-results" data-action="session-filters-reset" type="button"><strong>No matching sessions</strong><span>Clear search and status filters</span></button>`
     : '<div class="session-empty">No Codex sessions are visible.</div>';
   els.newAgentContainer.innerHTML = createCard;
   if (els.sessionSearch.value !== state.agentFilter) els.sessionSearch.value = state.agentFilter;
   filterSessionRail(state.agentFilter);
+  restoreScrollPositions(els.sessionList, sessionScrollPositions);
 
   const activeSession = state.terminalWindows.get(state.activeTerminalId)?.session;
   if (activeSession) state.selectedSession = activeSession;
@@ -1251,29 +1919,135 @@ function sessionRailItem(agent, orchestration) {
   const decisions = attention.filter((item) => item.requiresDecision).length;
   const isOpen = [...state.terminalWindows.values()].some((item) => item.session === agent.session && item.mode !== 'static');
   const pinned = state.pinnedSessions.has(agent.session);
+  const pin = sessionPinPresentation(pinned, displayName);
+  const signal = sessionStatusPresentation(status, attention.length);
+  const lastUsed = lastUsedLabel(agent);
+  const taskPreview = String(brief.task || status.reason || '').trim();
   const searchValue = `${displayName} ${agent.session} ${agent.currentPath || ''} ${brief.task || ''}`.toLowerCase();
+  const filterCategory = sessionFilterCategory(status, attention.length);
   return `
-    <article class="session-item ${escapeHtml(statusClass)} ${isOpen ? 'is-open' : ''}" data-session="${escapeHtml(agent.session)}" data-session-search="${escapeHtml(searchValue)}">
-      <button class="session-open" data-action="agent-detail" data-session="${escapeHtml(agent.session)}" type="button" aria-label="Open ${escapeHtml(displayName)} terminal">
+    <article class="session-item ${escapeHtml(statusClass)} ${isOpen ? 'is-open' : ''} ${pinned ? 'is-pinned' : ''}" data-session="${escapeHtml(agent.session)}" data-session-search="${escapeHtml(searchValue)}" data-session-filter="${escapeHtml(filterCategory)}">
+      <button class="session-open" data-action="agent-detail" data-session="${escapeHtml(agent.session)}" type="button" aria-label="Open ${escapeHtml(displayName)} terminal. ${escapeHtml(signal.label)}. ${escapeHtml(lastUsed)}">
         <span class="session-state-dot" aria-hidden="true"></span>
-        <span class="session-copy"><strong>${escapeHtml(displayName)}</strong><small>${escapeHtml(shortPath(agent.currentPath))}</small><em>${escapeHtml(lastUsedLabel(agent))}</em></span>
+        <span class="session-copy"><strong>${escapeHtml(displayName)}</strong><small>${escapeHtml(shortPath(agent.currentPath))}</small><span class="session-meta"><span class="session-signal ${escapeHtml(signal.tone)}" title="${escapeHtml(signal.description)}">${escapeHtml(signal.label)}</span><em>${escapeHtml(lastUsed)}</em></span>${taskPreview ? `<span class="session-task" title="${escapeHtml(taskPreview)}">${escapeHtml(taskPreview)}</span>` : ''}</span>
         ${attention.length ? `<span class="session-attention ${decisions ? 'decision' : ''}" title="${escapeHtml(`${attention.length} item${attention.length === 1 ? '' : 's'} need attention`)}">${decisions || attention.length}</span>` : ''}
       </button>
-      <button class="session-pin ${pinned ? 'active' : ''}" data-action="session-pin" data-session="${escapeHtml(agent.session)}" type="button" aria-pressed="${pinned ? 'true' : 'false'}" aria-label="${pinned ? 'Unpin' : 'Pin'} ${escapeHtml(displayName)}">${pinned ? '●' : '○'}</button>
+      <button class="session-pin ${pinned ? 'active' : ''}" data-action="session-pin" data-session="${escapeHtml(agent.session)}" type="button" aria-pressed="${pinned ? 'true' : 'false'}" aria-label="${escapeHtml(pin.actionLabel)}" title="${escapeHtml(pin.title)}"><span class="session-pin-symbol" aria-hidden="true">${pin.symbol}</span><span class="session-pin-label" aria-hidden="true">${pin.visibleLabel}</span></button>
     </article>
   `;
+}
+
+function renderSessionFilterChrome() {
+  const items = [...els.sessionList.querySelectorAll('.session-item')];
+  const counts = { all: items.length, needs: 0, active: 0, idle: 0 };
+  for (const item of items) {
+    if (Object.hasOwn(counts, item.dataset.sessionFilter)) counts[item.dataset.sessionFilter] += 1;
+  }
+  for (const button of els.sessionFilters) {
+    const filter = button.dataset.filter;
+    const active = filter === state.sessionFilter;
+    const count = counts[filter] || 0;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    button.setAttribute('aria-label', `${button.querySelector('span')?.textContent || filter}, ${count} session${count === 1 ? '' : 's'}`);
+    const counter = button.querySelector('em');
+    if (counter) counter.textContent = String(count);
+  }
 }
 
 function filterSessionRail(value = '') {
   const normalized = String(value || '').trim().toLowerCase();
   state.agentFilter = value;
   let visible = 0;
-  for (const item of els.sessionList.querySelectorAll('.session-item')) {
-    const matches = !normalized || item.dataset.sessionSearch.includes(normalized);
+  const items = [...els.sessionList.querySelectorAll('.session-item')];
+  for (const item of items) {
+    const matches = sessionFilterMatches(state.sessionFilter, item.dataset.sessionFilter, item.dataset.sessionSearch, normalized);
     item.hidden = !matches;
     if (matches) visible += 1;
   }
-  els.sessionList.classList.toggle('has-no-results', Boolean(normalized) && visible === 0);
+  const filtered = state.sessionFilter !== 'all';
+  const label = els.sessionFilters.find((button) => button.dataset.filter === state.sessionFilter)?.querySelector('span')?.textContent || 'selected';
+  const emptyMessage = normalized && filtered
+    ? `No ${label.toLowerCase()} sessions match this search`
+    : filtered ? `No ${label.toLowerCase()} sessions` : 'No matching sessions';
+  els.sessionList.dataset.emptyMessage = emptyMessage;
+  els.sessionList.classList.toggle('has-no-results', items.length > 0 && (Boolean(normalized) || filtered) && visible === 0);
+  const emptyState = els.sessionList.querySelector('.session-no-results');
+  if (emptyState) emptyState.querySelector('strong').textContent = emptyMessage;
+  const countPresentation = sessionResultCountPresentation(visible, items.length, Boolean(normalized) || filtered);
+  els.sessionCount.textContent = countPresentation.label;
+  els.sessionCount.setAttribute('aria-label', countPresentation.description);
+  els.sessionCount.title = countPresentation.description;
+  renderSessionFilterChrome();
+}
+
+function visibleSessionItems() {
+  return [...els.sessionList.querySelectorAll('.session-item')].filter((item) => !item.hidden);
+}
+
+function focusSessionResult(item) {
+  const button = item?.querySelector('.session-open');
+  if (!button) return;
+  button.focus({ preventScroll: true });
+  item.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
+}
+
+function handleSessionSearchKeydown(event) {
+  const items = visibleSessionItems();
+  const action = sessionSearchKeyAction(event, items.length, els.sessionSearch.value);
+  if (!action) return false;
+  event.preventDefault();
+  if (action === 'clear') {
+    els.sessionSearch.value = '';
+    filterSessionRail('');
+  } else if (action === 'open-first') {
+    items[0]?.querySelector('.session-open')?.click();
+  } else {
+    focusSessionResult(action === 'focus-last' ? items.at(-1) : items[0]);
+  }
+  return true;
+}
+
+function handleSessionResultKeydown(event) {
+  if (!event.target?.classList?.contains('session-open')) return false;
+  const items = visibleSessionItems();
+  const currentItem = event.target.closest('.session-item');
+  const currentIndex = items.indexOf(currentItem);
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    els.sessionSearch.focus({ preventScroll: true });
+    els.sessionSearch.select();
+    return true;
+  }
+  if (
+    !['ArrowDown', 'ArrowUp'].includes(event.key)
+    || event.altKey
+    || event.ctrlKey
+    || event.metaKey
+    || event.shiftKey
+    || event.isComposing
+  ) return false;
+  event.preventDefault();
+  const nextIndex = cycledItemIndex(currentIndex, items.length, event.key === 'ArrowUp' ? -1 : 1);
+  focusSessionResult(items[nextIndex]);
+  return true;
+}
+
+function setSessionFilter(filter) {
+  const next = ['all', 'needs', 'active', 'idle'].includes(filter) ? filter : 'all';
+  state.sessionFilter = next;
+  safeStorageSet(SESSION_FILTER_STORAGE_KEY, next);
+  filterSessionRail(state.agentFilter);
+}
+
+function resetSessionFilters() {
+  state.sessionFilter = 'all';
+  state.agentFilter = '';
+  els.sessionSearch.value = '';
+  safeStorageSet(SESSION_FILTER_STORAGE_KEY, 'all');
+  filterSessionRail('');
+  const firstItem = visibleSessionItems()[0];
+  window.requestAnimationFrame(() => focusSessionResult(firstItem));
 }
 
 function selectedAgent(agents = state.snapshot?.agents || []) {
@@ -1298,7 +2072,7 @@ function renderTerminalInspector(agents, orchestration) {
   const next = observationNextAction(brief, status, task);
   els.terminalInspector.innerHTML = `
     <div class="inspector-head"><div><span class="eyebrow">Selected agent</span><h2>${escapeHtml(brief.displayName || agent.session)}</h2><p>tmux ${escapeHtml(agent.session)} · ${escapeHtml(shortPath(agent.currentPath))}</p></div><span class="status ${escapeHtml(statusClassName(status))}">${escapeHtml(status.state)}</span></div>
-    <div class="inspector-actions"><button class="action-button primary" data-action="agent-detail" data-session="${escapeHtml(agent.session)}" type="button">Open</button><button class="action-button" data-action="session-pin" data-session="${escapeHtml(agent.session)}" type="button">${pinned ? 'Unpin' : 'Pin'}</button><button class="action-button" data-action="copy-attach" data-session="${escapeHtml(agent.session)}" type="button">Copy attach</button></div>
+    <div class="inspector-actions"><button class="action-button primary" data-action="agent-detail" data-session="${escapeHtml(agent.session)}" type="button">Open</button><button class="action-button" data-action="session-pin" data-session="${escapeHtml(agent.session)}" type="button" aria-pressed="${pinned ? 'true' : 'false'}">${pinned ? 'Unpin' : 'Pin to top'}</button><button class="action-button" data-action="copy-attach" data-session="${escapeHtml(agent.session)}" type="button">Copy attach</button></div>
     ${attention.length ? `<section class="inspector-attention"><div class="inspector-section-head"><strong>Needs you</strong><span>${attention.length}</span></div>${attention.map((item) => `<button class="inspector-attention-item ${escapeHtml(item.tone)}" data-action="attention-open" data-attention-id="${escapeHtml(item.id)}" type="button"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.detail)}</span></button>`).join('')}</section>` : ''}
     <section class="inspector-summary"><div><span>Current task</span><p>${escapeHtml(task)}</p></div><div><span>Last signal</span><p>${escapeHtml(activity)}</p></div><div><span>Next</span><p>${escapeHtml(next)}</p></div></section>
     ${mission ? `<section class="inspector-mission ${escapeHtml(missionTone(mission.status))}"><div class="inspector-section-head"><strong>Mission</strong><span>${escapeHtml(missionStatusLabel(mission.status))}</span></div><h3>${escapeHtml(mission.title)}</h3><p>${escapeHtml(mission.blocker || mission.goal)}</p><button class="action-button" data-action="mission-open-queue" data-mission-id="${escapeHtml(mission.id)}" type="button">Open in queue</button></section>` : ''}
@@ -1479,15 +2253,15 @@ function renderToolsOverview(snapshot, services, attention) {
       || service.health?.ok === false
       || (service.running && (service.portStates || []).some((port) => !port.listening)));
   const notifications = normalizedNotifications(snapshot);
-  const decisions = attentionDecisionCount(snapshot, attention);
+  const queuedPrompts = Number(snapshot.promptQueue?.counts?.pending || 0);
   const securityWarnings = attention.items.filter((item) => item.kind.includes('security'));
   const serviceItems = prioritizedServices(services).slice(0, 8);
   els.toolsOverview.innerHTML = `
     <section class="tools-overview-grid">
       <button class="tool-summary-card ${unhealthyServices.length ? 'bad' : 'good'}" data-action="tool-view" data-tool-view="services" type="button"><span>Services</span><strong>${runningServices}/${services.length}</strong><small>${unhealthyServices.length ? `${unhealthyServices.length} unhealthy` : 'No health failures'}</small></button>
       <button class="tool-summary-card ${securityWarnings.length ? 'warn' : 'good'}" data-action="tool-view" data-tool-view="security" type="button"><span>Security</span><strong>${securityWarnings.length}</strong><small>${securityWarnings.length ? 'warnings' : 'No warnings'}</small></button>
-      <button class="tool-summary-card ${decisions ? 'bad' : 'good'}" data-action="drawer-toggle" data-drawer="queue" type="button"><span>Queue</span><strong>${decisions}</strong><small>${decisions ? 'decisions need you' : 'No decisions'}</small></button>
-      <button class="tool-summary-card ${notifications.length ? 'busy' : 'neutral'}" data-action="drawer-toggle" data-drawer="queue" type="button"><span>Notifications</span><strong>${notifications.length}</strong><small>${notifications.length ? 'open or snooze' : 'Outbox clear'}</small></button>
+      <button class="tool-summary-card ${queuedPrompts ? 'busy' : 'good'}" data-action="open-queue" type="button"><span>Prompt Queue</span><strong>${queuedPrompts}</strong><small>${queuedPrompts ? 'waiting or needs review' : 'No queued prompts'}</small></button>
+      <button class="tool-summary-card ${notifications.length ? 'busy' : 'neutral'}" data-action="notifications-focus" type="button"><span>Notifications</span><strong>${notifications.length}</strong><small>${notifications.length ? 'open or snooze' : 'Outbox clear'}</small></button>
     </section>
     <section class="tool-panel">
       <div class="panel-head compact"><div><h2>Service pulse</h2><p>Visibility first; controls stay inside Services.</p></div><button class="action-button" data-action="tool-view" data-tool-view="services" type="button">All services</button></div>
@@ -1497,7 +2271,7 @@ function renderToolsOverview(snapshot, services, attention) {
       <section class="tool-panel tools-notifications">
         <div class="panel-head compact"><div><h2>Notifications</h2><p>Open or snooze without leaving the terminal workspace.</p></div><strong>${notifications.length}</strong></div>
         <div class="notification-list">${notifications.slice(0, 4).map(notificationCard).join('')}</div>
-        ${notifications.length > 4 ? `<button class="action-button" data-action="drawer-toggle" data-drawer="queue" type="button">Open all ${notifications.length}</button>` : ''}
+        ${notifications.length > 4 ? `<button class="action-button" data-action="notifications-focus" type="button">Open all ${notifications.length}</button>` : ''}
       </section>
     ` : ''}
     <section class="tool-panel">
@@ -1985,8 +2759,10 @@ function safeStorageSet(key, value) {
   try {
     if (value) window.localStorage.setItem(key, value);
     else window.localStorage.removeItem(key);
+    return true;
   } catch {
     // Draft/history persistence is a convenience, never a send prerequisite.
+    return false;
   }
 }
 
@@ -2094,6 +2870,105 @@ function exactAgentForTerminal(item) {
   if (expectedPaneId) return agents.find((agent) => agent.id === expectedPaneId) || null;
   const promptable = agents.filter((agent) => agent.canSend);
   return promptable.length === 1 ? promptable[0] : agents.length === 1 ? agents[0] : null;
+}
+
+function terminalRestoreRecord(item) {
+  if (!item || item.mode === 'static') return null;
+  const agent = exactAgentForTerminal(item);
+  if (!agent?.session || !agent.sessionCreatedAt || !agent.id || !agent.tmuxPaneId || !Number.isInteger(agent.panePid)) return null;
+  const bounds = item.maximized ? item.restoreBounds : item.fullHeightRestoreBounds || item.freeBounds;
+  return {
+    session: String(agent.session),
+    sessionCreatedAt: String(agent.sessionCreatedAt),
+    paneId: String(agent.id),
+    tmuxPaneId: String(agent.tmuxPaneId),
+    panePid: Number(agent.panePid),
+    minimized: Boolean(item.minimized),
+    refreshPaused: Boolean(item.refreshPaused),
+    freeBounds: bounds ? {
+      left: Number(bounds.left),
+      top: Number(bounds.top),
+      width: Number(bounds.width),
+      height: Number(bounds.height)
+    } : null
+  };
+}
+
+function persistTerminalWorkspace() {
+  if (!state.terminalRestoreApplied || state.terminalRestoreInProgress) return;
+  if (isDesktopTerminalMode() && state.terminalLayout === 'free') {
+    for (const item of state.terminalWindows.values()) captureTerminalFreeBounds(item);
+  }
+  const terminals = [...state.terminalWindows.values()]
+    .map((item) => ({ item, record: terminalRestoreRecord(item) }))
+    .filter(({ record }) => record)
+    .slice(0, 8);
+  if (!terminals.length) {
+    safeStorageSet(TERMINAL_RESTORE_STORAGE_KEY, '');
+    return;
+  }
+  const active = terminals.find(({ item }) => item.id === state.activeTerminalId && !item.minimized)?.record || null;
+  safeStorageSet(TERMINAL_RESTORE_STORAGE_KEY, JSON.stringify({
+    version: 1,
+    active: active ? {
+      session: active.session,
+      sessionCreatedAt: active.sessionCreatedAt,
+      paneId: active.paneId,
+      tmuxPaneId: active.tmuxPaneId,
+      panePid: active.panePid
+    } : null,
+    terminals: terminals.map(({ record }) => record)
+  }));
+}
+
+function restoreTerminalWorkspace() {
+  if (state.terminalRestoreApplied || !state.snapshot) return;
+  state.terminalRestoreApplied = true;
+  state.terminalRestoreInProgress = true;
+  const restored = [];
+  try {
+    for (const record of state.terminalRestoreRecords) {
+      const agent = state.snapshot.agents.find((candidate) =>
+        !isReviewAgent(candidate)
+        && candidate.session === record.session
+        && String(candidate.sessionCreatedAt || '') === record.sessionCreatedAt
+        && String(candidate.id || '') === record.paneId
+        && String(candidate.tmuxPaneId || '') === record.tmuxPaneId
+        && Number(candidate.panePid) === record.panePid
+      );
+      if (!agent) continue;
+      const item = startLiveDetail(agent.session, 'agent', 160, agent.id, {
+        refreshPaused: record.refreshPaused,
+        restoredFreeBounds: record.freeBounds
+      });
+      if (record.minimized) {
+        if (item.timer) window.clearTimeout(item.timer);
+        item.timer = null;
+        item.minimized = true;
+        item.element.classList.add('is-minimized');
+      }
+      restored.push({ item, record });
+    }
+    const active = restored.find(({ item, record }) => record.active && !item.minimized)?.item
+      || restored.filter(({ item }) => !item.minimized).at(-1)?.item
+      || null;
+    state.activeTerminalId = active?.id || null;
+    state.selectedSession = active?.session || null;
+    renderTerminalDock();
+    applyTerminalLayout();
+    renderTerminalChrome();
+    if (active) {
+      window.requestAnimationFrame(() => {
+        if (!active.element.isConnected) return;
+        focusTerminalWindow(active);
+        terminalFocusTarget(active).focus({ preventScroll: true });
+      });
+    }
+  } finally {
+    state.terminalRestoreRecords = [];
+    state.terminalRestoreInProgress = false;
+    persistTerminalWorkspace();
+  }
 }
 
 function focusedLiveTerminal() {
@@ -2251,7 +3126,9 @@ function projectLinkMarkup(link, index) {
 function projectContextArtifacts(context) {
   return (Array.isArray(context?.artifacts) ? context.artifacts : []).filter((artifact) => (
     /^[a-f0-9]{32}$/.test(String(artifact?.id || '')) &&
-    String(artifact?.name || '').toLowerCase().endsWith('.pdf')
+    String(artifact?.name || '').toLowerCase().endsWith(
+      PROJECT_ARTIFACT_TYPES[String(artifact?.type || '')] || '\0'
+    )
   ));
 }
 
@@ -2324,7 +3201,8 @@ function projectArtifactDownloadRequest(button) {
 
 function projectArtifactDownloadName(button) {
   const name = String(button?.dataset?.artifactName || '').trim();
-  if (!name || name !== name.split(/[\\/]/).pop() || !name.toLowerCase().endsWith('.pdf')) return 'project-file.pdf';
+  const supported = Object.values(PROJECT_ARTIFACT_TYPES).some((extension) => name.toLowerCase().endsWith(extension));
+  if (!name || name !== name.split(/[\\/]/).pop() || !supported) return 'project-file';
   return name;
 }
 
@@ -2338,12 +3216,12 @@ async function projectArtifactDownload(button) {
       const response = await fetch(requestUrl, {
         cache: 'no-store',
         credentials: 'same-origin',
-        headers: { accept: 'application/pdf' },
+        headers: { accept: 'application/pdf, text/markdown, text/html' },
         signal: controller.signal
       });
       if (response.ok) {
         const contentType = String(response.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
-        if (contentType !== 'application/pdf') throw new Error('The server did not return a PDF. Refresh Project Desk and try again.');
+        if (!PROJECT_ARTIFACT_CONTENT_TYPES.has(contentType)) throw new Error('The server did not return a supported project file. Refresh Project Desk and try again.');
         const blob = await response.blob();
         const objectUrl = URL.createObjectURL(blob);
         const anchor = document.createElement('a');
@@ -2467,7 +3345,7 @@ function renderProjectContext() {
   els.projectArtifactCount.textContent = String(artifactCapabilityAvailable ? artifactMarkup.length : 0);
   els.projectArtifacts.innerHTML = artifactCapabilityAvailable && artifactMarkup.length
     ? artifactMarkup.join('')
-    : `<p class="project-empty-copy">${artifactCapabilityAvailable ? 'No downloadable PDFs found in the configured output folders.' : 'Restart the dashboard to load project files.'}</p>`;
+    : `<p class="project-empty-copy">${artifactCapabilityAvailable ? 'No downloadable project outputs found yet.' : 'Restart the dashboard to load project files.'}</p>`;
   renderProjectMission(target);
 }
 
@@ -2514,14 +3392,17 @@ function updateProjectComposerState() {
 
 function loadProjectDeskContext(target, { force = false } = {}) {
   if (!target || !projectDeskCapabilityAvailable()) return;
-  if (!force && state.projectDesk.contextCache.has(target.key)) {
-    state.projectDesk.context = state.projectDesk.contextCache.get(target.key);
+  const cached = state.projectDesk.contextCache.get(target.key);
+  if (!force && projectContextCacheFresh(cached, Date.now(), PROJECT_CONTEXT_CACHE_MS)) {
+    state.projectDesk.context = cached.context;
     state.projectDesk.contextError = '';
     state.projectDesk.contextLoading = false;
     renderProjectContext();
     updateProjectComposerState();
     return;
   }
+  const fallbackContext = cached?.context || null;
+  if (fallbackContext) state.projectDesk.context = fallbackContext;
   const token = ++state.projectDesk.contextRequestToken;
   state.projectDesk.contextLoading = true;
   state.projectDesk.contextError = '';
@@ -2537,14 +3418,14 @@ function loadProjectDeskContext(target, { force = false } = {}) {
     .then((result) => {
       if (token !== state.projectDesk.contextRequestToken) return;
       const context = result?.project || result?.context || result;
-      state.projectDesk.contextCache.set(target.key, context);
+      state.projectDesk.contextCache.set(target.key, { context, fetchedAt: Date.now() });
       state.projectDesk.context = context;
       state.projectDesk.contextError = '';
       adoptProjectNotesScope(target, context);
     })
     .catch((error) => {
       if (token !== state.projectDesk.contextRequestToken) return;
-      state.projectDesk.context = null;
+      state.projectDesk.context = fallbackContext;
       state.projectDesk.contextError = error.message;
     })
     .finally(() => {
@@ -2567,11 +3448,12 @@ function syncProjectDesk({ refreshContext = false } = {}) {
   const nextTarget = projectDeskTargetForTerminal(focusedLiveTerminal());
   const nextKey = nextTarget?.key || '';
   const changed = nextKey !== state.projectDesk.targetKey;
+  const cached = nextTarget ? state.projectDesk.contextCache.get(nextTarget.key) : null;
   if (changed) {
     state.projectDesk.contextRequestToken += 1;
     state.projectDesk.target = nextTarget;
     state.projectDesk.targetKey = nextKey;
-    state.projectDesk.context = nextTarget ? state.projectDesk.contextCache.get(nextTarget.key) || null : null;
+    state.projectDesk.context = cached?.context || null;
     state.projectDesk.contextError = '';
     state.projectDesk.contextLoading = false;
     clearScratchpadReview();
@@ -2586,10 +3468,10 @@ function syncProjectDesk({ refreshContext = false } = {}) {
   renderPromptSnippetOptions();
   renderProjectContext();
   updateProjectComposerState();
-  if (nextTarget && projectDeskCapabilityAvailable() && (
-    refreshContext || (!state.projectDesk.context && !state.projectDesk.contextLoading && !state.projectDesk.contextError)
+  const cacheFresh = projectContextCacheFresh(cached, Date.now(), PROJECT_CONTEXT_CACHE_MS);
+  if (nextTarget && projectDeskCapabilityAvailable() && !state.projectDesk.contextLoading && (
+    refreshContext || (!cacheFresh && !state.projectDesk.contextError)
   )) {
-    if (refreshContext) state.projectDesk.contextCache.delete(nextTarget.key);
     loadProjectDeskContext(nextTarget, { force: refreshContext });
   }
 }
@@ -2672,12 +3554,26 @@ function openScratchpadReview() {
   els.scratchpadSendConfirm.focus({ preventScroll: true });
 }
 
-function togglePinnedSession(session) {
+function togglePinnedSession(session, source = null) {
   if (!session) return;
-  if (state.pinnedSessions.has(session)) state.pinnedSessions.delete(session);
+  const wasPinned = state.pinnedSessions.has(session);
+  const fromInspector = Boolean(source?.closest?.('.terminal-inspector'));
+  if (wasPinned) state.pinnedSessions.delete(session);
   else state.pinnedSessions.add(session);
   safeStorageSet('host-control:pinned-sessions', JSON.stringify([...state.pinnedSessions]));
   if (state.snapshot) render({ preserveActiveEditor: true });
+  const buttons = fromInspector
+    ? [...els.terminalInspector.querySelectorAll('[data-action="session-pin"]')]
+    : [...els.sessionList.querySelectorAll('[data-action="session-pin"]')];
+  const nextButton = buttons.find((button) => button.dataset.session === session);
+  window.requestAnimationFrame(() => {
+    if (!nextButton?.isConnected) return;
+    nextButton.focus({ preventScroll: true });
+    nextButton.closest('.session-item')?.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
+  });
+  setNotice(wasPinned
+    ? `${displayNameForSession(session)} returned to recent session order.`
+    : `${displayNameForSession(session)} pinned to the top.`);
 }
 
 function terminalDraftKey(session) {
@@ -2699,7 +3595,7 @@ function loadTerminalHistory(session) {
 
 function persistTerminalDraft(item) {
   if (!item?.session || item.mode === 'static') return;
-  safeStorageSet(terminalDraftKey(item.session), item.sendText.value);
+  item.draftStorageAvailable = safeStorageSet(terminalDraftKey(item.session), item.sendText.value);
 }
 
 function rememberTerminalHistory(item, text) {
@@ -2729,6 +3625,7 @@ function previewTerminalPaste(item, value) {
   item.pastePreviewMeta.textContent = `${text.length} characters · ${lineCount} line${lineCount === 1 ? '' : 's'}`;
   item.pastePreviewText.textContent = text.length > 500 ? `${text.slice(0, 500)}…` : text;
   item.pastePreview.classList.remove('hidden');
+  syncTerminalComposer(item);
 }
 
 function clearPendingPaste(item) {
@@ -2737,6 +3634,7 @@ function clearPendingPaste(item) {
   item.pastePreview.classList.add('hidden');
   item.pastePreviewMeta.textContent = '';
   item.pastePreviewText.textContent = '';
+  syncTerminalComposer(item);
   focusSendText(item);
 }
 
@@ -2752,9 +3650,19 @@ function insertPendingPaste(item) {
 }
 
 function terminalWorkspaceBounds() {
-  const width = Math.max(0, els.terminalLayer.clientWidth || els.terminalStage.clientWidth || window.innerWidth);
-  const height = Math.max(0, els.terminalLayer.clientHeight || els.terminalStage.clientHeight || window.innerHeight);
-  return { width, height };
+  const layerRect = els.terminalLayer.getBoundingClientRect();
+  const width = Math.max(0, layerRect.width || els.terminalLayer.clientWidth || window.innerWidth);
+  const height = Math.max(0, layerRect.height || els.terminalLayer.clientHeight || window.innerHeight);
+  const stageRect = els.terminalStage.getBoundingClientRect();
+  const workspaceRect = els.workspace.getBoundingClientRect();
+  const topbarRect = els.topbar.getBoundingClientRect();
+  return terminalWorkspaceFrame(
+    { left: layerRect.left, top: layerRect.top, width, height },
+    stageRect,
+    { left: workspaceRect.left, top: topbarRect.bottom },
+    isDesktopTerminalMode(),
+    window.matchMedia(TERMINAL_ULTRAWIDE_QUERY).matches
+  );
 }
 
 function captureTerminalFreeBounds(item) {
@@ -2789,8 +3697,8 @@ function applyTerminalLayout() {
       item.element.classList.remove('is-layout-hidden', 'is-tiled');
       if (item.maximized) {
         const bounds = terminalWorkspaceBounds();
-        item.element.style.left = '8px';
-        item.element.style.top = '8px';
+        item.element.style.left = `${bounds.left + 8}px`;
+        item.element.style.top = `${bounds.top + 8}px`;
         item.element.style.width = `${bounds.width - 16}px`;
         item.element.style.height = `${bounds.height - 16}px`;
         continue;
@@ -2809,15 +3717,15 @@ function applyTerminalLayout() {
 
   const visibleLimit = mode === 'focus' ? 1 : mode === 'split' ? 2 : 4;
   const visible = items.slice(0, visibleLimit);
-  const { width, height } = terminalWorkspaceBounds();
+  const bounds = terminalWorkspaceBounds();
   const inset = 8;
-  const slots = terminalLayoutSlots(mode, visible.length, width - inset * 2, height - inset * 2, 8);
+  const slots = terminalLayoutSlots(mode, visible.length, bounds.width - inset * 2, bounds.height - inset * 2, 8);
   items.forEach((item) => item.element.classList.toggle('is-layout-hidden', !visible.includes(item)));
   visible.forEach((item, index) => {
     const slot = slots[index];
     item.element.classList.add('is-tiled');
-    item.element.style.left = `${slot.left + inset}px`;
-    item.element.style.top = `${slot.top + inset}px`;
+    item.element.style.left = `${bounds.left + slot.left + inset}px`;
+    item.element.style.top = `${bounds.top + slot.top + inset}px`;
     item.element.style.width = `${slot.width}px`;
     item.element.style.height = `${slot.height}px`;
   });
@@ -2831,28 +3739,100 @@ function setTerminalLayout(layout) {
   safeStorageSet('host-control:terminal-layout', layout);
   applyTerminalLayout();
   renderTerminalChrome();
+  persistTerminalWorkspace();
+}
+
+function terminalSignal(item) {
+  const agent = currentAgent(item?.session);
+  const status = agent?.agentStatus || {
+    state: item?.mode === 'static' ? 'result' : 'unknown',
+    tone: item?.mode === 'static' ? 'neutral' : 'warn'
+  };
+  const attentionCount = item?.session ? sessionAttentionItems(item.session).length : 0;
+  return {
+    status,
+    signal: sessionStatusPresentation(status, attentionCount),
+    attentionCount
+  };
+}
+
+function syncTerminalHeaderStatus(item) {
+  if (!item?.headerStatus) return;
+  const { signal } = terminalSignal(item);
+  item.headerStatus.className = `terminal-header-status ${signal.tone}`;
+  item.headerStatus.textContent = signal.label;
+  item.headerStatus.title = signal.description;
+  item.headerStatus.setAttribute('aria-label', `Agent state: ${signal.label}. ${signal.description}`);
 }
 
 function renderTerminalTabs() {
   const windows = [...state.terminalWindows.values()];
+  const previousActiveId = els.terminalTabs.dataset.activeTerminalId || '';
+  const previousScrollLeft = els.terminalTabs.scrollLeft;
+  const activeChanged = previousActiveId !== String(state.activeTerminalId || '');
   els.terminalTabs.classList.toggle('hidden', windows.length === 0);
   els.terminalTabs.innerHTML = windows.map((item) => {
-    const agent = currentAgent(item.session);
     const brief = currentBrief(item.session);
-    const status = agent?.agentStatus || { state: item.mode === 'static' ? 'result' : 'unknown', tone: item.mode === 'static' ? 'neutral' : 'warn' };
-    const attention = sessionAttentionItems(item.session);
+    const { status, signal, attentionCount } = terminalSignal(item);
+    const displayName = brief?.displayName || item.title.textContent || item.session || 'Result';
     const active = item.id === state.activeTerminalId;
+    const closeLabel = item.mode === 'static'
+      ? `Close ${item.title.textContent || 'terminal'} view`
+      : `Close ${item.title.textContent || 'terminal'} view; agent keeps running`;
+    const focusLabel = `${active ? 'Current' : 'Focus'} ${displayName} terminal. ${signal.label}.`;
     return `
       <div class="terminal-tab ${active ? 'active' : ''} ${item.minimized ? 'minimized' : ''} ${escapeHtml(statusClassName(status))}">
-        <button data-action="terminal-tab" data-terminal-id="${escapeHtml(item.id)}" type="button" aria-pressed="${active ? 'true' : 'false'}"><span class="terminal-tab-dot" aria-hidden="true"></span><strong>${escapeHtml(brief?.displayName || item.title.textContent || item.session || 'Result')}</strong>${attention.length ? `<em>${attention.length}</em>` : ''}</button>
-        <button class="terminal-tab-close" data-action="terminal-close" data-terminal-id="${escapeHtml(item.id)}" type="button" aria-label="Close ${escapeHtml(item.title.textContent || 'terminal')}">×</button>
+        <button data-action="terminal-tab" data-terminal-id="${escapeHtml(item.id)}" type="button" role="tab" aria-selected="${active ? 'true' : 'false'}" aria-controls="${escapeHtml(item.id)}" tabindex="${active ? '0' : '-1'}" aria-keyshortcuts="ArrowLeft ArrowRight Home End" aria-label="${escapeHtml(focusLabel)}" title="${escapeHtml(signal.description)}"><span class="terminal-tab-dot" aria-hidden="true"></span><span class="terminal-tab-copy"><strong>${escapeHtml(displayName)}</strong><span class="terminal-tab-status ${escapeHtml(signal.tone)}">${escapeHtml(signal.label)}</span></span>${attentionCount ? `<em>${attentionCount}</em>` : ''}</button>
+        <button class="terminal-tab-close" data-action="terminal-close" data-terminal-id="${escapeHtml(item.id)}" type="button" aria-label="${escapeHtml(closeLabel)}" title="${escapeHtml(closeLabel)}">×</button>
       </div>
     `;
   }).join('');
+  els.terminalTabs.dataset.activeTerminalId = String(state.activeTerminalId || '');
+  els.terminalTabs.scrollLeft = previousScrollLeft;
+  if (!activeChanged) {
+    return;
+  }
+  const activeTab = els.terminalTabs.querySelector('.terminal-tab.active');
+  window.requestAnimationFrame(() => {
+    if (!activeTab?.isConnected) return;
+    const stripRect = els.terminalTabs.getBoundingClientRect();
+    const tabRect = activeTab.getBoundingClientRect();
+    const currentScrollLeft = els.terminalTabs.scrollLeft;
+    const itemStart = currentScrollLeft + tabRect.left - stripRect.left - 6;
+    const itemEnd = currentScrollLeft + tabRect.right - stripRect.left + 6;
+    const nextScrollLeft = terminalTabScrollLeft(stripRect.width, currentScrollLeft, itemStart, itemEnd, true);
+    els.terminalTabs.scrollTo({
+      left: nextScrollLeft,
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+    });
+  });
+}
+
+function handleTerminalTabKeydown(event) {
+  const currentButton = event.target?.closest?.('[data-action="terminal-tab"]');
+  if (!currentButton || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+  const buttons = [...els.terminalTabs.querySelectorAll('[data-action="terminal-tab"]')];
+  const currentIndex = buttons.indexOf(currentButton);
+  const nextIndex = terminalTabKeyIndex(event.key, currentIndex, buttons.length);
+  if (nextIndex < 0) return false;
+  event.preventDefault();
+  if (nextIndex === currentIndex) return true;
+  const nextId = buttons[nextIndex].dataset.terminalId;
+  buttons[nextIndex].click();
+  window.requestAnimationFrame(() => {
+    [...els.terminalTabs.querySelectorAll('[data-action="terminal-tab"]')]
+      .find((button) => button.dataset.terminalId === nextId)
+      ?.focus({ preventScroll: true });
+  });
+  return true;
 }
 
 function renderTerminalChrome() {
   const count = state.terminalWindows.size;
+  for (const item of state.terminalWindows.values()) {
+    item.element.classList.toggle('is-active', !item.minimized && item.id === state.activeTerminalId);
+    syncTerminalHeaderStatus(item);
+  }
   els.openTerminalCount.textContent = count ? `${count} terminal${count === 1 ? '' : 's'} open` : 'No terminals open';
   els.terminalWorkspace.classList.toggle('has-open-terminals', count > 0);
   els.terminalEmpty.classList.toggle('hidden', count > 0);
@@ -2868,7 +3848,29 @@ function renderTerminalChrome() {
     fullHeightButton.textContent = state.terminalFullHeight ? 'Restore height' : 'Full height';
     fullHeightButton.disabled = !count || !isDesktopTerminalMode();
   }
+  const closeIdleButton = document.querySelector('[data-action="close-finished-terminals"]');
+  if (closeIdleButton) closeIdleButton.disabled = !count;
+  const terminalWindows = [...state.terminalWindows.values()];
+  syncTerminalSelector(els.terminalJumpSelect, terminalWindows, state.activeTerminalId);
   renderTerminalTabs();
+  const switchableItems = terminalWindows.filter((item) => !item.minimized);
+  document.querySelectorAll('[data-action="terminal-cycle-active"]').forEach((button) => {
+    button.disabled = switchableItems.length < 2;
+  });
+  for (const item of state.terminalWindows.values()) {
+    const position = switchableItems.indexOf(item);
+    const switchable = switchableItems.length > 1 && position >= 0;
+    const displayName = currentBrief(item.session)?.displayName || item.title.textContent || item.session || 'Terminal';
+    const { signal } = terminalSignal(item);
+    const switcherLabel = terminalSwitcherLabel(position, switchableItems.length, displayName, signal.label);
+    item.mobileSwitcher.classList.toggle('hidden', terminalWindows.length < 2 || position < 0);
+    item.mobileSwitcher.setAttribute('aria-label', `Switch open terminal. Current: ${switcherLabel}. Choose a named terminal or use previous and next.`);
+    syncTerminalSelector(item.mobileSelect, terminalWindows, item.id);
+    item.mobileSelect.setAttribute('aria-label', `Choose open terminal. Current: ${switcherLabel}`);
+    item.mobileSelect.title = switcherLabel;
+    item.mobilePrevious.disabled = !switchable;
+    item.mobileNext.disabled = !switchable;
+  }
   if (state.snapshot) {
     const agents = sortSessionAgents(state.snapshot.agents.filter((agent) => !isReviewAgent(agent)));
     renderTerminalInspector(agents, state.snapshot.orchestration);
@@ -2881,13 +3883,49 @@ function renderTerminalChrome() {
   syncProjectDesk();
 }
 
+function terminalSelectorOptions(items) {
+  return items.map((item, index) => {
+    const displayName = currentBrief(item.session)?.displayName || item.title.textContent || item.session || 'Terminal';
+    const { signal } = terminalSignal(item);
+    const label = terminalSwitcherLabel(index, items.length, displayName, signal.label);
+    return {
+      value: item.id,
+      label: item.minimized ? `${label} · Docked` : label
+    };
+  });
+}
+
+function syncTerminalSelector(select, items, selectedId = '') {
+  if (!select) return;
+  const options = terminalSelectorOptions(items);
+  const signature = JSON.stringify(options);
+  if (select.dataset.optionsSignature !== signature && document.activeElement !== select) {
+    select.replaceChildren();
+    if (!options.length || !selectedId) {
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = options.length ? 'Choose terminal' : 'No terminals open';
+      select.append(placeholder);
+    }
+    for (const optionValue of options) {
+      const option = document.createElement('option');
+      option.value = optionValue.value;
+      option.textContent = optionValue.label;
+      select.append(option);
+    }
+    select.dataset.optionsSignature = signature;
+  }
+  select.disabled = options.length === 0;
+  select.value = options.some((option) => option.value === selectedId) ? selectedId : '';
+}
+
 function closeFinishedTerminals() {
   const finished = [...state.terminalWindows.values()].filter((item) => {
     const stateValue = currentAgent(item.session)?.agentStatus?.state;
     return item.mode !== 'static' && ['idle', 'stopped'].includes(stateValue);
   });
-  finished.forEach(closeTerminalWindow);
-  setNotice(finished.length ? `Closed ${finished.length} idle terminal window${finished.length === 1 ? '' : 's'}. The tmux sessions are still running.` : 'No idle terminal windows to close.');
+  finished.forEach((item) => closeTerminalWindow(item));
+  setNotice(finished.length ? `Closed ${finished.length} inactive terminal view${finished.length === 1 ? '' : 's'}. No tmux session was stopped.` : 'No inactive terminal views to close.');
 }
 
 function openDetail(session) {
@@ -2918,7 +3956,7 @@ async function touchOpenedAgent(session, { force = false } = {}) {
   }
 }
 
-function startLiveDetail(session, mode, lines, paneId = '') {
+function startLiveDetail(session, mode, lines, paneId = '', restoreOptions = {}) {
   const existing = [...state.terminalWindows.values()].find((item) => item.session === session && item.mode !== 'static');
   if (existing) {
     existing.mode = mode;
@@ -2928,9 +3966,12 @@ function startLiveDetail(session, mode, lines, paneId = '') {
     existing.pollInFlight = false;
     existing.element.dataset.live = 'true';
     existing.title.textContent = mode === 'agent' ? displayNameForSession(session) : session;
-    existing.output.textContent = mode === 'agent' ? buildAgentDetailText(session) : 'Loading recent tmux pane output...';
+    existing.outputText = mode === 'agent' ? buildAgentDetailText(session) : 'Loading recent tmux pane output...';
+    existing.output.textContent = existing.outputText;
+    existing.scrollToBottomOnNextOutput = true;
     updateTerminalSendForm(existing);
     restoreTerminalWindow(existing);
+    forceTerminalScrollBottom(existing);
     refreshTerminalWindow(existing);
     return existing;
   }
@@ -2942,42 +3983,77 @@ function startLiveDetail(session, mode, lines, paneId = '') {
     paneId,
     title: mode === 'agent' ? displayNameForSession(session) : session,
     meta: 'starting pane capture...',
-    output: mode === 'agent' ? buildAgentDetailText(session) : 'Loading recent tmux pane output...'
+    output: mode === 'agent' ? buildAgentDetailText(session) : 'Loading recent tmux pane output...',
+    ...restoreOptions
   });
 }
 
-function createTerminalWindow({ session = null, mode = 'static', lines = 120, paneId = '', title = 'Terminal', meta = '', output = '' }) {
+function createTerminalWindow({ session = null, mode = 'static', lines = 120, paneId = '', title = 'Terminal', meta = '', output = '', refreshPaused = false, restoredFreeBounds = null }) {
   if (state.openDrawer) setOpenDrawer(null, { focus: false });
   const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const id = `terminal-${state.nextTerminalId++}`;
   const element = document.createElement('article');
   element.className = 'terminal-window';
+  element.id = id;
   element.dataset.terminalId = id;
   element.setAttribute('role', 'dialog');
   element.setAttribute('aria-modal', isDesktopTerminalMode() ? 'false' : 'true');
   element.setAttribute('aria-labelledby', `${id}-title`);
   if (mode !== 'static') element.dataset.live = 'true';
+  const closeViewLabel = mode === 'static' ? 'Close terminal view' : 'Close terminal view; agent keeps running';
   element.innerHTML = `
     <div class="terminal-header" data-terminal-drag>
       <div class="terminal-heading">
-        <h2 id="${id}-title" class="terminal-title"></h2>
-        <p class="terminal-meta"></p>
+        <div class="terminal-heading-row"><h2 id="${id}-title" class="terminal-title"></h2><span class="terminal-header-status neutral" aria-label="Agent state: Unknown">Unknown</span></div>
+        <div class="terminal-meta-row"><span class="terminal-capture-paused hidden" role="status">Capture paused</span><p class="terminal-meta"></p></div>
       </div>
       <div class="terminal-window-actions" aria-label="Terminal window controls">
         <button class="terminal-model-control hidden" data-action="terminal-command" data-command="/model" type="button" title="Change model and reasoning">Model</button>
-        <button class="terminal-control" data-action="terminal-minimize" type="button" title="Minimize" aria-label="Minimize">−</button>
+        <button class="terminal-control terminal-tools-toggle hidden" data-action="terminal-tools-toggle" type="button" aria-expanded="false" aria-controls="${id}-commands" title="Show quick terminal tools"><span class="terminal-control-icon" aria-hidden="true">•••</span><span class="terminal-control-label terminal-control-label-mobile" aria-hidden="true">Tools</span></button>
+        <button class="terminal-control terminal-minimize" data-action="terminal-minimize" type="button" title="Dock view and return to the workspace; agent and draft stay active" aria-label="Dock terminal view and return to the workspace; agent and draft stay active"><span class="terminal-control-icon" aria-hidden="true">−</span><span class="terminal-control-label terminal-control-label-desktop" aria-hidden="true">Dock</span><span class="terminal-control-label terminal-control-label-mobile" aria-hidden="true">Back</span></button>
         <button class="terminal-control terminal-maximize" data-action="terminal-maximize" type="button" title="Maximize" aria-label="Maximize">□</button>
-        <button class="terminal-control" data-action="terminal-close" type="button" title="Close" aria-label="Close">×</button>
+        <button class="terminal-control terminal-close" data-action="terminal-close" type="button" title="${closeViewLabel}" aria-label="${closeViewLabel}">×</button>
       </div>
     </div>
-    <div class="terminal-command-bar hidden" role="toolbar" aria-label="Codex quick commands">
-      <span>Quick</span>
-      <button data-action="terminal-command" data-command="/model" type="button">Model / Reasoning</button>
-      <button data-action="terminal-command" data-command="/status" type="button">Status</button>
-      <button data-action="terminal-command" data-command="/usage" type="button">Usage</button>
-      <button data-action="terminal-command" data-command="/fast" type="button">Toggle Fast</button>
-      <button class="picker-toggle" data-action="terminal-picker-toggle" type="button" aria-expanded="false" title="Show controls for an already-open model picker">Picker Controls</button>
+    <div class="terminal-mobile-switcher hidden" role="group" aria-label="Switch open terminal">
+      <button class="terminal-mobile-previous" data-action="terminal-cycle-prev" type="button" aria-label="Previous terminal" title="Previous terminal">‹</button>
+      <label class="terminal-mobile-picker"><span class="sr-only">Choose open terminal</span><select class="terminal-mobile-select" aria-label="Choose open terminal"></select></label>
+      <button class="terminal-mobile-next" data-action="terminal-cycle-next" type="button" aria-label="Next terminal" title="Next terminal">›</button>
     </div>
+    <div id="${id}-commands" class="terminal-command-bar hidden" role="toolbar" aria-label="Terminal tools and Codex quick commands">
+      <span class="terminal-tool-group terminal-reading-tools" role="group" aria-label="Reading tools">
+        <span class="terminal-tool-group-label" aria-hidden="true">Read</span>
+        <button class="terminal-copy-output" data-action="terminal-copy-output" type="button" title="Copy the currently captured terminal output">Copy</button>
+        <button class="terminal-find-toggle" data-action="terminal-find-toggle" type="button" aria-expanded="false" aria-controls="${id}-find" aria-keyshortcuts="Control+F Meta+F" title="Find text in terminal output (Ctrl/⌘+F)">Find</button>
+        <button class="terminal-refresh-toggle" data-action="terminal-refresh-toggle" type="button" aria-pressed="false" title="Pause live terminal capture while the agent keeps running">Pause</button>
+        <span class="terminal-text-size-controls" role="group" aria-label="Terminal text size">
+          <button data-action="terminal-font-scale" data-delta="-${TERMINAL_FONT_SCALE_STEP}" type="button" aria-label="Decrease terminal text size" title="Decrease terminal text size">A−</button>
+          <button class="terminal-text-size-value" data-action="terminal-font-reset" type="button" aria-label="Terminal text size 100%. Reset to 100%" title="Reset terminal text size to 100%" disabled>100%</button>
+          <button data-action="terminal-font-scale" data-delta="${TERMINAL_FONT_SCALE_STEP}" type="button" aria-label="Increase terminal text size" title="Increase terminal text size">A+</button>
+        </span>
+        <button class="terminal-wrap-control" data-action="terminal-wrap-toggle" type="button" aria-pressed="true" title="Keep long terminal lines wrapped">Wrap on</button>
+      </span>
+      <span class="terminal-tool-group terminal-agent-tools" role="group" aria-label="Agent commands">
+        <span class="terminal-tool-group-label" aria-hidden="true">Agent</span>
+        <button data-action="terminal-command" data-command="/model" type="button" title="Choose model and reasoning level">Model</button>
+        <button data-action="terminal-command" data-command="/status" type="button">Status</button>
+        <button data-action="terminal-command" data-command="/usage" type="button">Usage</button>
+        <button data-action="terminal-command" data-command="/fast" type="button" title="Toggle fast mode">Fast</button>
+        <button class="picker-toggle" data-action="terminal-picker-toggle" type="button" aria-expanded="false" title="Show controls for an already-open model picker">Picker</button>
+      </span>
+      <span class="terminal-tool-group terminal-recovery-tools" role="group" aria-label="Session recovery">
+        <span class="terminal-tool-group-label" aria-hidden="true">Recovery</span>
+        <button class="terminal-interrupt-control" data-action="session-interrupt" data-session="${escapeHtml(session || '')}" type="button" title="Recovery only: send Ctrl-C to this exact tmux session">Send Ctrl-C</button>
+        <button class="terminal-stop-control" data-action="session-stop" data-session="${escapeHtml(session || '')}" type="button" title="Recovery only: stop this exact tmux session and end its agent">Stop session</button>
+      </span>
+    </div>
+    <form id="${id}-find" class="terminal-find-bar hidden" role="search">
+      <label><span class="sr-only">Find in terminal output</span><input class="terminal-find-input" type="search" autocomplete="off" enterkeyhint="search" spellcheck="false" placeholder="Find in output"></label>
+      <span class="terminal-find-result" role="status" aria-live="polite">Type to find</span>
+      <button data-action="terminal-find-prev" type="button" aria-label="Previous terminal output match" title="Previous match" disabled>↑</button>
+      <button data-action="terminal-find-next" type="button" aria-label="Next terminal output match" title="Next match" disabled>↓</button>
+      <button data-action="terminal-find-close" type="button" aria-label="Close terminal output find" title="Close find">×</button>
+    </form>
     <div class="terminal-picker-bar hidden" role="toolbar" aria-label="Interactive picker navigation">
       <span class="picker-status" aria-live="polite">Choose model</span>
       <button data-action="terminal-ui-key" data-key="up" type="button" title="Move up" aria-label="Move up">↑</button>
@@ -2988,25 +4064,31 @@ function createTerminalWindow({ session = null, mode = 'static', lines = 120, pa
       <button data-action="terminal-ui-key" data-key="cancel" type="button">Cancel</button>
     </div>
     <pre class="terminal-output" tabindex="0" aria-label="Recent terminal output"></pre>
+    <button class="terminal-jump-latest hidden" data-action="terminal-jump-latest" type="button" aria-label="Jump to latest terminal output">Latest ↓</button>
     <form class="send-form terminal-send-form hidden">
-      <label for="${id}-send-text">Type into terminal</label>
-      <textarea id="${id}-send-text" class="terminal-send-text" rows="3" maxlength="${SEND_TEXT_MAX}" enterkeyhint="send" inputmode="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Send text exactly like typing in this tmux pane"></textarea>
-      <div class="paste-preview hidden" role="status">
-        <div><strong>Review paste</strong><span class="paste-preview-meta"></span><pre class="paste-preview-text"></pre></div>
-        <div><button class="tool-button tool-button-text" data-action="paste-insert" type="button">Insert</button><button class="tool-button tool-button-text" data-action="paste-cancel" type="button">Cancel</button></div>
+      <div class="terminal-composer-head">
+        <div class="terminal-composer-label"><label for="${id}-send-text">Reply to terminal</label><span class="terminal-draft-state neutral" role="status">No draft</span></div>
+        <button class="terminal-composer-toggle" data-action="terminal-composer-toggle" type="button" aria-expanded="true" aria-controls="${id}-composer-body">Hide</button>
       </div>
-      <div class="send-toolbar" aria-label="Terminal input tools">
-        <button class="tool-button" data-action="send-newline" type="button" title="Insert line break" aria-label="Insert line break">↵</button>
-        <button class="tool-button tool-button-text" data-action="send-indent" type="button" title="Insert indentation" aria-label="Insert indentation">Tab</button>
-        <button class="tool-button" data-action="send-history-prev" type="button" title="Previous sent input" aria-label="Previous sent input">↑</button>
-        <button class="tool-button" data-action="send-history-next" type="button" title="Next sent input" aria-label="Next sent input">↓</button>
-        <button class="tool-button" data-action="send-clear" type="button" title="Clear input" aria-label="Clear input">×</button>
-        <button class="tool-button tool-button-text send-undo" data-action="send-undo" type="button" title="Restore cleared input" aria-label="Restore cleared input" disabled>Undo</button>
-        <span class="send-counter">0/${SEND_TEXT_MAX}</span>
-      </div>
-      <div class="form-row">
-        <span class="send-hint">${TERMINAL_SEND_HINT}</span>
-        <button class="primary-button send-submit" type="submit">Send / Enter</button>
+      <div id="${id}-composer-body" class="terminal-composer-body">
+        <textarea id="${id}-send-text" class="terminal-send-text" rows="3" maxlength="${SEND_TEXT_MAX}" enterkeyhint="send" inputmode="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Send text exactly like typing in this tmux pane"></textarea>
+        <div class="paste-preview hidden" role="status">
+          <div><strong>Review paste</strong><span class="paste-preview-meta"></span><pre class="paste-preview-text"></pre></div>
+          <div><button class="tool-button tool-button-text" data-action="paste-insert" type="button">Insert</button><button class="tool-button tool-button-text" data-action="paste-cancel" type="button">Cancel</button></div>
+        </div>
+        <div class="send-toolbar" aria-label="Terminal input tools">
+          <button class="tool-button" data-action="send-newline" type="button" title="Insert line break" aria-label="Insert line break">↵</button>
+          <button class="tool-button tool-button-text" data-action="send-indent" type="button" title="Insert indentation" aria-label="Insert indentation">Tab</button>
+          <button class="tool-button" data-action="send-history-prev" type="button" title="Previous sent input" aria-label="Previous sent input">↑</button>
+          <button class="tool-button" data-action="send-history-next" type="button" title="Next sent input" aria-label="Next sent input">↓</button>
+          <button class="tool-button" data-action="send-clear" type="button" title="Clear input" aria-label="Clear input">×</button>
+          <button class="tool-button tool-button-text send-undo" data-action="send-undo" type="button" title="Restore cleared input" aria-label="Restore cleared input" disabled>Undo</button>
+          <span class="send-counter">0/${SEND_TEXT_MAX}</span>
+        </div>
+        <div class="form-row">
+          <span class="send-hint">${TERMINAL_SEND_HINT}</span>
+          <button class="primary-button send-submit" type="submit">Send / Enter</button>
+        </div>
       </div>
     </form>
     <span class="terminal-resize-handle resize-n" data-terminal-resize="n" aria-hidden="true"></span>
@@ -3027,16 +4109,35 @@ function createTerminalWindow({ session = null, mode = 'static', lines = 120, pa
     lines,
     element,
     title: element.querySelector('.terminal-title'),
+    headerStatus: element.querySelector('.terminal-header-status'),
     meta: element.querySelector('.terminal-meta'),
+    capturePausedBadge: element.querySelector('.terminal-capture-paused'),
     output: element.querySelector('.terminal-output'),
+    latestButton: element.querySelector('.terminal-jump-latest'),
     commandBar: element.querySelector('.terminal-command-bar'),
+    agentTools: element.querySelector('.terminal-agent-tools'),
+    recoveryTools: element.querySelector('.terminal-recovery-tools'),
     quickCommands: [...element.querySelectorAll('[data-action="terminal-command"], .picker-toggle')],
+    findToggle: element.querySelector('.terminal-find-toggle'),
+    findBar: element.querySelector('.terminal-find-bar'),
+    findInput: element.querySelector('.terminal-find-input'),
+    findResult: element.querySelector('.terminal-find-result'),
+    findPrevious: element.querySelector('[data-action="terminal-find-prev"]'),
+    findNext: element.querySelector('[data-action="terminal-find-next"]'),
+    refreshToggle: element.querySelector('.terminal-refresh-toggle'),
     headerModel: element.querySelector('.terminal-model-control'),
+    toolsToggle: element.querySelector('.terminal-tools-toggle'),
+    mobileSwitcher: element.querySelector('.terminal-mobile-switcher'),
+    mobileSelect: element.querySelector('.terminal-mobile-select'),
+    mobilePrevious: element.querySelector('.terminal-mobile-previous'),
+    mobileNext: element.querySelector('.terminal-mobile-next'),
     pickerBar: element.querySelector('.terminal-picker-bar'),
     pickerStatus: element.querySelector('.picker-status'),
     pickerToggle: element.querySelector('.picker-toggle'),
     pickerButtons: [...element.querySelectorAll('.terminal-picker-bar button')],
     sendForm: element.querySelector('.terminal-send-form'),
+    composerToggle: element.querySelector('.terminal-composer-toggle'),
+    draftState: element.querySelector('.terminal-draft-state'),
     sendText: element.querySelector('.terminal-send-text'),
     sendCounter: element.querySelector('.send-counter'),
     sendHint: element.querySelector('.send-hint'),
@@ -3049,6 +4150,7 @@ function createTerminalWindow({ session = null, mode = 'static', lines = 120, pa
     maximizeButton: element.querySelector('.terminal-maximize'),
     timer: null,
     pollInFlight: false,
+    refreshPaused: Boolean(refreshPaused),
     token: 1,
     minimized: false,
     maximized: false,
@@ -3058,7 +4160,17 @@ function createTerminalWindow({ session = null, mode = 'static', lines = 120, pa
     uiKeyQueue: [],
     pickerActive: false,
     pickerStage: 'closed',
+    toolsCollapsed: !isDesktopTerminalMode(),
+    composerCollapsed: !isDesktopTerminalMode(),
+    draftStorageAvailable: true,
     forceScrollUntil: 0,
+    scrollToBottomOnNextOutput: true,
+    hasUnseenOutput: false,
+    outputText: output || '(no output)',
+    findOpen: false,
+    findQuery: '',
+    findMatches: [],
+    findIndex: -1,
     sendUndoText: '',
     promptSubmitRequestedAt: 0,
     allowLineBreakUntil: 0,
@@ -3073,35 +4185,58 @@ function createTerminalWindow({ session = null, mode = 'static', lines = 120, pa
   };
 
   item.sendHistoryIndex = item.sendHistory.length;
+  item.output.addEventListener('scroll', () => syncTerminalLatestControl(item));
   if (session && mode !== 'static') item.sendText.value = safeStorageGet(terminalDraftKey(session));
 
   item.title.textContent = title;
   item.meta.textContent = meta;
-  item.output.textContent = output || '(no output)';
+  item.output.textContent = item.outputText;
   state.terminalWindows.set(id, item);
   state.selectedSession = session || state.selectedSession;
   els.terminalLayer.append(element);
+  syncTerminalFontScale();
+  syncTerminalWrap();
+  syncTerminalTools(item, false);
   placeTerminalWindow(item);
+  const applyRestoredFreeBounds = () => {
+    if (!restoredFreeBounds) return;
+    item.freeBounds = { ...restoredFreeBounds };
+    if (!isDesktopTerminalMode()) return;
+    item.element.style.left = `${item.freeBounds.left}px`;
+    item.element.style.top = `${item.freeBounds.top}px`;
+    item.element.style.width = `${item.freeBounds.width}px`;
+    item.element.style.height = `${item.freeBounds.height}px`;
+    constrainTerminalWindow(item);
+    captureTerminalFreeBounds(item);
+  };
+  applyRestoredFreeBounds();
   focusTerminalWindow(item);
+  forceTerminalScrollBottom(item);
 
   if (mode !== 'static') {
     updateTerminalSendForm(item);
-    refreshTerminalWindow(item);
+    if (!item.refreshPaused) refreshTerminalWindow(item);
   }
   renderTerminalChrome();
   window.requestAnimationFrame(() => {
     if (isDesktopTerminalMode() && state.terminalLayout === 'free' && state.terminalWindows.has(item.id)) {
-      placeTerminalWindow(item);
+      if (restoredFreeBounds) applyRestoredFreeBounds();
+      else placeTerminalWindow(item);
       applyTerminalLayout();
     }
-    const focusTarget = !item.sendForm.classList.contains('hidden') ? item.sendText : item.output;
-    focusTarget.focus({ preventScroll: true });
+    forceTerminalScrollBottom(item);
+    terminalFocusTarget(item).focus({ preventScroll: true });
   });
   return item;
 }
 
 function isDesktopTerminalMode() {
   return window.matchMedia(TERMINAL_DESKTOP_QUERY).matches;
+}
+
+function terminalFocusTarget(item) {
+  const editorAvailable = !item.sendForm.classList.contains('hidden') && !item.composerCollapsed;
+  return terminalFocusKind(isDesktopTerminalMode(), editorAvailable) === 'editor' ? item.sendText : item.output;
 }
 
 function clamp(value, minimum, maximum) {
@@ -3116,8 +4251,8 @@ function placeTerminalWindow(item) {
   const height = Math.max(280, Math.min(660, bounds.height - 24));
   item.element.style.width = `${width}px`;
   item.element.style.height = `${height}px`;
-  item.element.style.left = `${12 + cascade * 24}px`;
-  item.element.style.top = `${12 + cascade * 20}px`;
+  item.element.style.left = `${bounds.left + 12 + cascade * 24}px`;
+  item.element.style.top = `${bounds.top + 12 + cascade * 20}px`;
   constrainTerminalWindow(item);
   captureTerminalFreeBounds(item);
 }
@@ -3131,8 +4266,8 @@ function constrainTerminalWindow(item) {
   const height = Math.min(rect.height, bounds.height - 16);
   const localLeft = rect.left - layerRect.left;
   const localTop = rect.top - layerRect.top;
-  const left = clamp(localLeft, 8, bounds.width - width - 8);
-  const top = clamp(localTop, 8, bounds.height - height - 8);
+  const left = clamp(localLeft, bounds.left + 8, bounds.left + bounds.width - width - 8);
+  const top = clamp(localTop, bounds.top + 8, bounds.top + bounds.height - height - 8);
   item.element.style.width = `${width}px`;
   item.element.style.height = `${height}px`;
   item.element.style.left = `${left}px`;
@@ -3155,13 +4290,22 @@ function applyTerminalFullHeightToItem(item) {
   const current = terminalRelativeBounds(item);
   if (!item.fullHeightRestoreBounds) item.fullHeightRestoreBounds = { ...current };
   const bounds = terminalWorkspaceBounds();
-  const fitted = terminalFullHeightBounds(current, bounds.width, bounds.height);
+  const fitted = terminalFullHeightBounds({
+    ...current,
+    left: current.left - bounds.left,
+    top: current.top - bounds.top
+  }, bounds.width, bounds.height);
+  const workspaceFitted = {
+    ...fitted,
+    left: bounds.left + fitted.left,
+    top: bounds.top + fitted.top
+  };
   item.element.classList.add('is-full-height');
-  item.element.style.left = `${fitted.left}px`;
-  item.element.style.top = `${fitted.top}px`;
-  item.element.style.width = `${fitted.width}px`;
-  item.element.style.height = `${fitted.height}px`;
-  item.freeBounds = { ...fitted };
+  item.element.style.left = `${workspaceFitted.left}px`;
+  item.element.style.top = `${workspaceFitted.top}px`;
+  item.element.style.width = `${workspaceFitted.width}px`;
+  item.element.style.height = `${workspaceFitted.height}px`;
+  item.freeBounds = { ...workspaceFitted };
 }
 
 function restoreTerminalFullHeightItem(item) {
@@ -3199,6 +4343,125 @@ function setTerminalFullHeight(enabled = !state.terminalFullHeight, { render = t
     applyTerminalLayout();
   }
   if (render) renderTerminalChrome();
+  persistTerminalWorkspace();
+}
+
+function syncWorkspaceFocus() {
+  const presentation = workspaceFocusPresentation(state.workspaceFocus);
+  els.appShell.classList.toggle('is-canvas-focused', workspaceFocusApplies(state.workspaceFocus, state.activeView));
+  els.workspaceFocusToggle.classList.toggle('active', state.workspaceFocus);
+  els.workspaceFocusToggle.setAttribute('aria-pressed', state.workspaceFocus ? 'true' : 'false');
+  els.workspaceFocusToggle.setAttribute('aria-label', `${presentation.description} (Alt+0)`);
+  els.workspaceFocusToggle.title = `${presentation.description} (Alt+0)`;
+  els.workspaceFocusToggle.querySelector('.layout-label-full').textContent = presentation.label;
+  els.workspaceFocusToggle.querySelector('.layout-label-short').textContent = presentation.shortLabel;
+}
+
+function setWorkspaceFocus(enabled = !state.workspaceFocus) {
+  state.workspaceFocus = Boolean(enabled);
+  safeStorageSet(WORKSPACE_FOCUS_STORAGE_KEY, state.workspaceFocus ? 'true' : 'false');
+  syncWorkspaceFocus();
+  window.requestAnimationFrame(() => window.requestAnimationFrame(handleTerminalViewportResize));
+}
+
+function syncWorkspacePanels() {
+  const panels = [
+    {
+      visible: state.sessionPanelVisible,
+      button: els.sessionPanelToggle,
+      className: 'is-session-panel-hidden',
+      visibleTitle: 'Hide sessions panel',
+      hiddenTitle: 'Show sessions panel'
+    },
+    {
+      visible: state.inspectorPanelVisible,
+      button: els.inspectorPanelToggle,
+      className: 'is-inspector-panel-hidden',
+      visibleTitle: 'Hide selected-agent details',
+      hiddenTitle: 'Show selected-agent details'
+    }
+  ];
+  for (const panel of panels) {
+    els.appShell.classList.toggle(panel.className, !panel.visible);
+    panel.button.classList.toggle('active', panel.visible);
+    panel.button.setAttribute('aria-pressed', panel.visible ? 'true' : 'false');
+    panel.button.setAttribute('aria-label', panel.visible ? panel.visibleTitle : panel.hiddenTitle);
+    panel.button.title = panel.visible ? panel.visibleTitle : panel.hiddenTitle;
+  }
+}
+
+function toggleWorkspacePanel(panel) {
+  if (panel === 'sessions') {
+    state.sessionPanelVisible = !state.sessionPanelVisible;
+    safeStorageSet(SESSION_PANEL_STORAGE_KEY, state.sessionPanelVisible ? 'true' : 'false');
+  } else if (panel === 'inspector') {
+    state.inspectorPanelVisible = !state.inspectorPanelVisible;
+    safeStorageSet(INSPECTOR_PANEL_STORAGE_KEY, state.inspectorPanelVisible ? 'true' : 'false');
+  } else {
+    return;
+  }
+  syncWorkspacePanels();
+  window.requestAnimationFrame(() => window.requestAnimationFrame(handleTerminalViewportResize));
+}
+
+function terminalFontBaseSize() {
+  if (window.innerWidth >= 2200) return 13;
+  if (window.innerWidth >= 1600) return 12.5;
+  return 12;
+}
+
+function syncTerminalFontScale() {
+  const scale = Math.round(state.terminalFontScale * 10) / 10;
+  const percentage = `${Math.round(scale * 100)}%`;
+  const size = Math.round(terminalFontBaseSize() * scale * 10) / 10;
+  document.documentElement.style.setProperty('--terminal-font-size', `${size}px`);
+  document.querySelectorAll('.terminal-text-size-value').forEach((value) => {
+    value.textContent = percentage;
+    const resetAvailable = scale !== 1;
+    value.disabled = !resetAvailable;
+    value.classList.toggle('can-reset', resetAvailable);
+    value.setAttribute('aria-label', resetAvailable
+      ? `Terminal text size ${percentage}. Reset to 100%`
+      : 'Terminal text size 100%');
+  });
+  document.querySelectorAll('[data-action="terminal-font-scale"]').forEach((button) => {
+    const delta = Number(button.dataset.delta);
+    button.disabled = delta < 0 ? scale <= TERMINAL_FONT_SCALE_MIN : scale >= TERMINAL_FONT_SCALE_MAX;
+  });
+}
+
+function adjustTerminalFontScale(delta) {
+  const next = clamp(state.terminalFontScale + Number(delta || 0), TERMINAL_FONT_SCALE_MIN, TERMINAL_FONT_SCALE_MAX);
+  state.terminalFontScale = Math.round(next * 10) / 10;
+  safeStorageSet(TERMINAL_FONT_SCALE_STORAGE_KEY, String(state.terminalFontScale));
+  syncTerminalFontScale();
+}
+
+function resetTerminalFontScale() {
+  if (state.terminalFontScale === 1) return;
+  state.terminalFontScale = 1;
+  safeStorageSet(TERMINAL_FONT_SCALE_STORAGE_KEY, '1');
+  syncTerminalFontScale();
+  setNotice('Terminal text reset to 100%.');
+}
+
+function syncTerminalWrap() {
+  document.documentElement.classList.toggle('is-terminal-nowrap', !state.terminalWrap);
+  document.querySelectorAll('[data-action="terminal-wrap-toggle"]').forEach((button) => {
+    button.textContent = state.terminalWrap ? 'Wrap on' : 'No wrap';
+    button.classList.toggle('active', state.terminalWrap);
+    button.setAttribute('aria-pressed', state.terminalWrap ? 'true' : 'false');
+    button.setAttribute('aria-label', state.terminalWrap ? 'Disable terminal line wrapping' : 'Enable terminal line wrapping');
+    button.title = state.terminalWrap
+      ? 'Disable wrapping and keep long lines horizontally scrollable'
+      : 'Enable wrapping to fit long lines to the window width';
+  });
+}
+
+function toggleTerminalWrap() {
+  state.terminalWrap = !state.terminalWrap;
+  safeStorageSet(TERMINAL_WRAP_STORAGE_KEY, state.terminalWrap ? 'true' : 'false');
+  syncTerminalWrap();
 }
 
 function focusTerminalWindow(item) {
@@ -3212,6 +4475,36 @@ function focusTerminalWindow(item) {
   item.element.style.zIndex = String(state.topTerminalZ);
   applyTerminalLayout();
   renderTerminalChrome();
+  persistTerminalWorkspace();
+}
+
+function cycleTerminalWindow(item, direction) {
+  if (!item) return;
+  const items = [...state.terminalWindows.values()].filter((candidate) => !candidate.minimized);
+  if (items.length < 2) return;
+  const nextIndex = cycledItemIndex(items.indexOf(item), items.length, direction);
+  const next = items[nextIndex];
+  if (!next) return;
+  focusTerminalWindow(next);
+  next.output.focus({ preventScroll: true });
+}
+
+function cycleActiveTerminal(direction) {
+  const items = [...state.terminalWindows.values()].filter((candidate) => !candidate.minimized);
+  const active = state.terminalWindows.get(state.activeTerminalId);
+  const current = active && items.includes(active) ? active : items.at(-1);
+  cycleTerminalWindow(current, direction);
+}
+
+function activateTerminalWindow(item) {
+  if (!item) return;
+  if (item.minimized) restoreTerminalWindow(item);
+  else {
+    focusTerminalWindow(item);
+    applyTerminalLayout();
+    renderTerminalChrome();
+  }
+  item.output.focus({ preventScroll: true });
 }
 
 function terminalItemFromTarget(target) {
@@ -3221,8 +4514,9 @@ function terminalItemFromTarget(target) {
   return id ? state.terminalWindows.get(id) || null : null;
 }
 
-function closeTerminalWindow(item) {
+function closeTerminalWindow(item, { announce = false } = {}) {
   if (!item) return;
+  const displayName = item.session ? displayNameForSession(item.session) : item.title.textContent || 'Terminal';
   if (item.timer) window.clearTimeout(item.timer);
   item.token += 1;
   state.terminalWindows.delete(item.id);
@@ -3236,7 +4530,11 @@ function closeTerminalWindow(item) {
   renderTerminalDock();
   applyTerminalLayout();
   renderTerminalChrome();
+  persistTerminalWorkspace();
   if (item.returnFocus?.isConnected) item.returnFocus.focus({ preventScroll: true });
+  if (announce) setNotice(item.mode === 'static'
+    ? `Closed the ${displayName} terminal view.`
+    : `Closed the ${displayName} terminal view. The agent keeps running; reopen it from Sessions.`);
 }
 
 function minimizeTerminalWindow(item) {
@@ -3253,7 +4551,12 @@ function minimizeTerminalWindow(item) {
   renderTerminalDock();
   applyTerminalLayout();
   renderTerminalChrome();
+  persistTerminalWorkspace();
   els.terminalTabs.querySelector(`[data-terminal-id="${item.id}"]`)?.focus({ preventScroll: true });
+  const displayName = item.session ? displayNameForSession(item.session) : item.title.textContent || 'Terminal';
+  setNotice(item.mode === 'static'
+    ? `Docked the ${displayName} terminal view.`
+    : `Docked the ${displayName} terminal view. The agent and your draft stay active.`);
 }
 
 function restoreTerminalWindow(item) {
@@ -3263,10 +4566,10 @@ function restoreTerminalWindow(item) {
   if (state.terminalFullHeight && !item.fullHeightRestoreBounds) applyTerminalFullHeightToItem(item);
   renderTerminalDock();
   focusTerminalWindow(item);
-  const focusTarget = !item.sendForm.classList.contains('hidden') ? item.sendText : item.output;
-  focusTarget.focus({ preventScroll: true });
+  terminalFocusTarget(item).focus({ preventScroll: true });
   if (item.mode !== 'static') scheduleTerminalRefresh(item, 0);
   renderTerminalChrome();
+  persistTerminalWorkspace();
 }
 
 function renderTerminalDock() {
@@ -3308,6 +4611,7 @@ function toggleTerminalMaximize(item) {
     constrainTerminalWindow(item);
     captureTerminalFreeBounds(item);
     if (state.terminalFullHeight) applyTerminalFullHeightToItem(item);
+    persistTerminalWorkspace();
     return;
   }
 
@@ -3319,12 +4623,13 @@ function toggleTerminalMaximize(item) {
   item.maximizeButton.textContent = '❐';
   item.maximizeButton.title = 'Restore size';
   item.maximizeButton.setAttribute('aria-label', 'Restore size');
-  item.element.style.left = '8px';
-  item.element.style.top = '8px';
   const bounds = terminalWorkspaceBounds();
+  item.element.style.left = `${bounds.left + 8}px`;
+  item.element.style.top = `${bounds.top + 8}px`;
   item.element.style.width = `${bounds.width - 16}px`;
   item.element.style.height = `${bounds.height - 16}px`;
   focusTerminalWindow(item);
+  persistTerminalWorkspace();
 }
 
 function beginTerminalPointerInteraction(event, item, resizeDirection = '') {
@@ -3342,6 +4647,10 @@ function beginTerminalPointerInteraction(event, item, resizeDirection = '') {
   const startY = event.clientY;
   const minWidth = Math.min(420, bounds.width - 16);
   const minHeight = Math.min(280, bounds.height - 16);
+  const minimumLeft = bounds.left + 8;
+  const minimumTop = bounds.top + 8;
+  const maximumRight = bounds.left + bounds.width - 8;
+  const maximumBottom = bounds.top + bounds.height - 8;
   document.body.classList.add('terminal-moving');
 
   const move = (moveEvent) => {
@@ -3353,19 +4662,19 @@ function beginTerminalPointerInteraction(event, item, resizeDirection = '') {
     let height = start.height;
 
     if (!resizeDirection) {
-      left = clamp(startLeft + dx, 8, bounds.width - start.width - 8);
-      if (!heightLocked) top = clamp(startTop + dy, 8, bounds.height - start.height - 8);
+      left = clamp(startLeft + dx, minimumLeft, maximumRight - start.width);
+      if (!heightLocked) top = clamp(startTop + dy, minimumTop, maximumBottom - start.height);
     } else {
       const right = startLeft + start.width;
       const bottom = startTop + start.height;
-      if (resizeDirection.includes('e')) width = clamp(start.width + dx, minWidth, bounds.width - startLeft - 8);
-      if (resizeDirection.includes('s')) height = clamp(start.height + dy, minHeight, bounds.height - startTop - 8);
+      if (resizeDirection.includes('e')) width = clamp(start.width + dx, minWidth, maximumRight - startLeft);
+      if (resizeDirection.includes('s')) height = clamp(start.height + dy, minHeight, maximumBottom - startTop);
       if (resizeDirection.includes('w')) {
-        left = clamp(startLeft + dx, 8, right - minWidth);
+        left = clamp(startLeft + dx, minimumLeft, right - minWidth);
         width = right - left;
       }
       if (resizeDirection.includes('n')) {
-        top = clamp(startTop + dy, 8, bottom - minHeight);
+        top = clamp(startTop + dy, minimumTop, bottom - minHeight);
         height = bottom - top;
       }
     }
@@ -3379,6 +4688,7 @@ function beginTerminalPointerInteraction(event, item, resizeDirection = '') {
   const end = () => {
     document.body.classList.remove('terminal-moving');
     captureTerminalFreeBounds(item);
+    persistTerminalWorkspace();
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', end);
     window.removeEventListener('pointercancel', end);
@@ -3390,14 +4700,15 @@ function beginTerminalPointerInteraction(event, item, resizeDirection = '') {
 }
 
 function handleTerminalViewportResize() {
+  syncTerminalFontScale();
   for (const item of state.terminalWindows.values()) {
     item.element.setAttribute('aria-modal', isDesktopTerminalMode() ? 'false' : 'true');
-    updateSendInputState(item);
+    updateTerminalSendForm(item);
     if (!isDesktopTerminalMode()) continue;
     if (item.maximized) {
       const bounds = terminalWorkspaceBounds();
-      item.element.style.left = '8px';
-      item.element.style.top = '8px';
+      item.element.style.left = `${bounds.left + 8}px`;
+      item.element.style.top = `${bounds.top + 8}px`;
       item.element.style.width = `${bounds.width - 16}px`;
       item.element.style.height = `${bounds.height - 16}px`;
     } else if (state.terminalFullHeight) {
@@ -3474,10 +4785,61 @@ function updateTerminalSendForm(item) {
   const canPrompt = canPromptAgent(item.session);
   item.sendForm.classList.toggle('hidden', !canPrompt.ok);
   const commandsAvailable = item.mode === 'agent' && canPrompt.ok;
-  item.commandBar.classList.toggle('hidden', !commandsAvailable);
+  syncTerminalTools(item, commandsAvailable);
   item.headerModel.classList.toggle('hidden', !commandsAvailable);
   if (!commandsAvailable) toggleTerminalPickerControls(item, false);
   updateSendInputState(item);
+}
+
+function syncTerminalTools(item, commandsAvailable = item.mode === 'agent' && canPromptAgent(item.session).ok) {
+  const collapsed = !isDesktopTerminalMode() && item.toolsCollapsed;
+  const expanded = !collapsed;
+  item.element.classList.toggle('is-tools-collapsed', collapsed);
+  item.commandBar.classList.toggle('hidden', !expanded);
+  item.quickCommands.forEach((button) => button.classList.toggle('hidden', !commandsAvailable));
+  item.agentTools.classList.toggle('hidden', !commandsAvailable);
+  item.recoveryTools.classList.toggle('hidden', item.mode === 'static' || !item.session);
+  item.refreshToggle.classList.toggle('hidden', item.mode === 'static');
+  item.toolsToggle.classList.remove('hidden');
+  item.toolsToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  item.toolsToggle.setAttribute('aria-label', expanded ? 'Hide quick terminal tools' : 'Show quick terminal tools');
+  item.toolsToggle.title = expanded ? 'Hide quick terminal tools' : 'Show quick terminal tools';
+  syncTerminalRefreshState(item);
+}
+
+function setTerminalToolsCollapsed(item, collapsed) {
+  if (!item) return;
+  item.toolsCollapsed = Boolean(collapsed);
+  syncTerminalTools(item);
+  updateSendInputState(item);
+  item.toolsToggle.focus({ preventScroll: true });
+}
+
+function syncTerminalComposer(item) {
+  const collapsed = Boolean(item.composerCollapsed);
+  const hasDraft = Boolean(item.sendText.value || item.pendingPaste);
+  const draftSaved = item.draftStorageAvailable !== false && !item.pendingPaste;
+  const presentation = terminalComposerPresentation(collapsed, hasDraft, draftSaved);
+  const draftPresentation = terminalDraftPresentation(item.sendText.value, Boolean(item.pendingPaste), Boolean(item.sendInFlight), item.draftStorageAvailable !== false);
+  item.sendForm.classList.toggle('is-collapsed', collapsed);
+  item.composerToggle.textContent = presentation.label;
+  item.composerToggle.setAttribute('aria-label', presentation.description);
+  item.composerToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  item.draftState.className = `terminal-draft-state ${draftPresentation.tone}`;
+  if (item.draftState.textContent !== draftPresentation.label) item.draftState.textContent = draftPresentation.label;
+  item.draftState.title = draftPresentation.description;
+}
+
+function setTerminalComposerCollapsed(item, collapsed, { focus = true } = {}) {
+  if (!item || item.sendForm.classList.contains('hidden')) return;
+  item.composerCollapsed = Boolean(collapsed);
+  syncTerminalComposer(item);
+  if (!focus) return;
+  window.requestAnimationFrame(() => {
+    if (!state.terminalWindows.has(item.id)) return;
+    if (item.composerCollapsed) item.composerToggle.focus({ preventScroll: true });
+    else item.sendText.focus({ preventScroll: true });
+  });
 }
 
 function canPromptAgent(session) {
@@ -3550,6 +4912,7 @@ function updateSendInputState(item) {
     button.disabled = !pickerUiAvailable || item.sendInFlight || item.pickerBar.classList.contains('hidden');
   });
   item.sendUndo.disabled = promptDisabled || !item.sendUndoText;
+  syncTerminalComposer(item);
   resizeSendText(item);
 }
 
@@ -3561,7 +4924,7 @@ function toggleTerminalPickerControls(item, force = !item.pickerActive, stage = 
   item.pickerBar.classList.toggle('hidden', !item.pickerActive);
   item.pickerToggle.setAttribute('aria-expanded', item.pickerActive ? 'true' : 'false');
   item.pickerToggle.classList.toggle('active', item.pickerActive);
-  item.pickerToggle.textContent = item.pickerActive ? 'Cancel Picker' : 'Picker Controls';
+  item.pickerToggle.textContent = item.pickerActive ? 'Cancel' : 'Picker';
   item.pickerStatus.textContent = item.pickerStage === 'model'
     ? 'Choose model'
     : item.pickerStage === 'effort' ? 'Choose reasoning effort' : 'Picker navigation';
@@ -3609,24 +4972,138 @@ function isTerminalAtBottom(item) {
   return item.output.scrollHeight - item.output.scrollTop - item.output.clientHeight < 36;
 }
 
+function syncTerminalLatestControl(item, { newOutput = false } = {}) {
+  if (!item?.latestButton) return;
+  if (newOutput) item.hasUnseenOutput = true;
+  const atBottom = isTerminalAtBottom(item);
+  if (atBottom) item.hasUnseenOutput = false;
+  const presentation = terminalLatestPresentation(atBottom, item.hasUnseenOutput);
+  item.latestButton.classList.toggle('hidden', presentation.hidden);
+  item.latestButton.classList.toggle('has-new-output', !presentation.hidden && item.hasUnseenOutput);
+  item.latestButton.textContent = presentation.label;
+  item.latestButton.setAttribute('aria-label', presentation.description);
+}
+
 function forceTerminalScrollBottom(item, durationMs = 1800) {
   item.forceScrollUntil = Math.max(item.forceScrollUntil, Date.now() + durationMs);
   item.output.scrollTop = item.output.scrollHeight;
+  item.hasUnseenOutput = false;
+  syncTerminalLatestControl(item);
 }
 
-function setTerminalOutput(item, value) {
-  const shouldStickToBottom = Date.now() < item.forceScrollUntil || isTerminalAtBottom(item);
-  const previousTop = item.output.scrollTop;
-  item.output.textContent = value || '(no output)';
-  if (shouldStickToBottom) {
-    item.output.scrollTop = item.output.scrollHeight;
-  } else {
-    item.output.scrollTop = previousTop;
+function renderTerminalFindHighlights(item, { scroll = false } = {}) {
+  if (!item?.output) return;
+  const content = String(item.outputText || '(no output)');
+  const query = String(item.findQuery || '');
+  const matches = terminalFindOffsets(content, query);
+  item.findMatches = matches;
+  item.findPrevious.disabled = matches.length === 0;
+  item.findNext.disabled = matches.length === 0;
+
+  if (!query || !matches.length) {
+    item.findIndex = -1;
+    item.output.textContent = content;
+    item.findResult.textContent = query ? 'No matches' : 'Type to find';
+    return;
+  }
+
+  item.findIndex = clamp(item.findIndex < 0 ? 0 : item.findIndex, 0, matches.length - 1);
+  item.findResult.textContent = `${item.findIndex + 1} / ${matches.length}`;
+  const fragment = document.createDocumentFragment();
+  let cursor = 0;
+  let currentMatch = null;
+  matches.forEach((offset, index) => {
+    if (offset > cursor) fragment.append(document.createTextNode(content.slice(cursor, offset)));
+    const mark = document.createElement('mark');
+    mark.className = `terminal-find-match${index === item.findIndex ? ' current' : ''}`;
+    mark.textContent = content.slice(offset, offset + query.length);
+    fragment.append(mark);
+    if (index === item.findIndex) currentMatch = mark;
+    cursor = offset + query.length;
+  });
+  if (cursor < content.length) fragment.append(document.createTextNode(content.slice(cursor)));
+  item.output.replaceChildren(fragment);
+
+  if (scroll && currentMatch) {
+    window.requestAnimationFrame(() => {
+      if (!currentMatch.isConnected || !state.terminalWindows.has(item.id)) return;
+      currentMatch.scrollIntoView({ block: 'center', inline: 'nearest' });
+    });
   }
 }
 
+function setTerminalFindOpen(item, open) {
+  if (!item) return;
+  item.findOpen = Boolean(open);
+  item.findBar.classList.toggle('hidden', !item.findOpen);
+  item.findToggle.classList.toggle('active', item.findOpen);
+  item.findToggle.setAttribute('aria-expanded', item.findOpen ? 'true' : 'false');
+  if (!item.findOpen) {
+    item.findQuery = '';
+    item.findInput.value = '';
+    item.findIndex = -1;
+    renderTerminalFindHighlights(item);
+    item.findToggle.focus({ preventScroll: true });
+    return;
+  }
+  renderTerminalFindHighlights(item, { scroll: Boolean(item.findQuery) });
+  window.requestAnimationFrame(() => {
+    if (!state.terminalWindows.has(item.id)) return;
+    item.findInput.focus({ preventScroll: true });
+    item.findInput.select();
+  });
+}
+
+function stepTerminalFind(item, direction) {
+  if (!item?.findMatches.length) return;
+  item.findIndex = cycledItemIndex(item.findIndex, item.findMatches.length, direction);
+  renderTerminalFindHighlights(item, { scroll: true });
+}
+
+function setTerminalOutput(item, value) {
+  const shouldStickToBottom = shouldStickTerminalOutput(item, isTerminalAtBottom(item), Date.now());
+  const previousTop = item.output.scrollTop;
+  const content = value || '(no output)';
+  const changed = item.outputText !== content;
+  item.outputText = content;
+  if (changed) renderTerminalFindHighlights(item);
+  item.scrollToBottomOnNextOutput = false;
+  if (shouldStickToBottom) {
+    item.output.scrollTop = item.output.scrollHeight;
+    item.hasUnseenOutput = false;
+  } else {
+    item.output.scrollTop = previousTop;
+  }
+  syncTerminalLatestControl(item, { newOutput: changed && !shouldStickToBottom });
+}
+
+function syncTerminalRefreshState(item) {
+  if (!item?.refreshToggle) return;
+  const presentation = terminalRefreshPresentation(item.refreshPaused);
+  item.element.classList.toggle('is-capture-paused', item.refreshPaused);
+  item.capturePausedBadge.classList.toggle('hidden', !item.refreshPaused);
+  item.refreshToggle.textContent = presentation.label;
+  item.refreshToggle.classList.toggle('active', item.refreshPaused);
+  item.refreshToggle.setAttribute('aria-pressed', presentation.pressed ? 'true' : 'false');
+  item.refreshToggle.setAttribute('aria-label', presentation.description);
+  item.refreshToggle.title = presentation.description;
+}
+
+function setTerminalRefreshPaused(item, paused) {
+  if (!item || item.mode === 'static' || item.refreshPaused === Boolean(paused)) return;
+  item.refreshPaused = Boolean(paused);
+  if (item.refreshPaused) {
+    if (item.timer) window.clearTimeout(item.timer);
+    item.timer = null;
+  }
+  syncTerminalRefreshState(item);
+  persistTerminalWorkspace();
+  setNotice(terminalRefreshPresentation(item.refreshPaused).notice);
+  if (!item.refreshPaused) refreshTerminalWindow(item);
+}
+
 function scheduleTerminalRefresh(item, delay = DETAIL_REFRESH_MS) {
-  if (!state.terminalWindows.has(item.id) || item.mode === 'static' || item.minimized) return;
+  if (!state.terminalWindows.has(item.id) || item.mode === 'static' || item.minimized || item.refreshPaused) return;
   if (item.timer) window.clearTimeout(item.timer);
   item.timer = null;
   if (document.hidden) return;
@@ -3635,21 +5112,21 @@ function scheduleTerminalRefresh(item, delay = DETAIL_REFRESH_MS) {
 
 async function refreshTerminalWindow(item) {
   const { session, mode, lines, paneId, token } = item;
-  if (!state.terminalWindows.has(item.id) || !session || mode === 'static' || item.pollInFlight || item.minimized || document.hidden) return;
+  if (!state.terminalWindows.has(item.id) || !session || mode === 'static' || item.pollInFlight || item.minimized || item.refreshPaused || document.hidden) return;
   item.pollInFlight = true;
   if (item.timer) window.clearTimeout(item.timer);
   item.timer = null;
   try {
     const paneQuery = paneId ? `&paneId=${encodeURIComponent(paneId)}` : '';
     const data = await api(`/api/pane/${encodeURIComponent(session)}/capture?lines=${lines}${paneQuery}`);
-    if (!state.terminalWindows.has(item.id) || token !== item.token || item.minimized) return;
+    if (!state.terminalWindows.has(item.id) || token !== item.token || item.minimized || item.refreshPaused) return;
     updateTerminalSendForm(item);
     const refreshed = new Date().toLocaleTimeString();
     item.title.textContent = mode === 'agent' ? displayNameForSession(session) : session;
     item.meta.textContent = `tmux ${session} · ${shortPath(data.pane.currentPath)} · live ${refreshed} · recent ${data.lines} lines · redacted ${data.redactedCount || 0}`;
     setTerminalOutput(item, mode === 'agent' ? buildAgentDetailText(session, data) : data.output || '(no recent output)');
   } catch (error) {
-    if (state.terminalWindows.has(item.id) && token === item.token) {
+    if (state.terminalWindows.has(item.id) && token === item.token && !item.refreshPaused) {
       item.meta.textContent = `live refresh failed · ${new Date().toLocaleTimeString()}`;
       setTerminalOutput(item, error.message);
     }
@@ -3958,7 +5435,7 @@ async function resumeAgent(session, model = '', reasoning = '') {
 async function sessionAction(session, action) {
   const label = action === 'interrupt'
     ? `RECOVERY ONLY: send Ctrl-C to ${session}? Normal prompt sending never does this.`
-    : `RECOVERY ONLY: stop tmux session ${session}?`;
+    : `RECOVERY ONLY: stop tmux session ${session}?\n\nThis ends the agent or process in that session and cannot be undone.`;
   if (!window.confirm(label)) return;
   try {
     await api(`/api/session/${encodeURIComponent(session)}/${action}`, {
@@ -3976,12 +5453,66 @@ async function sessionAction(session, action) {
 async function copyAttach(session) {
   const quotedSession = `'${String(session || '').replaceAll("'", `'"'"'`)}'`;
   const command = `tmux attach-session -t ${quotedSession}`;
-  try {
-    await navigator.clipboard.writeText(command);
+  if (await copyTextToClipboard(command)) {
     setNotice(`Copied: ${command}`);
-  } catch {
+  } else {
     setNotice(command);
   }
+}
+
+async function copyTextToClipboard(value) {
+  const text = String(value || '');
+  if (!text) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall through for dashboards opened over HTTP, where Clipboard may be unavailable.
+  }
+
+  const activeElement = document.activeElement;
+  const proxy = document.createElement('textarea');
+  proxy.value = text;
+  proxy.setAttribute('readonly', '');
+  proxy.setAttribute('aria-hidden', 'true');
+  proxy.style.position = 'fixed';
+  proxy.style.inset = '-9999px auto auto -9999px';
+  document.body.append(proxy);
+  proxy.select();
+  let copied = false;
+  try {
+    copied = document.execCommand?.('copy') === true;
+  } catch {
+    copied = false;
+  } finally {
+    proxy.remove();
+    if (activeElement instanceof HTMLElement && activeElement.isConnected) {
+      activeElement.focus({ preventScroll: true });
+    }
+  }
+  return copied;
+}
+
+async function copyTerminalOutput(item, button) {
+  const output = item?.output?.textContent || '';
+  if (!output.trim()) throw new Error('No terminal output is available to copy.');
+  if (!await copyTextToClipboard(output)) {
+    throw new Error('Clipboard access is unavailable. Select the terminal output and copy it manually.');
+  }
+  if (button?.isConnected) {
+    button.textContent = 'Copied';
+    button.classList.add('copied');
+    button.setAttribute('aria-label', 'Terminal output copied');
+    window.setTimeout(() => {
+      if (!button.isConnected) return;
+      button.textContent = 'Copy';
+      button.classList.remove('copied');
+      button.setAttribute('aria-label', 'Copy currently captured terminal output');
+    }, 1600);
+  }
+  setNotice(`Copied ${output.length.toLocaleString()} characters of terminal output.`);
 }
 
 function slugifyClient(value, fallback = 'agent') {
@@ -4090,6 +5621,405 @@ async function createAgent(form) {
 
 function currentMission(id) {
   return state.snapshot?.missions?.jobs?.find((mission) => mission.id === id) || null;
+}
+
+function currentPromptQueueItem(id) {
+  return state.snapshot?.promptQueue?.items?.find((item) => item.id === id) || null;
+}
+
+function currentPromptSchedule(id) {
+  return state.snapshot?.promptQueue?.schedules?.find((schedule) => schedule.id === id) || null;
+}
+
+function selectPromptQueueTarget(button) {
+  const session = String(button.dataset.session || '');
+  const targets = promptQueueTargets(state.snapshot?.agents || []);
+  const target = targets.find((agent) => agent.session === session);
+  if (!target) {
+    setNotice('That exact terminal is no longer available.', 'error');
+    return;
+  }
+  const form = document.querySelector('#prompt-queue-form');
+  if (form) {
+    state.promptQueueDraftUndo = null;
+    readPromptQueueDraft(form);
+  }
+  const selected = preferredPromptQueueSessions(targets);
+  const alreadySelected = selected.includes(session);
+  const next = alreadySelected
+    ? selected.length > 1 ? selected.filter((candidate) => candidate !== session) : selected
+    : [...selected, session].slice(0, 12);
+  state.promptQueueDraft.sessions = next;
+  state.promptQueueDraft.session = next[0] || '';
+  persistPromptQueueDraft();
+  render();
+  window.requestAnimationFrame(() => {
+    [...document.querySelectorAll('[data-action="prompt-queue-select-target"]')]
+      .find((card) => card.dataset.session === session)?.focus({ preventScroll: true });
+  });
+  setNotice(alreadySelected && next.length === selected.length
+    ? 'Keep at least one exact terminal selected.'
+    : `${displayNameForSession(session)} ${alreadySelected ? 'removed from' : 'added to'} this prompt.`);
+}
+
+function selectAllPromptQueueTargets() {
+  const form = document.querySelector('#prompt-queue-form');
+  if (form) readPromptQueueDraft(form);
+  const sessions = promptQueueTargets(state.snapshot?.agents || []).slice(0, 12).map((agent) => agent.session);
+  state.promptQueueDraft.sessions = sessions;
+  state.promptQueueDraft.session = sessions[0] || '';
+  persistPromptQueueDraft();
+  render();
+  setNotice(`${sessions.length} exact terminals selected.`);
+}
+
+function persistPromptQueueDraft() {
+  state.promptQueueDraft = normalizedPromptQueueDraft(state.promptQueueDraft);
+  const value = state.promptQueueDraft.text || state.promptQueueDraft.cron
+    ? JSON.stringify(state.promptQueueDraft)
+    : '';
+  state.promptQueueDraftStorageAvailable = safeStorageSet(PROMPT_QUEUE_DRAFT_STORAGE_KEY, value);
+}
+
+function clearPromptQueueDraft(form) {
+  if (!form) return;
+  readPromptQueueDraft(form);
+  const presentation = promptQueueComposerPresentation(state.promptQueueDraft, true);
+  if (!presentation.hasDraft) return;
+  state.promptQueueDraftUndo = normalizedPromptQueueDraft(state.promptQueueDraft);
+  form.querySelector('textarea[name="text"]').value = '';
+  form.querySelector('input[name="cron"]').value = '';
+  readPromptQueueDraft(form);
+  form.querySelector('[data-action="prompt-queue-draft-undo"]')?.focus({ preventScroll: true });
+}
+
+function undoPromptQueueDraftClear(form) {
+  const draft = state.promptQueueDraftUndo;
+  if (!form || !draft) return;
+  state.promptQueueDraft.sessions = [...draft.sessions];
+  state.promptQueueDraft.session = draft.session;
+  form.querySelector('textarea[name="text"]').value = draft.text;
+  form.querySelector('input[name="cron"]').value = draft.cron;
+  state.promptQueueDraftUndo = null;
+  readPromptQueueDraft(form);
+  form.querySelector('textarea[name="text"]').focus({ preventScroll: true });
+}
+
+function jumpToPromptQueueSection(section) {
+  const selector = promptQueueSectionTarget(section);
+  const target = selector ? els.queue.querySelector(selector) : null;
+  if (!target) return;
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  target.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
+  target.focus({ preventScroll: true });
+}
+
+function readPromptQueueDraft(form) {
+  const formData = new FormData(form);
+  state.promptQueueDraft = normalizedPromptQueueDraft({
+    session: state.promptQueueDraft.session,
+    sessions: state.promptQueueDraft.sessions,
+    text: String(formData.get('text') || ''),
+    cron: String(formData.get('cron') || '').trim()
+  });
+  persistPromptQueueDraft();
+  const targetsAvailable = promptQueueTargets(state.snapshot?.agents || []).length > 0;
+  const presentation = promptQueueComposerPresentation(state.promptQueueDraft, targetsAvailable);
+  const queueSubmit = form.querySelector('button[type="submit"][value="queue"]');
+  if (queueSubmit) {
+    queueSubmit.textContent = presentation.label;
+    queueSubmit.disabled = presentation.disabled;
+  }
+  const sendSubmit = form.querySelector('button[type="submit"][value="send"]');
+  if (sendSubmit) {
+    sendSubmit.textContent = presentation.sendLabel;
+    sendSubmit.disabled = presentation.sendDisabled;
+  }
+  const counter = form.querySelector('.prompt-queue-counter');
+  if (counter) {
+    counter.textContent = presentation.count;
+    counter.dataset.full = presentation.full ? 'true' : 'false';
+    counter.setAttribute('aria-label', `${state.promptQueueDraft.text.length} of 4000 characters used`);
+  }
+  const draftState = form.querySelector('.prompt-queue-draft-state');
+  if (draftState) {
+    const status = presentation.hasDraft
+      ? (state.promptQueueDraftStorageAvailable ? 'Saved in this browser' : 'Draft kept in this tab')
+      : state.promptQueueDraftUndo ? 'Draft cleared' : 'Draft stays in this browser';
+    if (draftState.textContent !== status) draftState.textContent = status;
+    draftState.classList.toggle('has-draft', presentation.hasDraft);
+    draftState.classList.toggle('storage-unavailable', presentation.hasDraft && !state.promptQueueDraftStorageAvailable);
+  }
+  form.querySelector('[data-action="prompt-queue-draft-clear"]')?.classList.toggle('hidden', !presentation.hasDraft);
+  form.querySelector('[data-action="prompt-queue-draft-undo"]')?.classList.toggle('hidden', !state.promptQueueDraftUndo);
+}
+
+function multiPromptTargetPayload(target) {
+  return {
+    session: target.session,
+    sessionCreatedAt: target.sessionCreatedAt,
+    paneId: target.id,
+    tmuxPaneId: target.tmuxPaneId,
+    panePid: target.panePid,
+    missionId: activeMissionForAgentSession(target.session)?.id || null
+  };
+}
+
+async function createPromptQueueFromForm(form, mode = 'queue') {
+  if (mode === 'queue' && state.snapshot?.capabilities?.promptQueue !== true) {
+    setNotice('Prompt Queue requires a PaneFleet backend restart.', 'error');
+    return;
+  }
+  readPromptQueueDraft(form);
+  const selected = new Set(state.promptQueueDraft.sessions || []);
+  const targets = promptQueueTargets(state.snapshot?.agents || []).filter((agent) => selected.has(agent.session));
+  if (!targets.length || targets.length !== selected.size) {
+    setNotice('Choose live exact terminals before sending or queueing the prompt.', 'error');
+    return;
+  }
+  const recurring = Boolean(state.promptQueueDraft.cron);
+  if (mode === 'send' && recurring) {
+    setNotice('Send now cannot be combined with a recurring schedule.', 'error');
+    return;
+  }
+  if (recurring && targets.length !== 1) {
+    setNotice('Recurring schedules require exactly one selected terminal.', 'error');
+    return;
+  }
+  if (targets.length > 1 && state.snapshot?.capabilities?.multiAgentPrompt !== true) {
+    setNotice('Multi-agent prompts require a PaneFleet backend restart.', 'error');
+    return;
+  }
+  if (targets.length > 1) {
+    const action = mode === 'send'
+      ? `Send this prompt now to ${targets.length} exact terminals?\n\nSuccessful sends cannot be rolled back. Every terminal reports its own result, and failures are never retried.`
+      : `Queue this prompt for ${targets.length} exact terminals?\n\nEach terminal receives one independent FIFO item that waits for its own stable green state.`;
+    if (!window.confirm(action)) return;
+  }
+  const targetLabel = targets.length === 1 ? displayNameForSession(targets[0].session) : `${targets.length} agents`;
+  setNotice(mode === 'send'
+    ? `Sending prompt to ${targetLabel}...`
+    : `${recurring ? 'Creating schedule' : 'Queueing prompt'} for ${targetLabel}...`);
+  try {
+    const targetPayloads = targets.map(multiPromptTargetPayload);
+    let result;
+    if (mode === 'send') {
+      result = targets.length > 1
+        ? await api('/api/agent/send-batch', {
+            method: 'POST',
+            body: JSON.stringify({
+              confirm: 'send-multiple',
+              targets: targetPayloads,
+              text: state.promptQueueDraft.text
+            })
+          })
+        : await api('/api/agent/send', {
+            method: 'POST',
+            body: JSON.stringify({ ...targetPayloads[0], text: state.promptQueueDraft.text })
+          });
+    } else if (recurring) {
+      result = await api('/api/prompt-schedules', {
+        method: 'POST',
+        body: JSON.stringify({ ...targetPayloads[0], text: state.promptQueueDraft.text, cron: state.promptQueueDraft.cron })
+      });
+    } else if (targets.length > 1) {
+      result = await api('/api/prompt-queue/batch', {
+        method: 'POST',
+        body: JSON.stringify({
+          confirm: 'queue-multiple',
+          targets: targetPayloads,
+          text: state.promptQueueDraft.text
+        })
+      });
+    } else {
+      result = await api('/api/prompt-queue', {
+        method: 'POST',
+        body: JSON.stringify({ ...targetPayloads[0], text: state.promptQueueDraft.text })
+      });
+    }
+    if (mode === 'send' && Number(result.failedCount || 0) > 0) {
+      const failedTargets = (result.results || [])
+        .filter((item) => !item.ok)
+        .map((item) => displayNameForSession(item.session))
+        .join(', ');
+      setNotice(`Sent to ${result.successCount} agent${result.successCount === 1 ? '' : 's'}; failed: ${failedTargets || result.failedCount}. Draft kept for inspection—do not resend without checking each terminal.`, 'error');
+      await loadSnapshot('manual');
+      return;
+    }
+    state.promptQueueDraft = {
+      session: targets[0].session,
+      sessions: targets.map((target) => target.session),
+      text: '',
+      cron: ''
+    };
+    state.promptQueueDraftUndo = null;
+    state.promptQueueDraftStorageAvailable = safeStorageSet(PROMPT_QUEUE_DRAFT_STORAGE_KEY, '');
+    setNotice(mode === 'send'
+      ? `Sent to ${targets.length} exact terminal${targets.length === 1 ? '' : 's'}.`
+      : recurring
+        ? `Schedule created for ${displayNameForSession(targets[0].session)}. Next queue intake ${promptScheduleTimeLabel(result.schedule?.nextRunAt)}.`
+        : `Queued one independent prompt for ${targets.length} exact terminal${targets.length === 1 ? '' : 's'}.`);
+    await loadSnapshot('manual');
+  } catch (error) {
+    const label = mode === 'send' ? 'Prompt send' : recurring ? 'Prompt schedule' : 'Prompt queue';
+    setNotice(`${label} failed: ${recurring ? promptScheduleErrorLabel(error) : error.message}`, 'error');
+  }
+}
+
+async function togglePromptScheduleClient(button) {
+  const schedule = currentPromptSchedule(button.dataset.promptScheduleId);
+  if (!schedule) return;
+  const enabled = !schedule.enabled;
+  try {
+    await api(`/api/prompt-schedules/${encodeURIComponent(schedule.id)}/toggle`, {
+      method: 'POST',
+      body: JSON.stringify({ expectedRevision: schedule.revision, enabled })
+    });
+    setNotice(enabled
+      ? `Recurring prompt resumed for ${displayNameForSession(schedule.session)}.`
+      : `Recurring prompt paused. Already queued prompts were left unchanged.`);
+    await loadSnapshot('manual');
+  } catch (error) {
+    setNotice(`Prompt schedule update failed: ${promptScheduleErrorLabel(error)}`, 'error');
+    await loadSnapshot('manual');
+  }
+}
+
+async function deletePromptScheduleClient(button) {
+  const schedule = currentPromptSchedule(button.dataset.promptScheduleId);
+  if (!schedule) return;
+  if (!window.confirm(`Delete this recurring prompt for ${displayNameForSession(schedule.session)}? Already queued prompts will stay in the queue.`)) return;
+  try {
+    await api(`/api/prompt-schedules/${encodeURIComponent(schedule.id)}/delete`, {
+      method: 'POST',
+      body: JSON.stringify({ expectedRevision: schedule.revision, confirm: 'delete-schedule' })
+    });
+    setNotice('Recurring prompt deleted. Already queued prompts were left unchanged.');
+    await loadSnapshot('manual');
+  } catch (error) {
+    setNotice(`Prompt schedule delete failed: ${promptScheduleErrorLabel(error)}`, 'error');
+    await loadSnapshot('manual');
+  }
+}
+
+function exactAgentIdentityForMutation(agent) {
+  return {
+    session: agent.session,
+    sessionCreatedAt: agent.sessionCreatedAt,
+    paneId: agent.id,
+    tmuxPaneId: agent.tmuxPaneId,
+    panePid: agent.panePid
+  };
+}
+
+async function retargetPromptScheduleClient(button) {
+  const schedule = currentPromptSchedule(button.dataset.promptScheduleId);
+  const replacement = schedule ? replacementAgentForSession(schedule.session) : null;
+  if (!schedule || !replacement) return;
+  if (!window.confirm('Bind this recurring prompt to the current ' + displayNameForSession(schedule.session) + ' pane? Counters and history stay; no prompt is sent now.')) return;
+  try {
+    await api('/api/prompt-schedules/' + encodeURIComponent(schedule.id) + '/retarget', {
+      method: 'POST',
+      body: JSON.stringify({
+        expectedRevision: schedule.revision,
+        confirm: 'retarget-schedule',
+        ...exactAgentIdentityForMutation(replacement)
+      })
+    });
+    setNotice('Recurring prompt retargeted. Its counters were preserved and no input was sent.');
+    await loadSnapshot('manual');
+  } catch (error) {
+    setNotice('Prompt schedule retarget failed: ' + promptScheduleErrorLabel(error), 'error');
+    await loadSnapshot('manual');
+  }
+}
+
+async function retargetPromptQueueClient(button) {
+  const item = currentPromptQueueItem(button.dataset.promptQueueId);
+  const replacement = item ? replacementAgentForSession(item.session) : null;
+  if (!item || !replacement || item.status !== 'queued') return;
+  if (!window.confirm('Bind this never-sent prompt to the current ' + displayNameForSession(item.session) + ' pane? It will remain queued until that pane is stably green.')) return;
+  try {
+    await api('/api/prompt-queue/' + encodeURIComponent(item.id) + '/retarget', {
+      method: 'POST',
+      body: JSON.stringify({
+        expectedRevision: item.revision,
+        confirm: 'retarget-queued-prompt',
+        ...exactAgentIdentityForMutation(replacement)
+      })
+    });
+    setNotice('Queued prompt retargeted. Nothing was sent during recovery.');
+    await loadSnapshot('manual');
+  } catch (error) {
+    setNotice('Prompt queue retarget failed: ' + error.message, 'error');
+    await loadSnapshot('manual');
+  }
+}
+
+async function cancelPromptQueueClient(button) {
+  const item = currentPromptQueueItem(button.dataset.promptQueueId);
+  if (!item) return;
+  const reviewed = button.dataset.review === '1';
+  const message = reviewed
+    ? `Cancel this paused ticket after inspecting ${displayNameForSession(item.session)}? Its response will not be recorded as a finished turn, and the next prompt may then send when green.`
+    : `Cancel this queued prompt for ${displayNameForSession(item.session)}?`;
+  if (!window.confirm(message)) return;
+  try {
+    await api(`/api/prompt-queue/${encodeURIComponent(item.id)}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expectedRevision: item.revision,
+        confirm: reviewed ? 'cancel-reviewed' : 'cancel'
+      })
+    });
+    setNotice(reviewed ? 'Reviewed ticket canceled. The terminal line can continue.' : 'Queued prompt canceled.');
+    await loadSnapshot('manual');
+  } catch (error) {
+    setNotice(`Prompt queue update failed: ${error.message}`, 'error');
+    await loadSnapshot('manual');
+  }
+}
+
+async function releasePromptQueueClient(button) {
+  const item = currentPromptQueueItem(button.dataset.promptQueueId);
+  if (!item) return;
+  if (!window.confirm(`Release this queue after inspecting ${displayNameForSession(item.session)}? This does not mark the project task Done. No terminal input will be sent, and the next queued prompt may then run when green.`)) return;
+  try {
+    await api(`/api/prompt-queue/${encodeURIComponent(item.id)}/release`, {
+      method: 'POST',
+      body: JSON.stringify({
+        expectedRevision: item.revision,
+        confirm: 'release-after-review'
+      })
+    });
+    setNotice('Queue released after review. No task completion was claimed and no input was sent.');
+    await loadSnapshot('manual');
+  } catch (error) {
+    setNotice(`Queue release failed: ${error.message}`, 'error');
+    await loadSnapshot('manual');
+  }
+}
+
+async function clearPromptQueueHistoryClient(button) {
+  const history = (state.snapshot?.promptQueue?.items || []).filter((item) => (
+    item.status === 'canceled' || (item.status === 'sent' && !promptQueueAwaitingFinish(item))
+  ));
+  if (!history.length) return;
+  if (!window.confirm(`Clear ${history.length} finished history record${history.length === 1 ? '' : 's'}? Active and queued work plus recurring schedules will stay.`)) return;
+  try {
+    const result = await api('/api/prompt-queue/clear-history', {
+      method: 'POST',
+      body: JSON.stringify({
+        expectedRevision: Number(button.dataset.revision),
+        confirm: 'clear-history'
+      })
+    });
+    setNotice(`${result.removed || 0} history record${result.removed === 1 ? '' : 's'} cleared. Active queue work and schedules were unchanged.`);
+    await loadSnapshot('manual');
+  } catch (error) {
+    setNotice(`Queue-history cleanup failed: ${error.message}`, 'error');
+    await loadSnapshot('manual');
+  }
 }
 
 function currentAttentionItem(id) {
@@ -4427,11 +6357,11 @@ function showMoreMissionHistory() {
 }
 
 function setOpenDrawer(drawer, { returnFocus = null, focus = true } = {}) {
-  const next = drawer === 'queue' || drawer === 'tools' ? drawer : null;
+  const next = drawer === 'tools' ? drawer : null;
   const previous = state.openDrawer;
   if (next && !previous && returnFocus) state.drawerReturnFocus = returnFocus;
   state.openDrawer = next;
-  const drawerElements = { queue: els.queueDrawer, tools: els.toolsDrawer };
+  const drawerElements = { tools: els.toolsDrawer };
   for (const [name, element] of Object.entries(drawerElements)) {
     const open = name === next;
     element.classList.toggle('hidden', !open);
@@ -4440,10 +6370,11 @@ function setOpenDrawer(drawer, { returnFocus = null, focus = true } = {}) {
   els.drawerBackdrop.classList.toggle('hidden', !next);
   els.drawerBackdrop.setAttribute('aria-hidden', next ? 'false' : 'true');
   document.body.classList.toggle('drawer-open', Boolean(next));
+  syncWorkspaceHeading();
   for (const button of document.querySelectorAll('[data-action="drawer-toggle"][data-drawer]')) {
     const expanded = button.dataset.drawer === next;
     button.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-    if (button.id === 'queue-tab' || button.id === 'tools-tab') button.classList.toggle('active', expanded);
+    if (button.id === 'tools-tab') button.classList.toggle('active', expanded);
   }
   if (next && focus) {
     window.requestAnimationFrame(() => drawerElements[next]?.focus({ preventScroll: true }));
@@ -4455,14 +6386,58 @@ function setOpenDrawer(drawer, { returnFocus = null, focus = true } = {}) {
   }
 }
 
+function openShortcutHelp(trigger = document.activeElement) {
+  if (!els.shortcutHelp?.classList.contains('hidden')) return;
+  setOpenDrawer(null, { focus: false });
+  state.shortcutHelpReturnFocus = trigger instanceof HTMLElement ? trigger : null;
+  els.shortcutHelp.classList.remove('hidden');
+  els.shortcutHelpBackdrop.classList.remove('hidden');
+  document.body.classList.add('shortcut-help-open');
+  window.requestAnimationFrame(() => {
+    els.shortcutHelp.querySelector('.shortcut-help-close')?.focus({ preventScroll: true });
+  });
+}
+
+function closeShortcutHelp({ focus = true } = {}) {
+  if (!els.shortcutHelp || els.shortcutHelp.classList.contains('hidden')) return;
+  els.shortcutHelp.classList.add('hidden');
+  els.shortcutHelpBackdrop.classList.add('hidden');
+  document.body.classList.remove('shortcut-help-open');
+  const returnFocus = state.shortcutHelpReturnFocus;
+  state.shortcutHelpReturnFocus = null;
+  if (focus && returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+}
+
+function handleShortcutHelpKeydown(event) {
+  if (!els.shortcutHelp || els.shortcutHelp.classList.contains('hidden')) return false;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeShortcutHelp();
+    return true;
+  }
+  const focusable = [...els.shortcutHelp.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => !element.disabled && !element.hidden);
+  const nextIndex = modalFocusIndex(event, focusable.indexOf(document.activeElement), focusable.length);
+  if (nextIndex < 0) return false;
+  event.preventDefault();
+  focusable[nextIndex]?.focus({ preventScroll: true });
+  return true;
+}
+
 function toggleDrawer(name, trigger = null) {
-  setOpenDrawer(nextDrawer(state.openDrawer, name), { returnFocus: trigger });
+  const next = nextDrawer(state.openDrawer, name);
+  if (next === 'tools') {
+    openToolView(state.activeToolView);
+    return;
+  }
+  setOpenDrawer(null, { returnFocus: trigger });
 }
 
 function openToolView(view = 'overview', { focus = true } = {}) {
   const allowed = new Set(['overview', 'services', 'security', 'system']);
   const selected = allowed.has(view) ? view : 'overview';
   state.activeToolView = selected;
+  safeStorageSet(ACTIVE_TOOL_VIEW_STORAGE_KEY, selected);
   els.toolTabs.forEach((tab) => {
     const active = tab.dataset.toolView === selected;
     tab.classList.toggle('active', active);
@@ -4476,11 +6451,37 @@ function openToolView(view = 'overview', { focus = true } = {}) {
   setOpenDrawer('tools', { returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null, focus });
 }
 
-function switchView(view, { focusTab = false } = {}) {
-  if (view === 'queue') {
-    setOpenDrawer('queue', { returnFocus: document.querySelector('#queue-tab') });
-    return;
-  }
+function syncDecisionAppBadge(decisionCount) {
+  const count = Math.max(0, Math.floor(Number(decisionCount) || 0));
+  if (state.appBadgeCount === count) return;
+  state.appBadgeCount = count;
+  const task = count > 0
+    ? globalThis.navigator?.setAppBadge?.(count)
+    : globalThis.navigator?.clearAppBadge?.();
+  task?.catch?.(() => {});
+}
+
+function syncWorkspaceHeading() {
+  const queueActive = state.activeView === 'queue';
+  els.workspaceEyebrow.textContent = queueActive ? 'Safe delivery queue' : 'Terminal-first control';
+  els.workspaceTitle.textContent = queueActive ? 'Prompt Queue' : 'Agent workspace';
+  const snapshot = state.snapshot;
+  const attention = snapshot ? normalizedAttention(snapshot) : { items: [], decisionCount: 0 };
+  const decisionCount = snapshot ? attentionDecisionCount(snapshot, attention) : 0;
+  const queuedCount = Number(snapshot?.promptQueue?.counts?.pending || 0);
+  const workingCount = (snapshot?.agents || []).filter((agent) => !isReviewAgent(agent) && agent.agentStatus?.state === 'busy').length;
+  document.title = dashboardDocumentTitle({
+    view: state.activeView,
+    drawer: state.openDrawer,
+    decisionCount,
+    queuedCount,
+    workingCount,
+    connection: els.liveState?.dataset.state || 'init'
+  });
+  syncDecisionAppBadge(decisionCount);
+}
+
+function switchView(view, { focusTab = false, persist = true } = {}) {
   if (view === 'services') {
     openToolView('services');
     return;
@@ -4494,13 +6495,26 @@ function switchView(view, { focusTab = false } = {}) {
     if (view !== 'system') window.requestAnimationFrame(() => document.querySelector(`#${view}-view`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
     return;
   }
-  if (view !== 'agents') return;
+  if (!['agents', 'queue'].includes(view)) return;
   setOpenDrawer(null);
-  const selectedTab = document.querySelector('#agents-tab');
-  selectedTab.classList.add('active');
-  selectedTab.setAttribute('aria-current', 'page');
-  els.agents.classList.add('active');
-  els.agents.hidden = false;
+  state.activeView = view;
+  syncWorkspaceFocus();
+  if (persist) safeStorageSet(ACTIVE_VIEW_STORAGE_KEY, view);
+  const nextHash = view === 'queue' ? '#queue' : '#terminals';
+  if (window.location.hash !== nextHash) window.history.replaceState(null, '', nextHash);
+  syncWorkspaceHeading();
+  const selectedTab = document.querySelector(`#${view}-tab`);
+  for (const tab of els.tabs.filter((item) => item.dataset.view)) {
+    const selected = tab === selectedTab;
+    tab.classList.toggle('active', selected);
+    if (selected) tab.setAttribute('aria-current', 'page');
+    else tab.removeAttribute('aria-current');
+  }
+  for (const panel of els.views) {
+    const selected = panel.id === `${view}-view`;
+    panel.classList.toggle('active', selected);
+    panel.hidden = !selected;
+  }
   if (focusTab) selectedTab.focus({ preventScroll: true });
 }
 
@@ -4515,8 +6529,41 @@ function openServiceDetail(serviceId) {
   });
 }
 
-function openNewAgentLauncher() {
-  state.agentDraft.open = true;
+function launcherWorkspaceForProject(requestedWorkspace) {
+  const requested = String(requestedWorkspace || '').replace(/\/+$/, '');
+  if (!requested) return '';
+  const options = state.options.workspaces || [];
+  const exact = options.find((item) => String(item.path || '').replace(/\/+$/, '') === requested);
+  if (exact) return exact.path;
+  return options
+    .filter((item) => {
+      const candidate = String(item.path || '').replace(/\/+$/, '');
+      return candidate && requested.startsWith(`${candidate}/`);
+    })
+    .sort((left, right) => String(right.path || '').length - String(left.path || '').length)[0]?.path || '';
+}
+
+function nextAgentNameForWorkspace(workspace) {
+  const base = slugifyClient(basenameFromPath(workspace) || state.options.suggestedName || 'agent');
+  const sessions = new Set((state.snapshot?.agents || []).map((agent) => String(agent.session || '')));
+  if (!sessions.has(`codex-${base}`)) return base;
+  for (let suffix = 2; suffix < 1000; suffix += 1) {
+    if (!sessions.has(`codex-${base}-${suffix}`)) return `${base}-${suffix}`;
+  }
+  return `${base}-${Date.now().toString(36).slice(-5)}`;
+}
+
+function openNewAgentLauncher(requestedWorkspace = '') {
+  const workspace = launcherWorkspaceForProject(requestedWorkspace);
+  state.agentDraft = {
+    ...state.agentDraft,
+    open: true,
+    ...(workspace ? {
+      workspace,
+      directoryName: '',
+      name: nextAgentNameForWorkspace(workspace)
+    } : {})
+  };
   render();
   window.requestAnimationFrame(() => {
     const launcher = document.querySelector('.new-agent-panel');
@@ -4525,6 +6572,41 @@ function openNewAgentLauncher() {
     launcher.scrollIntoView({ behavior: 'smooth', block: 'start' });
     launcher.querySelector('select, input, textarea')?.focus({ preventScroll: true });
   });
+}
+
+function closeNewAgentLauncher(launcher = document.querySelector('.new-agent-panel[open]')) {
+  if (!launcher) return;
+  const form = launcher.querySelector('#new-agent-form');
+  if (form) readAgentDraft(form);
+  state.agentDraft.open = false;
+  launcher.open = false;
+  launcher.removeAttribute('role');
+  launcher.removeAttribute('aria-modal');
+  const hint = launcher.querySelector('.summary-hint');
+  if (hint) hint.textContent = 'Launcher';
+  launcher.querySelector('summary')?.focus({ preventScroll: true });
+}
+
+function handleNewAgentLauncherKeydown(event, launcher) {
+  if (!launcher || event.isComposing) return false;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeNewAgentLauncher(launcher);
+    return true;
+  }
+  const form = launcher.querySelector('#new-agent-form');
+  if (form?.contains(event.target) && isNewAgentSubmitShortcut(event)) {
+    event.preventDefault();
+    form.requestSubmit();
+    return true;
+  }
+  const focusable = [...launcher.querySelectorAll('summary, button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => !element.hidden && element.getClientRects().length);
+  const nextIndex = modalFocusIndex(event, focusable.indexOf(document.activeElement), focusable.length);
+  if (nextIndex < 0) return false;
+  event.preventDefault();
+  focusable[nextIndex].focus({ preventScroll: true });
+  return true;
 }
 
 function openActiveAgentWindows() {
@@ -4555,11 +6637,36 @@ document.addEventListener('click', (event) => {
   const terminalItem = terminalItemFromTarget(target);
   if (terminalItem) focusTerminalWindow(terminalItem);
   switch (action) {
+    case 'shortcut-help-open':
+      openShortcutHelp(target);
+      break;
+    case 'shortcut-help-close':
+      closeShortcutHelp();
+      break;
+    case 'notice-dismiss':
+      dismissNotice();
+      break;
     case 'drawer-toggle':
       toggleDrawer(target.dataset.drawer, target);
       break;
     case 'drawer-close':
       setOpenDrawer(null);
+      break;
+    case 'session-filter':
+      setSessionFilter(target.dataset.filter);
+      break;
+    case 'prompt-history-origin':
+      setPromptHistoryOriginFilter(target.dataset.origin);
+      break;
+    case 'prompt-history-search-clear':
+      setPromptHistoryQuery('');
+      break;
+    case 'open-queue':
+      switchView('queue');
+      break;
+    case 'notifications-focus':
+      openToolView('overview', { focus: false });
+      window.requestAnimationFrame(() => document.querySelector('.tools-notifications')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
       break;
     case 'tool-view':
       openToolView(target.dataset.toolView || 'overview', { focus: false });
@@ -4572,6 +6679,46 @@ document.addEventListener('click', (event) => {
       break;
     case 'notification-snooze':
       runElementTask(target, () => snoozeNotification(target));
+      break;
+    case 'prompt-queue-open-agent':
+      openAgentDetail(target.dataset.session, target.dataset.paneId || '');
+      void touchOpenedAgent(target.dataset.session, { force: true });
+      break;
+    case 'prompt-queue-select-target':
+      selectPromptQueueTarget(target);
+      break;
+    case 'prompt-queue-select-all':
+      selectAllPromptQueueTargets();
+      break;
+    case 'prompt-queue-draft-clear':
+      clearPromptQueueDraft(target.closest('#prompt-queue-form'));
+      break;
+    case 'prompt-queue-draft-undo':
+      undoPromptQueueDraftClear(target.closest('#prompt-queue-form'));
+      break;
+    case 'prompt-queue-jump':
+      jumpToPromptQueueSection(target.dataset.queueSection);
+      break;
+    case 'prompt-queue-cancel':
+      runElementTask(target, () => cancelPromptQueueClient(target));
+      break;
+    case 'prompt-queue-retarget':
+      runElementTask(target, () => retargetPromptQueueClient(target));
+      break;
+    case 'prompt-queue-release':
+      runElementTask(target, () => releasePromptQueueClient(target));
+      break;
+    case 'prompt-queue-clear-history':
+      runElementTask(target, () => clearPromptQueueHistoryClient(target));
+      break;
+    case 'prompt-schedule-toggle':
+      runElementTask(target, () => togglePromptScheduleClient(target));
+      break;
+    case 'prompt-schedule-retarget':
+      runElementTask(target, () => retargetPromptScheduleClient(target));
+      break;
+    case 'prompt-schedule-delete':
+      runElementTask(target, () => deletePromptScheduleClient(target));
       break;
     case 'mission-create-open':
       openMissionCreate();
@@ -4615,7 +6762,10 @@ document.addEventListener('click', (event) => {
       copyAttach(target.dataset.session);
       break;
     case 'session-pin':
-      togglePinnedSession(target.dataset.session);
+      togglePinnedSession(target.dataset.session, target);
+      break;
+    case 'session-filters-reset':
+      resetSessionFilters();
       break;
     case 'send-newline':
       if (terminalItem) insertSendText(terminalItem, '\n');
@@ -4649,8 +6799,62 @@ document.addEventListener('click', (event) => {
         renderTerminalChrome();
       }
       break;
+    case 'terminal-cycle-prev':
+      cycleTerminalWindow(terminalItem, -1);
+      break;
+    case 'terminal-cycle-next':
+      cycleTerminalWindow(terminalItem, 1);
+      break;
+    case 'terminal-cycle-active':
+      cycleActiveTerminal(Number(target.dataset.direction));
+      break;
+    case 'terminal-jump-latest':
+      if (terminalItem) {
+        forceTerminalScrollBottom(terminalItem);
+        terminalItem.output.focus({ preventScroll: true });
+      }
+      break;
+    case 'terminal-copy-output':
+      if (terminalItem) runElementTask(target, () => copyTerminalOutput(terminalItem, target));
+      break;
+    case 'terminal-find-toggle':
+      if (terminalItem) setTerminalFindOpen(terminalItem, !terminalItem.findOpen);
+      break;
+    case 'terminal-find-prev':
+      stepTerminalFind(terminalItem, -1);
+      break;
+    case 'terminal-find-next':
+      stepTerminalFind(terminalItem, 1);
+      break;
+    case 'terminal-find-close':
+      setTerminalFindOpen(terminalItem, false);
+      break;
+    case 'terminal-refresh-toggle':
+      if (terminalItem) setTerminalRefreshPaused(terminalItem, !terminalItem.refreshPaused);
+      break;
+    case 'terminal-tools-toggle':
+      if (terminalItem) setTerminalToolsCollapsed(terminalItem, !terminalItem.toolsCollapsed);
+      break;
+    case 'terminal-font-scale':
+      adjustTerminalFontScale(target.dataset.delta);
+      break;
+    case 'terminal-font-reset':
+      resetTerminalFontScale();
+      break;
+    case 'terminal-wrap-toggle':
+      toggleTerminalWrap();
+      break;
+    case 'terminal-composer-toggle':
+      if (terminalItem) setTerminalComposerCollapsed(terminalItem, !terminalItem.composerCollapsed);
+      break;
     case 'terminal-layout':
       setTerminalLayout(target.dataset.layout);
+      break;
+    case 'workspace-focus-toggle':
+      setWorkspaceFocus();
+      break;
+    case 'workspace-panel-toggle':
+      toggleWorkspacePanel(target.dataset.panel);
       break;
     case 'terminal-full-height':
       setTerminalFullHeight();
@@ -4660,6 +6864,9 @@ document.addEventListener('click', (event) => {
       break;
     case 'project-desk-refresh':
       syncProjectDesk({ refreshContext: true });
+      break;
+    case 'project-new-agent':
+      openNewAgentLauncher(projectContextWorkspace(state.projectDesk.context, state.projectDesk.target));
       break;
     case 'project-artifact-download':
       runElementTask(target, () => projectArtifactDownload(target));
@@ -4697,7 +6904,7 @@ document.addEventListener('click', (event) => {
       toggleTerminalMaximize(terminalItem);
       break;
     case 'terminal-close':
-      closeTerminalWindow(terminalItem);
+      closeTerminalWindow(terminalItem, { announce: true });
       break;
     case 'terminal-command':
       if (terminalItem) sendTerminalCommand(terminalItem, target.dataset.command);
@@ -4717,6 +6924,9 @@ document.addEventListener('click', (event) => {
       break;
     case 'new-agent-open':
       openNewAgentLauncher();
+      break;
+    case 'new-agent-cancel':
+      closeNewAgentLauncher(target.closest('.new-agent-panel') || document.querySelector('.new-agent-panel[open]'));
       break;
     case 'open-active-agents':
       openActiveAgentWindows();
@@ -4783,6 +6993,22 @@ document.addEventListener('click', (event) => {
 });
 
 document.addEventListener('submit', (event) => {
+  if (event.target?.classList?.contains('terminal-find-bar')) {
+    event.preventDefault();
+    stepTerminalFind(terminalItemFromTarget(event.target), 1);
+    return;
+  }
+  if (event.target?.id === 'prompt-history-search-form') {
+    event.preventDefault();
+    setPromptHistoryQuery(new FormData(event.target).get('query'));
+    return;
+  }
+  if (event.target?.id === 'prompt-queue-form') {
+    event.preventDefault();
+    const mode = event.submitter?.value === 'send' ? 'send' : 'queue';
+    runElementTask(event.target, () => createPromptQueueFromForm(event.target, mode));
+    return;
+  }
   if (event.target?.id === 'mission-create-form') {
     event.preventDefault();
     runElementTask(event.target, () => createMissionFromForm(event.target));
@@ -4825,11 +7051,22 @@ document.addEventListener('input', (event) => {
     updateProjectComposerState();
     return;
   }
+  const promptQueueForm = event.target?.closest?.('#prompt-queue-form');
+  if (promptQueueForm) {
+    state.promptQueueDraftUndo = null;
+    readPromptQueueDraft(promptQueueForm);
+  }
   const missionForm = event.target?.closest?.('#mission-create-form');
   if (missionForm) readMissionDraft(missionForm);
   const form = event.target?.closest?.('#new-agent-form');
   if (form) readAgentDraft(form);
   const terminalItem = terminalItemFromTarget(event.target);
+  if (terminalItem && event.target.classList.contains('terminal-find-input')) {
+    terminalItem.findQuery = event.target.value;
+    terminalItem.findIndex = 0;
+    renderTerminalFindHighlights(terminalItem, { scroll: true });
+    return;
+  }
   if (terminalItem && event.target.classList.contains('terminal-send-text')) {
     handleTerminalTextInput(event, terminalItem);
   }
@@ -4846,10 +7083,20 @@ document.addEventListener('paste', (event) => {
 });
 
 document.addEventListener('change', (event) => {
+  if (event.target === els.terminalJumpSelect || event.target?.classList?.contains('terminal-mobile-select')) {
+    activateTerminalWindow(state.terminalWindows.get(event.target.value));
+    return;
+  }
   if (event.target === els.scratchpadSnippetSelect) {
     const snippet = selectedPromptSnippet();
     els.scratchpadSnippetName.value = snippet && !snippet.builtIn ? snippet.name : '';
     updateProjectComposerState();
+    return;
+  }
+  const promptQueueForm = event.target?.closest?.('#prompt-queue-form');
+  if (promptQueueForm) {
+    state.promptQueueDraftUndo = null;
+    readPromptQueueDraft(promptQueueForm);
     return;
   }
   const missionForm = event.target?.closest?.('#mission-create-form');
@@ -4891,11 +7138,25 @@ document.addEventListener('toggle', (event) => {
   if (event.target?.classList?.contains('mission-history')) {
     state.missionHistoryOpen = event.target.open;
   }
+  if (event.target?.matches?.('[data-queue-detail]')) {
+    const detail = event.target.dataset.queueDetail;
+    if (event.target.open) state.openPromptQueueDetails.add(detail);
+    else state.openPromptQueueDetails.delete(detail);
+  }
   if (event.target?.classList?.contains('mission-create-panel')) {
     state.missionDraft.open = event.target.open;
   }
   if (event.target?.classList?.contains('new-agent-panel')) {
     state.agentDraft.open = event.target.open;
+    const hint = event.target.querySelector('.summary-hint');
+    if (hint) hint.textContent = event.target.open ? 'Close' : 'Launcher';
+    if (event.target.open) {
+      event.target.setAttribute('role', 'dialog');
+      event.target.setAttribute('aria-modal', 'true');
+    } else {
+      event.target.removeAttribute('role');
+      event.target.removeAttribute('aria-modal');
+    }
   }
 }, true);
 
@@ -4924,6 +7185,10 @@ els.refresh.addEventListener('click', () => Promise.all([
   loadOptions()
 ]));
 window.addEventListener('resize', handleTerminalViewportResize);
+window.addEventListener('hashchange', () => {
+  const view = preferredDashboardView(window.location.hash, state.activeView);
+  if (view !== state.activeView) switchView(view, { persist: false });
+});
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     for (const item of state.terminalWindows.values()) {
@@ -5166,6 +7431,68 @@ document.addEventListener('dblclick', (event) => {
 });
 
 document.addEventListener('keydown', (event) => {
+  if (handleShortcutHelpKeydown(event)) return;
+  if (event.target === els.sessionSearch && handleSessionSearchKeydown(event)) return;
+  if (handleSessionResultKeydown(event)) return;
+  if (handleTerminalTabKeydown(event)) return;
+  if (event.target?.classList?.contains('terminal-find-input')) {
+    const item = terminalItemFromTarget(event.target);
+    if (String(event.key || '').toLowerCase() === 'f' && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
+      event.preventDefault();
+      event.target.select();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      setTerminalFindOpen(item, false);
+    } else if (event.key === 'Enter' && !event.isComposing) {
+      event.preventDefault();
+      stepTerminalFind(item, event.shiftKey ? -1 : 1);
+    }
+    return;
+  }
+  const openLauncher = document.querySelector('.new-agent-panel[open]');
+  if (openLauncher && handleNewAgentLauncherKeydown(event, openLauncher)) return;
+  if (event.target?.matches?.('#prompt-queue-form textarea[name="text"]') && isPromptQueueSubmitShortcut(event)) {
+    event.preventDefault();
+    const form = event.target.closest('#prompt-queue-form');
+    readPromptQueueDraft(form);
+    const queueButton = form.querySelector('button[type="submit"][value="queue"]');
+    if (!queueButton?.disabled) form.requestSubmit(queueButton);
+    return;
+  }
+  const editableTarget = Boolean(event.target?.closest?.('input, textarea, select, [contenteditable="true"]'));
+  if (isTerminalFindShortcut(event, editableTarget)) {
+    const findTerminal = state.terminalWindows.get(state.activeTerminalId);
+    if (findTerminal && !findTerminal.minimized) {
+      event.preventDefault();
+      setTerminalFindOpen(findTerminal, true);
+      return;
+    }
+  }
+  const shortcut = dashboardShortcut(event, editableTarget);
+  if (shortcut) {
+    event.preventDefault();
+    if (shortcut === 'search') {
+      switchView('agents');
+      window.requestAnimationFrame(() => {
+        els.sessionSearch.focus({ preventScroll: true });
+        els.sessionSearch.select();
+      });
+    } else if (shortcut === 'tools') {
+      openToolView(state.activeToolView);
+    } else if (shortcut === 'new-agent') {
+      openNewAgentLauncher();
+    } else if (shortcut === 'shortcuts') {
+      openShortcutHelp(document.activeElement);
+    } else if (shortcut === 'terminal-previous' || shortcut === 'terminal-next') {
+      cycleActiveTerminal(shortcut === 'terminal-previous' ? -1 : 1);
+    } else if (shortcut === 'workspace-focus') {
+      switchView('agents');
+      setWorkspaceFocus();
+    } else {
+      switchView(shortcut, { focusTab: true });
+    }
+    return;
+  }
   if (event.key === 'Escape' && state.openDrawer) {
     event.preventDefault();
     setOpenDrawer(null);

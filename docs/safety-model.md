@@ -6,7 +6,7 @@ PaneFleet is privileged operator software. Its design assumes that observation i
 
 - terminal input and exact worker ownership;
 - live tmux sessions and workload processes;
-- mission goals, results, and audit history;
+- queued prompts, delivery state, and audit history;
 - workspace files and generated artifacts;
 - service commands and credentials available to the host user;
 - network access rules; and
@@ -61,29 +61,37 @@ PaneFleet re-queries tmux and compares that identity immediately before sensitiv
 Normal agent input behaves like terminal typing:
 
 1. revalidate the target and Codex process;
-2. type literal text in bounded chunks;
-3. revalidate between chunks and before submission;
-4. confirm stable rendering with paired markers when the workflow requires it;
-5. send one Enter; and
-6. observe stable evidence that Codex accepted the submission.
+2. arm per-pane exit preservation and revalidate the same intrinsic pane identity;
+3. type literal text in bounded chunks;
+4. revalidate between chunks and before submission;
+5. confirm stable rendering with paired markers when the workflow requires it;
+6. send one Enter; and
+7. observe stable evidence that Codex accepted the submission.
 
 PaneFleet does not use normal dispatch to send `Ctrl-C`, respawn a pane, kill a session, signal a process, or switch a tmux client. Those recovery actions remain separate and visibly confirmed.
 
 If text rendering or acceptance cannot be proven, PaneFleet records an uncertain state and does not retry Enter. This can leave text visible but unsubmitted; the operator must inspect the exact terminal.
 
-## Mission invariants
+## Prompt queue invariants
 
-- Creating, prioritizing, or moving a mission never dispatches it.
-- Dispatch reserves worker and workspace ownership before terminal input.
-- One worker and one workspace cannot own competing active missions.
-- Stale mission revisions are rejected.
-- A restart during uncertain dispatch produces a reconciliation decision, never an automatic resend.
-- Requeue releases queue ownership but does not interrupt the worker.
-- Supervisor observations require multiple stable samples.
-- The supervisor may move completed-looking work only to Verifying.
-- Only a human can mark Done, and verification evidence is required.
+- Queue creation binds a prompt to the exact current pane identity and performs no terminal input.
+- Recurring schedules use parsed five-field UTC cron only; they do not invoke a shell, `crontab`, service action, or arbitrary command.
+- A due schedule adds at most one ordinary queue item, coalesces while its prior item is open, and never replays a downtime backlog.
+- A schedule retains the original exact pane identity. Missing or replaced panes are skipped rather than retargeted.
+- Pausing, resuming, or deleting a schedule performs no terminal input; deletion leaves already queued items unchanged.
+- Green requires a live Codex process plus the explicit idle, healthy, prompt-ready state; low CPU alone is not enough.
+- A dead pane is retained for inspection, reported as stopped, and is never green or eligible for terminal input.
+- A visible nonzero `background terminal` count overrides the drawn composer and keeps queue readiness blue.
+- The same exact identity must be green in at least two observations separated by the configured stability interval.
+- Dispatch persists an owner-only claim before typing into the pane.
+- Each terminal has one FIFO line and only its head item can dispatch.
+- Accepted delivery is not task completion. The sent head blocks its line until the same exact pane shows stable readiness plus either a `Worked for` final-response boundary or a safely bounded return to a later composer. A footerless return is recorded as terminal flow, never as proof the project task is Done.
+- Intermediate green-looking tool output cannot create a completion snapshot or release the next prompt.
+- A restart during dispatch, identity change, incomplete rendering, uncertain Enter, or uncertain acceptance moves the prompt to human review.
+- An uncertain attempt is never retried automatically and blocks later prompts for that terminal until reviewed or dismissed.
+- Queue delivery cannot interrupt or stop a session, start a service, or select another terminal.
 
-Mission and notification state is written atomically with owner-only permissions. Operational state remains local and must not be committed.
+Prompt queue and notification state is written atomically with owner-only permissions. Operational state remains local and must not be committed.
 
 ## Filesystem boundary
 
@@ -93,9 +101,9 @@ Project Desk:
 
 - reports bounded Git and instruction data;
 - never runs a discovered package script;
-- discovers downloadable PDFs only in built-in or explicitly configured output-directory names;
+- discovers PDFs in built-in or explicitly configured output directories and a narrow set of root-level PDF, Markdown, and HTML outputs modified during the focused exact tmux session;
 - represents files with opaque identifiers rather than browser-supplied paths; and
-- revalidates the exact pane, canonical root, selected file, size, and PDF type at download time.
+- revalidates the exact pane, canonical root, selected file, size, extension, content, and session-time boundary at download time.
 
 ## Lifecycle isolation
 

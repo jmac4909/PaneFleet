@@ -17,13 +17,17 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test test/*.test.js",
-    "check": "node --check server.js && node --check public/app.js && node --check public/ui-state.js && node --check scripts/privacy-check.mjs && node --check scripts/capture-readme-screenshots.mjs && npm test",
+    "test:coverage": "c8 --clean --all --reporter=text --reporter=json-summary --include=server.js --include=process-runner.js --include=public/ui-state.js --check-coverage --per-file --statements=94.5 --branches=79.3 --functions=100 --lines=94.5 node --test test/*.test.js",
+    "check": "node --check server.js && node --check public/app.js && node --check public/ui-state.js && node --check scripts/privacy-check.mjs && node --check scripts/capture-readme-screenshots.mjs && npm run test:coverage",
     "screenshots:readme": "node scripts/capture-readme-screenshots.mjs",
     "hooks:install": "git config core.hooksPath .githooks",
-    "privacy:check": "node scripts/privacy-check.mjs --tracked --history",
+    "privacy:check": "node scripts/privacy-check.mjs --worktree --history",
     "verify:public": "npm run check && npm run privacy:check"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "c8": "^11.0.0"
   }
 }

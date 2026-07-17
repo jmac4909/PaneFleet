@@ -36,6 +36,20 @@ ssh -N -L 8787:127.0.0.1:8787 user@your-host
 
 Foreground mode is suitable for evaluation. Closing its shell stops only PaneFleet, not the workload tmux server.
 
+## Recurring prompt operations
+
+Use the Queue composer rather than editing `data/prompt-queue.json` or installing a host `crontab` entry. Select the exact terminal, enter the prompt, and optionally enter a five-field UTC schedule. Common examples:
+
+| UTC cron | Meaning |
+| --- | --- |
+| `*/15 * * * *` | every 15 minutes |
+| `0 * * * *` | at the start of every hour |
+| `0 */4 * * *` | every four hours |
+| `0 9 * * *` | daily at 09:00 UTC |
+| `0 9 * * 1-5` | weekdays at 09:00 UTC |
+
+The Recurring prompts section shows the next run and last scheduling outcome. Pause prevents future intake; resume calculates a fresh next run. Delete removes only the schedule, not an item it already added to the queue. An unavailable exact pane is intentionally skipped, so create a new schedule if the tmux session or pane was replaced.
+
 ## Authenticated non-loopback access
 
 Set `HOST` to a non-loopback address only after an encrypted transport and narrow ingress are ready. On first startup, PaneFleet creates a random token at `data/access-token` unless `ORCHESTRATOR_ACCESS_TOKEN` supplies a value of at least 24 characters.
@@ -167,7 +181,7 @@ Operational API routes intentionally reject command-line requests that do not ca
 
 ## Runtime state
 
-Durable state lives under `data/` and should remain owner-readable only. It may contain mission text, pane summaries, audit records, notifications, managed access-rule state, and the generated non-loopback access token.
+Durable state lives under `data/` and should remain owner-readable only. It may contain queued prompt text, compatibility mission text, pane summaries, audit records, notifications, managed access-rule state, and the generated non-loopback access token.
 
 Before a protected backup, stop only the PaneFleet user unit, copy `data/` to a private destination, and start the unit again. Never include `data/`, logs, or terminal captures in a source archive.
 
@@ -222,8 +236,8 @@ The old tmux watchdog is retained only as an emergency compatibility fallback an
 
 ### A prompt is visible but not submitted
 
-PaneFleet intentionally sends no Enter when full rendering cannot be proved. Open the exact terminal, inspect the draft, and decide manually. Do not repeatedly dispatch the same mission.
+PaneFleet intentionally sends no Enter when full rendering cannot be proved. Open the exact terminal, inspect the draft, and decide manually. The queued item is paused for review and will not be retried.
 
-### A mission requires reconciliation
+### A queued prompt needs review
 
-The dashboard lost certainty after reserving or submitting work. Inspect the assigned pane and choose the explicit reconciliation action. PaneFleet will not resend automatically.
+The dashboard lost certainty after claiming, rendering, or submitting that exact prompt, or it restarted while delivery was in progress. Inspect the assigned pane before dismissing the item. PaneFleet will not resend it automatically, and later prompts for that terminal stay paused.

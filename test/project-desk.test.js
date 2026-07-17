@@ -11,6 +11,7 @@ import {
   rmSync,
   symlinkSync,
   truncateSync,
+  utimesSync,
   writeFileSync
 } from 'node:fs';
 import net from 'node:net';
@@ -28,8 +29,11 @@ let projectsRoot;
 let workspace;
 let workspaceSubdir;
 let deliverablesDir;
+let sessionMarkdownPath;
+let sessionHtmlPath;
 let outsideDir;
 let toolLogPath;
+let gitModePath;
 let child;
 let childOutput = '';
 let baseUrl;
@@ -106,15 +110,15 @@ before(async () => {
   const binDir = path.join(fixtureDir, 'bin');
   const publicDir = path.join(fixtureDir, 'public');
   toolLogPath = path.join(fixtureDir, 'tools.log');
+  gitModePath = path.join(fixtureDir, 'git-mode');
   for (const directory of [projectsRoot, workspaceSubdir, deliverablesDir, outsideDir, codexHome, extraWorkspaceRoot, binDir, publicDir]) {
     mkdirSync(directory, { recursive: true });
   }
 
-  copyFileSync(path.join(projectDir, 'server.js'), path.join(fixtureDir, 'server.js'));
-  copyFileSync(path.join(projectDir, 'process-runner.js'), path.join(fixtureDir, 'process-runner.js'));
   writeFileSync(path.join(fixtureDir, 'package.json'), '{"type":"module"}\n');
   writeFileSync(path.join(publicDir, 'index.html'), '<!doctype html><title>Project Desk Test</title>\n');
   writeFileSync(path.join(codexHome, 'models_cache.json'), '{"models":[]}\n');
+  writeFileSync(gitModePath, 'normal\n');
   const fakeTestCredential = `sk-proj-${'x'.repeat(32)}`;
   writeFileSync(path.join(projectsRoot, 'AGENTS.md'), [
     '# Workspace rules',
@@ -125,7 +129,15 @@ before(async () => {
   symlinkSync(path.join(outsideDir, 'secret.md'), path.join(workspace, 'AGENTS.md'));
   writeFileSync(path.join(deliverablesDir, 'release-notes.pdf'), '%PDF-1.4\nproject deliverable bytes\n%%EOF\n');
   writeFileSync(path.join(deliverablesDir, 'private-notes.md'), '# not downloadable\n');
-  writeFileSync(path.join(workspace, 'root-document.pdf'), '%PDF-1.4\nnot in an output folder\n%%EOF\n');
+  const rootDocument = path.join(workspace, 'root-document.pdf');
+  writeFileSync(rootDocument, '%PDF-1.4\nnot in an output folder\n%%EOF\n');
+  const beforeSession = new Date('2023-11-14T22:13:19.000Z');
+  utimesSync(rootDocument, beforeSession, beforeSession);
+  sessionMarkdownPath = path.join(workspace, 'session-call-sheet.md');
+  sessionHtmlPath = path.join(workspace, 'session-call-sheet.html');
+  writeFileSync(sessionMarkdownPath, '# Session call sheet\n\nCreated by the current exact agent session.\n');
+  writeFileSync(sessionHtmlPath, '<!doctype html>\n<html><body>Current session output</body></html>\n');
+  writeFileSync(path.join(workspace, 'README.md'), '# Project metadata, not a downloadable session output\n');
   const privateProjectDir = path.join(workspace, 'private-documents');
   mkdirSync(privateProjectDir, { recursive: true });
   writeFileSync(path.join(privateProjectDir, 'in-project-private.pdf'), '%PDF-1.4\nin-project private\n%%EOF\n');
@@ -168,6 +180,10 @@ case "$1" in
       *) exit 1 ;;
     esac
     ;;
+  set-option)
+    if [ "$2" = '-p' ] && [ "$3" = '-t' ] && [ "$4" = '%7' ] && [ "$5" = 'remain-on-exit' ] && [ "$6" = 'on' ]; then exit 0; fi
+    exit 1
+    ;;
   send-keys) exit 0 ;;
   *) exit 1 ;;
 esac
@@ -176,6 +192,14 @@ esac
 printf 'git' >> "$ORCH_TOOL_LOG"
 printf ' <%s>' "$@" >> "$ORCH_TOOL_LOG"
 printf '\n' >> "$ORCH_TOOL_LOG"
+mode="$(cat "$PROJECT_DESK_GIT_MODE" 2>/dev/null)"
+if [ "$mode" = 'not-git' ]; then exit 2; fi
+if [ "$mode" = 'outside-root' ] && printf '%s ' "$@" | grep -q 'rev-parse --show-toplevel'; then
+  printf '%s\n' "$PROJECT_DESK_OUTSIDE"
+  exit 0
+fi
+if [ "$mode" = 'detached' ] && printf '%s ' "$@" | grep -q 'symbolic-ref --quiet --short HEAD'; then exit 1; fi
+if [ "$mode" = 'status-fail' ] && printf '%s ' "$@" | grep -q 'status --porcelain=v1'; then exit 3; fi
 case " $* " in
   *' rev-parse --show-toplevel '*) printf '%s\n' "$PROJECT_DESK_REPO" ;;
   *' symbolic-ref --quiet --short HEAD '*) printf '%s\n' 'feature/project-desk' ;;
@@ -196,12 +220,14 @@ esac
 
   const port = await unusedLoopbackPort();
   baseUrl = `http://127.0.0.1:${port}`;
-  child = spawn(process.execPath, ['server.js'], {
+  child = spawn(process.execPath, [path.join(projectDir, 'server.js')], {
     cwd: fixtureDir,
     env: {
       ...process.env,
+      NODE_ENV: 'test',
       HOST: '127.0.0.1',
       PORT: String(port),
+      ORCHESTRATOR_RUNTIME_ROOT: fixtureDir,
       PATH: `${binDir}:${process.env.PATH || ''}`,
       CODEX_HOME: codexHome,
       ORCH_TOOL_LOG: toolLogPath,
@@ -212,6 +238,7 @@ esac
       PROJECT_DESK_WORKSPACE: workspaceSubdir,
       PROJECT_DESK_REPO: workspace,
       PROJECT_DESK_OUTSIDE: outsideDir,
+      PROJECT_DESK_GIT_MODE: gitModePath,
       SNAPSHOT_EVENT_MS: '3600000',
       SSH_RESCUE_MONITOR_MS: '3600000'
     },
@@ -312,16 +339,72 @@ test('Project Desk is exact-pane-bound and returns only capped, allowlisted proj
     name: artifact.name,
     path: artifact.path,
     type: artifact.type
-  })), [{
-    name: 'release-notes.pdf',
-    path: 'deliverables/release-notes.pdf',
-    type: 'pdf'
-  }]);
-  assert.match(desk.artifacts[0].id, /^[a-f0-9]{32}$/);
-  assert.equal(desk.artifacts[0].size, readFileSync(path.join(deliverablesDir, 'release-notes.pdf')).length);
-  assert.doesNotMatch(JSON.stringify(desk.artifacts), /outside-link|private-notes|root-document|in-project-private|\/home\//);
+  })).sort((left, right) => left.path.localeCompare(right.path)), [
+    {
+      name: 'release-notes.pdf',
+      path: 'deliverables/release-notes.pdf',
+      type: 'pdf'
+    },
+    {
+      name: 'session-call-sheet.html',
+      path: 'session-call-sheet.html',
+      type: 'html'
+    },
+    {
+      name: 'session-call-sheet.md',
+      path: 'session-call-sheet.md',
+      type: 'markdown'
+    }
+  ]);
+  const releaseArtifact = desk.artifacts.find((artifact) => artifact.name === 'release-notes.pdf');
+  assert.match(releaseArtifact.id, /^[a-f0-9]{32}$/);
+  assert.equal(releaseArtifact.size, readFileSync(path.join(deliverablesDir, 'release-notes.pdf')).length);
+  assert.doesNotMatch(JSON.stringify(desk.artifacts), /outside-link|private-notes|root-document|in-project-private|README|\/home\//);
   assert.doesNotMatch(JSON.stringify(desk), /Never Return|9999/);
   assert.doesNotMatch(toolLog(), /FORBIDDEN/);
+});
+
+test('Project Desk reports bounded Git degradation states without failing the workspace view', async () => {
+  const cases = [
+    {
+      mode: 'not-git',
+      expected: { available: false, reason: 'not_git_repository', detached: false, changedCount: 0 }
+    },
+    {
+      mode: 'outside-root',
+      expected: { available: false, reason: 'repository_outside_allowed_workspace', detached: false, changedCount: 0 }
+    },
+    {
+      mode: 'detached',
+      expected: { available: true, reason: '', detached: true, changedCount: 105 }
+    },
+    {
+      mode: 'status-fail',
+      expected: { available: true, reason: 'status_unavailable', detached: false, changedCount: null }
+    }
+  ];
+
+  try {
+    for (const testCase of cases) {
+      writeFileSync(gitModePath, `${testCase.mode}\n`);
+      const response = await request(deskPath());
+      const desk = await responseJson(response);
+      assert.equal(response.status, 200, `${testCase.mode}: ${JSON.stringify(desk)}`);
+      assert.equal(desk.git.available, testCase.expected.available, testCase.mode);
+      assert.equal(desk.git.reason, testCase.expected.reason, testCase.mode);
+      assert.equal(desk.git.detached, testCase.expected.detached, testCase.mode);
+      assert.equal(desk.git.changedCount, testCase.expected.changedCount, testCase.mode);
+      assert.equal('canonicalRepoRoot' in desk.git, false);
+      assert.equal(JSON.stringify(desk.git).includes(outsideDir), false);
+      if (testCase.mode === 'status-fail') assert.deepEqual(desk.git.changes, []);
+      if (testCase.mode === 'detached') {
+        assert.equal(desk.git.branch, '');
+        assert.equal(desk.git.head, 'abc123def456');
+      }
+    }
+  } finally {
+    writeFileSync(gitModePath, 'normal\n');
+  }
 });
 
 test('Project Desk artifact downloads require the control cookie before tmux or files', async () => {
@@ -345,6 +428,34 @@ test('Project Desk downloads one discovered PDF with attachment headers', async 
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), readFileSync(path.join(deliverablesDir, artifact.name)));
 });
 
+test('Project Desk downloads Markdown and HTML created during the exact agent session', async () => {
+  const desk = await responseJson(await request(deskPath()));
+  const cases = [
+    {
+      name: path.basename(sessionMarkdownPath),
+      file: sessionMarkdownPath,
+      contentType: 'text/markdown; charset=utf-8'
+    },
+    {
+      name: path.basename(sessionHtmlPath),
+      file: sessionHtmlPath,
+      contentType: 'text/html; charset=utf-8'
+    }
+  ];
+  for (const testCase of cases) {
+    const artifact = desk.artifacts.find((item) => item.name === testCase.name);
+    assert.ok(artifact, testCase.name);
+    const response = await request(artifactPath(artifact.id));
+    assert.equal(response.status, 200, childOutput);
+    assert.equal(response.headers.get('content-type'), testCase.contentType);
+    assert.match(
+      response.headers.get('content-disposition') || '',
+      new RegExp('^attachment;.*' + testCase.name.replace('.', '\\.'), 'i')
+    );
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), readFileSync(testCase.file));
+  }
+});
+
 test('Project Desk rejects non-PDF content carrying a .pdf filename', async () => {
   const fakePdf = path.join(deliverablesDir, 'not-really-a-pdf.pdf');
   writeFileSync(fakePdf, 'plain text with a misleading extension\n');
@@ -357,6 +468,26 @@ test('Project Desk rejects non-PDF content carrying a .pdf filename', async () =
     assert.deepEqual(await responseJson(response), { error: 'artifact_content_not_allowed' });
   } finally {
     rmSync(fakePdf, { force: true });
+  }
+});
+
+test('Project Desk rejects binary Markdown and non-HTML session files', async () => {
+  const invalidMarkdown = path.join(workspace, 'invalid-session-output.md');
+  const invalidHtml = path.join(workspace, 'invalid-session-output.html');
+  writeFileSync(invalidMarkdown, Buffer.from([0xff, 0xfe, 0x00, 0x01]));
+  writeFileSync(invalidHtml, 'plain text with a misleading HTML extension\n');
+  try {
+    const desk = await responseJson(await request(deskPath()));
+    for (const filename of [path.basename(invalidMarkdown), path.basename(invalidHtml)]) {
+      const artifact = desk.artifacts.find((item) => item.name === filename);
+      assert.ok(artifact, filename);
+      const response = await request(artifactPath(artifact.id));
+      assert.equal(response.status, 415);
+      assert.deepEqual(await responseJson(response), { error: 'artifact_content_not_allowed' });
+    }
+  } finally {
+    rmSync(invalidMarkdown, { force: true });
+    rmSync(invalidHtml, { force: true });
   }
 });
 
@@ -470,4 +601,6 @@ test('normal agent send validates optional durable identity and refuses stale pa
   assert.equal((await responseJson(valid)).submitted, true);
   const delivered = toolLog().slice(beforeValid.length);
   assert.equal((delivered.match(/tmux <send-keys>/g) || []).length, 2);
+  assert.match(delivered, /tmux <set-option> <-p> <-t> <%7> <remain-on-exit> <on>/);
+  assert.ok(delivered.indexOf('tmux <set-option>') < delivered.indexOf('tmux <send-keys>'));
 });

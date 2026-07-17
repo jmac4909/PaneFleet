@@ -69,7 +69,12 @@
       @media (max-width: 759px) {
         .demo-page .demo-terminal-secondary { display: none !important; }
         .demo-page .demo-terminal-primary { display: grid !important; }
+        .demo-page .terminal-model-control { display: none !important; }
         .demo-page .terminal-output { font-size: 10.5px; line-height: 1.42; }
+        .demo-page .demo-terminal-primary .send-form { max-height: none; padding-block: 8px; }
+        .demo-page .demo-terminal-primary .terminal-composer-body { display: none; }
+        .demo-page .demo-terminal-primary .terminal-composer-toggle { font-size: 0; }
+        .demo-page .demo-terminal-primary .terminal-composer-toggle::after { content: "Reply"; font-size: 10px; }
         .demo-page .terminal-command-bar button:nth-of-type(4),
         .demo-page .terminal-command-bar .picker-toggle { display: none; }
         .demo-page .terminal-command-bar { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -101,7 +106,7 @@
       <main class="workspace">
         <header class="topbar">
           <div><span class="eyebrow">Terminal-first control</span><h2>Agent workspace</h2><p>demo-host · 3 sessions · exact-pane monitoring</p></div>
-          <div class="topbar-actions"><span class="demo-badge">Synthetic demo data</span><button class="action-button" type="button">New Agent</button><button class="icon-button" type="button">↻</button></div>
+          <div class="topbar-actions"><span class="demo-badge">Synthetic demo data</span><button class="action-button" type="button">New Agent</button><button class="icon-button" type="button" aria-label="Keyboard shortcuts">?</button><button class="icon-button" type="button">↻</button></div>
         </header>
 
         <section class="view active terminal-home-view">
@@ -126,7 +131,7 @@
             <section class="terminal-workspace has-open-terminals" aria-label="Open terminals">
               <header class="terminal-workspace-bar">
                 <div><span class="eyebrow">Workspace</span><strong>2 terminals open</strong></div>
-                <div class="terminal-layout-controls"><button class="layout-button active" type="button">Free</button><button class="layout-button" type="button">1</button><button class="layout-button" type="button">2</button><button class="layout-button" type="button">4</button><button class="layout-button" type="button">Full height</button></div>
+                <div class="terminal-layout-controls"><span class="workspace-panel-controls"><button class="layout-button workspace-panel-toggle active" type="button"><span class="layout-label-full">Sessions</span><span class="layout-label-short">☰</span></button><button class="layout-button workspace-panel-toggle active" type="button"><span class="layout-label-full">Details</span><span class="layout-label-short">ⓘ</span></button></span><button class="layout-button active" type="button">Free</button><button class="layout-button" type="button">1</button><button class="layout-button" type="button">2</button><button class="layout-button" type="button">4</button><button class="layout-button" type="button">Full height</button></div>
               </header>
               <div class="terminal-stage">
                 <div class="demo-stage-copy">
@@ -150,12 +155,12 @@
     </div>
 
     <div class="terminal-layer" aria-label="Synthetic terminal windows">
-      <article class="terminal-window demo-terminal-primary" data-live="true">
+      <article class="terminal-window demo-terminal-primary is-tools-collapsed" data-live="true">
         <div class="terminal-header">
           <div class="terminal-heading"><h2>API safety</h2><p>Example API · gpt-test-alpha · high</p></div>
-          <div class="terminal-window-actions"><button class="terminal-model-control" type="button">Model</button><button class="terminal-control" type="button">−</button><button class="terminal-control terminal-maximize" type="button">□</button><button class="terminal-control" type="button">×</button></div>
+          <div class="terminal-window-actions"><button class="terminal-model-control" type="button">Model</button><button class="terminal-control terminal-tools-toggle" type="button"><span class="terminal-control-label terminal-control-label-mobile">Tools</span></button><button class="terminal-control terminal-minimize" type="button"><span class="terminal-control-icon">−</span><span class="terminal-control-label terminal-control-label-mobile">Back</span></button><button class="terminal-control terminal-maximize" type="button">□</button><button class="terminal-control" type="button">×</button></div>
         </div>
-        <div class="terminal-command-bar"><span>Quick</span><button type="button">Model / Reasoning</button><button type="button">Status</button><button type="button">Usage</button><button type="button">Toggle Fast</button><button class="picker-toggle" type="button">Picker Controls</button></div>
+        <div class="terminal-command-bar"><span class="terminal-tool-group terminal-reading-tools"><span class="terminal-tool-group-label">Read</span><button class="terminal-copy-output" type="button">Copy</button><button class="terminal-find-toggle" type="button">Find</button><button class="terminal-refresh-toggle" type="button">Pause</button><span class="terminal-text-size-controls"><button type="button">A−</button><button class="terminal-text-size-value" type="button" disabled>100%</button><button type="button">A+</button></span><button class="terminal-wrap-control active" type="button">Wrap on</button></span><span class="terminal-tool-group terminal-agent-tools"><span class="terminal-tool-group-label">Agent</span><button type="button">Model</button><button type="button">Status</button><button type="button">Usage</button><button type="button">Fast</button><button class="picker-toggle" type="button">Picker</button></span></div>
         <pre class="terminal-output"><span class="muted">STATUS</span>
 Implementing exact-pane dispatch protection.
 
@@ -170,10 +175,12 @@ Review the recorded evidence, then verify independently.
 
 <span class="accent">› Working</span></pre>
         <form class="send-form terminal-send-form">
-          <label>Type into terminal</label>
-          <textarea class="terminal-send-text" rows="3" placeholder="Send text exactly like typing in this tmux pane"></textarea>
-          <div class="send-toolbar"><button class="tool-button" type="button">↵</button><button class="tool-button tool-button-text" type="button">Tab</button><button class="tool-button" type="button">↑</button><button class="tool-button" type="button">↓</button><span class="send-counter">0/8000</span></div>
-          <div class="form-row"><span class="send-hint">Literal text + one Enter · never auto-retried</span><button class="primary-button send-submit" type="button">Send / Enter</button></div>
+          <div class="terminal-composer-head"><div class="terminal-composer-label"><label>Reply to terminal</label><span class="terminal-draft-state neutral">No draft</span></div><button class="terminal-composer-toggle" type="button">Hide</button></div>
+          <div class="terminal-composer-body">
+            <textarea class="terminal-send-text" rows="3" placeholder="Send text exactly like typing in this tmux pane"></textarea>
+            <div class="send-toolbar"><button class="tool-button" type="button">↵</button><button class="tool-button tool-button-text" type="button">Tab</button><button class="tool-button" type="button">↑</button><button class="tool-button" type="button">↓</button><span class="send-counter">0/8000</span></div>
+            <div class="form-row"><span class="send-hint">Literal text + one Enter · never auto-retried</span><button class="primary-button send-submit" type="button">Send / Enter</button></div>
+          </div>
         </form>
       </article>
 
@@ -189,9 +196,11 @@ Review the recorded evidence, then verify independently.
 
 <span class="accent">› Waiting for your decision</span></pre>
         <form class="send-form terminal-send-form">
-          <label>Type into terminal</label>
-          <textarea class="terminal-send-text" rows="2" placeholder="Reply to this exact agent"></textarea>
-          <div class="form-row"><span class="send-hint">Exact target: mobile-polish</span><button class="primary-button send-submit" type="button">Send / Enter</button></div>
+          <div class="terminal-composer-head"><div class="terminal-composer-label"><label>Reply to terminal</label><span class="terminal-draft-state neutral">No draft</span></div><button class="terminal-composer-toggle" type="button">Hide</button></div>
+          <div class="terminal-composer-body">
+            <textarea class="terminal-send-text" rows="2" placeholder="Reply to this exact agent"></textarea>
+            <div class="form-row"><span class="send-hint">Exact target: mobile-polish</span><button class="primary-button send-submit" type="button">Send / Enter</button></div>
+          </div>
         </form>
       </article>
     </div>

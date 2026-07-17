@@ -28,3 +28,24 @@ test('terminalFullHeightBounds clamps width and left to the usable viewport', ()
     { left: 12, top: 12, width: 976, height: 676 }
   );
 });
+
+test('terminalFullHeightBounds safely normalizes missing and invalid geometry', () => {
+  assert.deepEqual(terminalFullHeightBounds(null, 'invalid', -100, -4), {
+    left: 0,
+    top: 0,
+    width: 0,
+    height: 0
+  });
+  assert.deepEqual(terminalFullHeightBounds({ x: 30, width: 120 }, 100, 80, 10), {
+    left: 10,
+    top: 10,
+    width: 80,
+    height: 60
+  });
+  assert.deepEqual(terminalFullHeightBounds({ x: 30, width: 120 }, null, null, null), {
+    left: 0,
+    top: 0,
+    width: 0,
+    height: 0
+  });
+});

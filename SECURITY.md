@@ -61,7 +61,7 @@ The repository includes a pre-commit privacy guard. Enable it with:
 npm run hooks:install
 ```
 
-The hook runs the staged privacy check. Before publishing, also review the staged diff and scan the complete tracked tree plus Git history:
+The hook runs the staged privacy check. Before publishing, also review the staged diff and scan the publishable working tree plus Git history:
 
 ```bash
 npm run verify:public

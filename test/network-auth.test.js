@@ -92,8 +92,6 @@ test('non-loopback access defaults to operator auth and trusted-network mode rem
     for (const directory of [homeDir, projectsRoot, agentWorkspacesRoot, codexHome, binDir, publicDir, tmpDir]) {
       mkdirSync(directory, { recursive: true });
     }
-    copyFileSync(path.join(projectDir, 'server.js'), path.join(fixtureDir, 'server.js'));
-    copyFileSync(path.join(projectDir, 'process-runner.js'), path.join(fixtureDir, 'process-runner.js'));
     writeFileSync(path.join(fixtureDir, 'package.json'), '{"type":"module"}\n');
     writeFileSync(path.join(fixtureDir, 'services.json'), '[]\n');
     writeFileSync(path.join(fixtureDir, 'host-config.json'), '{}\n');
@@ -115,6 +113,8 @@ test('non-loopback access defaults to operator auth and trusted-network mode rem
       TMPDIR: tmpDir,
       NODE_ENV: 'test',
       CODEX_HOME: codexHome,
+      ORCHESTRATOR_RUNTIME_ROOT: fixtureDir,
+      ...(process.env.NODE_V8_COVERAGE ? { NODE_V8_COVERAGE: process.env.NODE_V8_COVERAGE } : {}),
       ORCH_CONTROL_PLANE_MODE: 'foreground',
       ORCH_TOOL_LOG: toolLogPath,
       ORCHESTRATOR_SECURE_COOKIE: '1',
@@ -125,7 +125,7 @@ test('non-loopback access defaults to operator auth and trusted-network mode rem
       SNAPSHOT_EVENT_MS: '3600000',
       SSH_RESCUE_MONITOR_MS: '3600000'
     };
-    child = spawn(process.execPath, ['server.js'], {
+    child = spawn(process.execPath, [path.join(projectDir, 'server.js')], {
       cwd: fixtureDir,
       env: {
         ...baseEnvironment,
@@ -150,6 +150,21 @@ test('non-loopback access defaults to operator auth and trusted-network mode rem
         assert.equal(response.headers.get('www-authenticate'), 'Basic realm="PaneFleet", charset="UTF-8"');
         assert.equal(response.headers.get('set-cookie'), null);
         assert.equal(await response.text(), 'Operator authentication required.\n');
+      }
+    });
+
+    await t.test('malformed and same-length incorrect Basic credentials never issue a control cookie', async () => {
+      const replacement = operatorToken.endsWith('A') ? 'B' : 'A';
+      const wrongToken = operatorToken.slice(0, -1) + replacement;
+      const authorizations = [
+        'Basic ' + Buffer.from('host-control-without-password').toString('base64'),
+        'Basic ' + Buffer.from('host-control:' + wrongToken).toString('base64')
+      ];
+      for (const authorization of authorizations) {
+        const response = await request(baseUrl, '/', { headers: { authorization } });
+        assert.equal(response.status, 401);
+        assert.equal(response.headers.get('set-cookie'), null);
+        assert.equal(response.headers.get('www-authenticate'), 'Basic realm="PaneFleet", charset="UTF-8"');
       }
     });
 
@@ -203,7 +218,7 @@ test('non-loopback access defaults to operator auth and trusted-network mode rem
       childOutput = '';
       const trustedPort = await unusedLoopbackPort();
       const trustedBaseUrl = `http://127.0.0.1:${trustedPort}`;
-      child = spawn(process.execPath, ['server.js'], {
+      child = spawn(process.execPath, [path.join(projectDir, 'server.js')], {
         cwd: fixtureDir,
         env: {
           ...baseEnvironment,

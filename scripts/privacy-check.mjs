@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process';
+import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import path from 'node:path';
 
 const modes = new Set(process.argv.slice(2));
-if (!modes.size || [...modes].some((mode) => !['--staged', '--tracked', '--history'].includes(mode))) {
-  process.stderr.write('usage: node scripts/privacy-check.mjs [--staged] [--tracked] [--history]\n');
+if (!modes.size || [...modes].some((mode) => !['--staged', '--tracked', '--worktree', '--history'].includes(mode))) {
+  process.stderr.write('usage: node scripts/privacy-check.mjs [--staged] [--tracked] [--worktree] [--history]\n');
   process.exit(2);
 }
 
@@ -19,7 +20,7 @@ const findings = [];
 const scannedObjects = new Set();
 
 function publicPath(file) {
-  return String(file || '').replace(/^(?:staged|tracked|history):/, '').replaceAll('\\', '/');
+  return String(file || '').replace(/^(?:staged|tracked|worktree|history):/, '').replaceAll('\\', '/');
 }
 
 function git(args, options = {}) {
@@ -56,6 +57,11 @@ function allowedIpv4(ip) {
     (parts[0] === 203 && parts[1] === 0 && parts[2] === 113);
 }
 
+function allowedEmail(address) {
+  const domain = String(address || '').split('@')[1]?.toLowerCase() || '';
+  return ['example.com', 'example.org', 'example.net', 'users.noreply.github.com'].includes(domain);
+}
+
 function inspectText(file, text) {
   const patterns = [
     ['private key', /-----BEGIN [A-Z ]*PRIVATE KEY-----/i],
@@ -82,8 +88,7 @@ function inspectText(file, text) {
 
   const emailPattern = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
   for (const match of text.matchAll(emailPattern)) {
-    const domain = match[0].split('@')[1].toLowerCase();
-    if (!['example.com', 'example.org', 'example.net'].includes(domain)) {
+    if (!allowedEmail(match[0])) {
       findings.push(`${file}: non-example email address`);
       break;
     }
@@ -146,6 +151,34 @@ if (modes.has('--tracked')) {
       scannedObjects.add(git(['rev-parse', `:${file}`]).trim());
     } catch (error) {
       findings.push(`tracked:${file}: cannot read (${error?.code || 'error'})`);
+    }
+  }
+}
+
+if (modes.has('--worktree')) {
+  const root = path.resolve(process.cwd());
+  for (const file of nullSeparated(git(['ls-files', '--cached', '--others', '--exclude-standard', '-z']))) {
+    const absolute = path.resolve(root, file);
+    if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) {
+      findings.push(`worktree:${file}: path escapes repository root`);
+      continue;
+    }
+    let stats;
+    try {
+      stats = lstatSync(absolute);
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue; // A tracked deletion is not publishable content.
+      findings.push(`worktree:${file}: cannot read (${error?.code || 'error'})`);
+      continue;
+    }
+    if (!stats.isFile() && !stats.isSymbolicLink()) continue;
+    try {
+      const buffer = stats.isSymbolicLink()
+        ? Buffer.from(readlinkSync(absolute))
+        : readFileSync(absolute);
+      inspectBuffer(`worktree:${file}`, buffer);
+    } catch (error) {
+      findings.push(`worktree:${file}: cannot read (${error?.code || 'error'})`);
     }
   }
 }

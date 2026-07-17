@@ -64,7 +64,7 @@ A workspace descriptor may be an absolute path string or an object with:
 
 `workspaceEntries` and `areaAliases` must be inside the primary root or one of `additionalWorkspaceRoots`. They do not expand filesystem authority. Labels and groups are display metadata only.
 
-`directoryGroups` keys and `artifactDirectories` values are single directory names, not paths. Artifact discovery recognizes top-level `artifacts`, `deliverables`, `exports`, and `output` folders plus names explicitly listed here. It remains PDF-only, bounded, symlink-aware, and tied to the focused exact pane.
+`directoryGroups` keys and `artifactDirectories` values are single directory names, not paths. PDF discovery recognizes top-level `artifacts`, `deliverables`, `exports`, and `output` folders plus names explicitly listed here. Project Desk also discovers root-level PDF, Markdown, and HTML files created or modified during the focused exact tmux session, while excluding instruction and repository-metadata names. Both paths remain bounded, symlink-aware, attachment-only, and tied to the focused exact pane.
 
 ## Service registry
 
@@ -142,12 +142,17 @@ Common settings:
 | `ORCHESTRATOR_ACCESS_TOKEN` | unset | Explicit authenticated-mode Basic password; must contain at least 24 characters |
 | `ORCHESTRATOR_ACCESS_TOKEN_FILE` | `data/access-token` | Owner-only token generated/reused when authenticated non-loopback mode needs one |
 | `ORCHESTRATOR_SECURE_COOKIE` | unset | Set to `1` when the browser reaches PaneFleet over HTTPS |
-| `MISSION_MAX_ACTIVE` | `3` | Global active mission cap |
+| `MISSION_LITERAL_CONFIRM_MS` | `6000` | Maximum wait for both literal-input witness markers before PaneFleet refuses to send Enter |
+| `PROMPT_QUEUE_READY_MIN_MS` | `4000` | Minimum separation between the two exact-pane green observations required before queued delivery |
+| `PROMPT_QUEUE_MONITOR_MS` | `5000` | Server-owned queue observation interval, including when no dashboard tab is open |
+| `MISSION_MAX_ACTIVE` | `3` | Compatibility mission global active cap |
 | `SNAPSHOT_EVENT_MS` | `5000` | Server-sent snapshot interval |
 | `AGENT_SAMPLE_INTERVAL_MS` | `15000` | Agent history sampling interval |
 | `ORCHESTRATOR_SECURITY_GROUP_ID` | unset | Optional explicit EC2 security group target |
 
-Timing variables used by prompt confirmation and the Mission Supervisor exist primarily for deterministic tests and unusual terminals. Keep production defaults unless a measured compatibility problem justifies a change.
+`ORCHESTRATOR_RUNTIME_ROOT` is a test-harness setting only. The server honors it only when `NODE_ENV=test`; production always resolves its public assets, service registry, and data paths from the installed PaneFleet root.
+
+Timing variables used by prompt rendering, acceptance confirmation, and green-light stability exist primarily for deterministic tests and unusual terminals. Keep production defaults unless a measured compatibility problem justifies a change.
 
 Values in `ORCHESTRATOR_EXTRA_WORKSPACE_ROOTS` must be absolute paths. On Linux, separate several roots with `:`. Host configuration is usually clearer when roots also need labels, groups, or aliases.
 
@@ -175,7 +180,7 @@ When an external firewall or cloud security group has been independently verifie
 
 ## Runtime data
 
-PaneFleet creates `data/` with mission, notification, interaction, review, access-rule, and audit state. An authenticated non-loopback deployment without an injected token also stores `data/access-token` with owner-only permissions; trusted-network mode does not. State files use atomic replacement where consistency matters.
+PaneFleet creates `data/` with prompt queue and recurring schedule state, compatibility mission, notification, interaction, review, access-rule, and audit state. An authenticated non-loopback deployment without an injected token also stores `data/access-token` with owner-only permissions; trusted-network mode does not. State files use atomic replacement where consistency matters. Recurring schedules use UTC and the same server-owned `PROMPT_QUEUE_MONITOR_MS` loop; they do not install host cron entries.
 
 Treat `data/`, `services.json`, and `host-config.json` as private. Back them up only to a protected destination, never commit them, and stop PaneFleet before attempting a manual restore.
 

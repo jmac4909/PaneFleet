@@ -58,6 +58,8 @@ printf '\\n' >> "$ORCH_TEST_COMMAND_LOG"
 case " $* " in
   *' restart '*|*' start '*) printf '%s\\n' 'running' > "$ORCH_TEST_SERVICE_STATE" ;;
   *' show '*) printf '%s\\n' '4242' ;;
+  *' is-active '*) printf '%s\\n' 'active' ;;
+  *' is-enabled '*) printf '%s\\n' 'enabled' ;;
 esac
 exit 0
 `);
@@ -73,7 +75,15 @@ exit 0
 printf 'tmux' >> "$ORCH_TEST_COMMAND_LOG"
 printf ' <%s>' "$@" >> "$ORCH_TEST_COMMAND_LOG"
 printf '\\n' >> "$ORCH_TEST_COMMAND_LOG"
+if [ "\${ORCH_TEST_TMUX_ABSENT:-0}" = 1 ]; then
+  case "$1" in
+    list-sessions|list-panes|has-session) exit 1 ;;
+  esac
+fi
 case "$1" in
+  list-sessions)
+    /usr/bin/cut -d '|' -f 1 "$ORCH_TEST_TMUX_STATE"
+    ;;
   list-panes)
     if [ "\${2:-}" = '-a' ] && [ "\${3:-}" = '-F' ]; then
       /bin/cat "$ORCH_TEST_TMUX_STATE"
@@ -207,6 +217,18 @@ test('dashboard lifecycle sources contain no tmux server or session kill command
   assert.match(unit, /^Restart=always$/m);
   assert.match(unit, /^KillMode=control-group$/m);
   assert.doesNotMatch(unit, /\btmux\b/);
+});
+
+test('control-plane status reports an absent workload tmux server without silently exiting', () => {
+  const fixture = lifecycleFixture();
+  fixture.env.ORCH_TEST_TMUX_ABSENT = '1';
+  writeFileSync(fixture.serviceState, 'running\n');
+  const result = runScript('scripts/control-plane-status.sh', [], fixture);
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /isolation=ok/);
+  assert.match(result.stdout, /workload_tmux=absent/);
+  assert.match(result.stdout, /workloads=0/);
 });
 
 test('dashboard restart uses systemd and preserves every workload tmux session', () => {

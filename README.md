@@ -2,7 +2,7 @@
 
 ### A safety-first control room for tmux-based AI coding agents
 
-Supervise long-running Codex sessions from desktop or phone, keep project context beside each terminal, queue work behind human gates, and expose only explicitly allowlisted host controls.
+Supervise long-running Codex sessions from desktop or phone, keep project context beside each terminal, line up prompts for the next green composer, and expose only explicitly allowlisted host controls.
 
 ![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)
 ![zero runtime dependencies](https://img.shields.io/badge/runtime_dependencies-0-2563eb)
@@ -24,7 +24,7 @@ PaneFleet keeps tmux as the durable runtime and adds the missing operator layer:
 - movable, resizable, and tiled terminal previews;
 - exact-pane targeting for terminal input;
 - branch, changed-file, test, instruction, artifact, and note context for the focused project;
-- a persistent mission queue with explicit dispatch and verification gates;
+- a durable per-terminal prompt queue with optional UTC cron intake that releases only on stable green readiness;
 - exception-focused attention and browser notifications; and
 - narrowly allowlisted service, listener, process, and EC2 ingress tools.
 
@@ -36,8 +36,9 @@ It is deliberately not an autonomous agent framework. PaneFleet helps one human 
 | --- | --- |
 | Terminal identity | Revalidates session creation time, pane coordinate, intrinsic tmux pane ID, and pane PID before sensitive input |
 | Prompt delivery | Sends literal text plus one Enter, then observes acceptance; ambiguous delivery is never retried automatically |
-| Queued work | Claims one existing idle worker and one workspace before input; restart reconciliation never resends a prompt |
-| Completion | A stable agent report can move work only to **Verifying**; only the operator can mark it **Done** |
+| Queued prompts | Bind to one exact tmux pane, wait for two stable green samples, and release FIFO one prompt at a time |
+| Recurring prompts | Parse five-field UTC cron in-process and add at most one normal queue item per schedule when due; never execute cron as shell |
+| Uncertain delivery | Pauses that terminal's line for inspection and never retries or advances automatically |
 | Host actions | Uses named API operations and an ignored local registry; there is no arbitrary shell-command endpoint |
 | Filesystem access | Restricts reads to reviewed roots with real-path containment, output caps, and sensitive-value redaction |
 | Restarts | Keeps the systemd control plane outside the workload tmux server and compares pane inventory around restart |
@@ -46,7 +47,7 @@ It is deliberately not an autonomous agent framework. PaneFleet helps one human 
 
 ### Terminal workspace
 
-Open several tmux-backed agents without replacing tmux itself. Desktop windows can float, tile into one/two/four-pane layouts, minimize, or stretch to full height. The session rail stays ordered by recent interaction and calls out agents that need a decision.
+Open several tmux-backed agents without replacing tmux itself. Desktop windows can float, tile into one/two/four-pane layouts, minimize, or stretch to full height. The Sessions and Details toggles independently reclaim space on a widescreen and remember their state in the browser; Focus canvas (or `Alt+0`) still provides a one-step distraction-free view. Open and docked live terminal views restore after a browser refresh only when their exact pane identities still match, so a recycled tmux name is never reopened as the old agent. Freeform desktop positions and sizes return within the current workspace bounds, and an intentionally paused browser capture stays paused on both desktop and phone. The browser title surfaces offline/polling state, decisions, queue depth, or active work while retaining the current section; installed browsers that support the Badging API also show the decision count. Terminal tools are separated into Read, Agent, and Recovery groups: a compact row on desktop and a labeled touch grid on phones. Recovery exposes confirmed Send Ctrl-C and Stop session actions without making the browser-view close button destructive. Text size and long-line wrapping persist across devices, and tapping the displayed percentage resets text to 100%. Read tools copy or search the current capture without terminal input; `Ctrl/⌘+F` opens Find for the active terminal, while Pause freezes one browser capture as its agent keeps running. Resume fetches the live pane again. Tap or press `?` for the complete keyboard shortcut guide. The session rail stays ordered by recent interaction and calls out agents that need a decision.
 
 Terminal input remains intentionally plain: reviewed literal text followed by one Enter. Picker navigation, interrupt, stop, and recovery controls are visibly separate operations.
 
@@ -57,24 +58,36 @@ Focusing a terminal loads bounded project context beside it:
 - current branch and changed files;
 - available checks and their recorded state;
 - nearest project instructions;
-- reviewed links and downloadable PDF artifacts;
+- reviewed links and downloadable PDF, Markdown, and HTML outputs;
 - browser-local project notes; and
 - persistent prompt drafts and reusable snippets.
 
 A scratchpad draft cannot reach tmux until the operator reviews both the text and the exact target terminal.
 
-### Human-gated mission queue
+### Green-light prompt queue
 
-Missions move through **Backlog**, **Ready**, **Running**, **Needs You**, **Verifying**, and **Done**. Dispatch is durable before terminal input. The Mission Supervisor uses stable multi-sample terminal signals and exact pane identity to surface waiting, missing, stale, failed, or verification-ready work.
+Choose an exact live terminal, add a plain prompt, and keep working elsewhere. Blue means the agent is working, orange means it needs input, and green means the Codex composer is visibly ready. PaneFleet requires two stable green observations before it durably claims and submits the first prompt for that terminal.
 
-The supervisor cannot press Enter, resend input, stop a session, run a service action, or mark work Done.
+Before typing, PaneFleet arms exit preservation on that exact pane and revalidates its intrinsic identity. If the guard cannot be applied, no text is sent. If Codex exits after Enter, the pane remains available for inspection, becomes stopped instead of green, and receives no automatic retry.
+
+The Queue tab is a full workspace with accurate completion statistics, current work, completed delivery history, and a live terminal board. Each exact-pane card separates active work from waiting backlog and shows the line head. Select one card for the normal single-agent flow or select up to twelve exact agents for one reviewed prompt. **Queue** atomically creates one independent FIFO item per selected terminal; if any identity is stale, none are created. **Send now** uses every pane's normal literal-text-plus-Enter path and reports each target separately because successful terminal input cannot be rolled back. Partial sends are never retried automatically, and recurring schedules remain single-terminal. Finished history—including legacy unconfirmed and canceled records—can be cleared with an explicit revision-checked confirmation without removing active work, queued prompts, or recurring schedules.
+
+After a delivered prompt finishes, PaneFleet prefers a stable Codex final-response boundary ending in the `Worked for` footer and labels that snapshot **Verified final response**. Some Codex turns return to the composer without emitting that footer. If the exact submitted marker, a non-empty response block, a later composer, the Codex status bar, and stable green readiness all agree, PaneFleet stores the bounded response as **Returned to ready · no footer** and releases the next prompt without claiming the underlying project task is Done. A merely green-looking composer without that safe return boundary remains **Waiting for final response**. Snapshots preserve terminal formatting such as bullets and separators and are display-only: capture never sends terminal input.
+
+Each terminal has its own FIFO line, monitored by the PaneFleet server even when the browser is closed. A successful submission advances only after either a stable footer boundary or a stable, safely bounded return to the exact composer. If stable green has neither boundary, PaneFleet moves the item to **Needs review: final response missing** after two minutes. After inspecting the terminal, the operator can explicitly **Release queue** or cancel the ticket; release records an operator decision, sends no input, and does not claim task completion. Any ambiguous rendering, Enter, acceptance, restart, timeout, or pane-identity result pauses the line for human inspection. PaneFleet never retries an uncertain attempt.
+
+Accepted-ticket badges continue reflecting the exact terminal: **Blue · agent working**, **Green · verifying return**, or an input/error state. If a verbose or newer turn pushes the unique dispatch marker beyond PaneFleet's bounded terminal capture, the ticket becomes **Needs review: capture boundary expired** once that pane is stably ready instead of remaining pending indefinitely.
+
+If a newer manual send or interrupt reaches the same exact pane before a queue ticket has a trustworthy finish boundary, PaneFleet immediately moves the older ticket to **Needs review: newer activity detected**. It does not label the newer work as belonging to the old ticket. A real item-specific footer still wins when it remains visible and stable.
+
+Add an optional five-field UTC cron expression to make the prompt recurring. A due occurrence creates an ordinary queue item; it does not type into a busy terminal. If that schedule already has an item queued, dispatching, or awaiting review, the occurrence is coalesced instead of building a backlog. PaneFleet skips a missing or replaced exact pane rather than targeting a same-name replacement, and a restart advances a missed schedule once without replaying every missed interval. Recurring cards show the next run and last outcome and can be paused, resumed, or deleted without changing items already in the queue.
 
 ### Phone-first terminal access
 
-On a phone, one terminal becomes a fullscreen control surface with large model, command, input, and navigation controls. Draft focus is preserved while dashboard snapshots refresh.
+On a phone, sessions stay in a bounded vertical list so many agents can be scanned without a long horizontal carousel. Opening one turns it into a fullscreen control surface with large model, command, input, and navigation controls. When several terminals are open, a named chooser jumps directly to any terminal—including docked views—while previous and next remain available for fast sequential checks. Draft focus is preserved while dashboard snapshots refresh. Ultrawide workspaces expose the same direct chooser beside the terminal layout controls.
 
 <p align="center">
-  <img src="docs/assets/panefleet-mobile.png" width="390" alt="PaneFleet mobile terminal using synthetic output and a large terminal input composer">
+  <img src="docs/assets/panefleet-mobile.png" width="390" alt="PaneFleet mobile terminal using synthetic output with compact Tools, Back, and Reply controls">
 </p>
 
 <p align="center"><sub>Synthetic mobile capture at 390 × 844.</sub></p>
@@ -112,7 +125,7 @@ flowchart LR
     Collect --> Tmux[workload tmux server]
     Collect --> Host[git, ps, and ss]
 
-    Control --> Domain[mission, attention, and notification state]
+    Control --> Domain[prompt queue, attention, and compatibility state]
     Domain --> Data[owner-only atomic JSON]
 
     Control --> Guard[allowlisted mutation boundary]
@@ -165,15 +178,18 @@ For systemd installation, authenticated non-loopback access, trusted-network mod
 
 ```bash
 npm run check
+npm run test:coverage
 npm run privacy:check
 
 # Runs both:
 npm run verify:public
 ```
 
-The test suite runs isolated servers in temporary directories and replaces tmux, AWS, instance metadata, Git, and host-process commands with fixtures. It emphasizes failure behavior: stale pane identity, incomplete rendering, uncertain Enter delivery, mission revision conflicts, restart isolation, path traversal, authentication boundaries, and access-rule cleanup.
+The integration suite runs the real `server.js` entrypoint with a test-only temporary runtime root. It replaces tmux, AWS, instance metadata, Git, and host-process commands with fixtures, so tests exercise production routing and orchestration without touching live sessions or host controls. It emphasizes failure behavior: stale pane identity, incomplete rendering, uncertain Enter delivery, stable-green queue gating, restart reconciliation, path traversal, authentication boundaries, and access-rule cleanup.
 
-The privacy checker scans tracked files plus every stored Git commit, tag, and blob—including unreachable objects retained by reflogs. It rejects machine-local configuration, credentials, personal paths, non-documentation network identifiers, and unreviewed binary captures.
+`npm run test:coverage` measures the server, centralized process runner, and executable UI-state helpers, and enforces the checked-in coverage floor. `npm run check` includes that gate.
+
+The privacy checker scans modified tracked files, untracked non-ignored files, and every stored Git commit, tag, and blob—including unreachable objects retained by reflogs. Ignored runtime data remains local and outside the publication candidate set. The checker rejects machine-local configuration, credentials, personal paths, non-documentation network identifiers, and unreviewed binary captures.
 
 ## Reproducing the screenshots
 
@@ -197,7 +213,7 @@ Only the two reviewed README capture paths are permitted by the privacy checker;
 | `host-config.example.json` | Sanitized template for workspace and artifact configuration |
 | `ops/` | User-systemd unit template |
 | `scripts/` | Installation, restart, screenshot, access-token, and privacy helpers |
-| `test/` | Isolated integration, lifecycle, mission, terminal, and UI tests |
+| `test/` | Isolated integration, lifecycle, prompt-queue, terminal, and UI tests |
 | `docs/` | Features, architecture, configuration, safety, and operations references |
 
 ## Current limits
@@ -205,7 +221,7 @@ Only the two reviewed README capture paths are permitted by the privacy checker;
 - PaneFleet is for one trusted operator on one Linux host, not multiple users or distributed workers.
 - Agent-state inference is Codex-first and intentionally conservative.
 - Terminal windows show bounded tmux captures; PaneFleet is not a full browser PTY emulator.
-- Mission state is local durable JSON, not a database-backed scheduler.
+- Prompt queue and UTC cron schedule state is local durable JSON, not a distributed or database-backed scheduler.
 - The EC2 ingress workflow is optional and environment-specific.
 - A public live demo would grant control of its host, so this repository uses reproducible synthetic captures instead.
 

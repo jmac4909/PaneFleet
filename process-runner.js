@@ -27,11 +27,11 @@ export function run(command, args, options = {}) {
     execFile(command, args, { timeout: options.timeout || 8000, maxBuffer: 1024 * 1024, ...options }, (error, stdout, stderr) => {
       resolve({
         ok: !error,
-        code: error && typeof error.code === 'number' ? error.code : 0,
+        code: error ? (typeof error.code === 'number' ? error.code : null) : 0,
         signal: error?.signal || null,
         stdout: String(stdout || ''),
         stderr: String(stderr || ''),
-        error: error ? String(error.message || error) : null
+        error: error ? String(error.message) : null
       });
     });
   });

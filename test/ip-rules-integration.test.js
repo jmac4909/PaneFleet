@@ -35,6 +35,7 @@ let controlCookie;
 let awsStatePath;
 let awsLogPath;
 let failPortPath;
+let sshPeerPath;
 
 async function unusedLoopbackPort() {
   const probe = net.createServer();
@@ -90,18 +91,20 @@ before(async () => {
   awsStatePath = path.join(fixtureDir, 'aws-rules.json');
   awsLogPath = path.join(fixtureDir, 'aws-operations.log');
   failPortPath = path.join(fixtureDir, 'fail-port');
+  sshPeerPath = path.join(fixtureDir, 'ssh-peer');
   mkdirSync(binDir, { recursive: true });
   mkdirSync(codexHome, { recursive: true });
   mkdirSync(path.join(fixtureDir, 'data'), { recursive: true });
+  writeFileSync(sshPeerPath, '');
 
-  copyFileSync(path.join(projectDir, 'server.js'), path.join(fixtureDir, 'server.js'));
-  copyFileSync(path.join(projectDir, 'process-runner.js'), path.join(fixtureDir, 'process-runner.js'));
   copyFileSync(path.join(projectDir, 'test', 'services.fixture.json'), path.join(fixtureDir, 'services.json'));
   cpSync(path.join(projectDir, 'public'), path.join(fixtureDir, 'public'), { recursive: true });
   writeFileSync(path.join(fixtureDir, 'package.json'), '{"type":"module"}\n');
   writeFileSync(path.join(codexHome, 'models_cache.json'), '{"models":[]}\n');
   writeFileSync(path.join(fixtureDir, 'data', 'ssh-rescue-state.json'), JSON.stringify({
-    active: false,
+    active: true,
+    openedAt: '2026-07-10T00:00:00.000Z',
+    expiresAt: '2099-07-10T00:00:00.000Z',
     region: 'us-east-2',
     instanceId: 'i-test',
     groupId: 'sg-test',
@@ -125,7 +128,13 @@ else if (value.includes('meta-data/instance-id')) process.stdout.write('i-test')
 else if (value.includes('meta-data/placement/availability-zone')) process.stdout.write('us-east-2a');
 else process.exit(2);
 `);
-  installExecutable(binDir, 'ss', '#!/bin/sh\nexit 0\n');
+  installExecutable(binDir, 'ss', `#!/bin/sh
+peer="$(cat "$MOCK_SSH_PEER" 2>/dev/null)"
+if [ -n "$peer" ]; then
+  printf 'ESTAB 0 0 192.0.2.200:22 %s:54321\n' "$peer"
+fi
+exit 0
+`);
   installExecutable(binDir, 'aws', `#!/usr/bin/env node
 import fs from 'node:fs';
 const args = process.argv.slice(2);
@@ -160,8 +169,11 @@ if (operation === 'describe-instances') {
   fs.writeFileSync(statePath, JSON.stringify(rules, null, 2));
   process.stdout.write('{}');
 } else if (operation === 'revoke-security-group-ingress') {
-  process.stderr.write('revoke must not run during add tests');
-  process.exit(4);
+  const firstId = args.indexOf('--security-group-rule-ids') + 1;
+  const ids = new Set(args.slice(firstId));
+  const retained = rules.filter((rule) => !ids.has(rule.SecurityGroupRuleId));
+  fs.writeFileSync(statePath, JSON.stringify(retained, null, 2));
+  process.stdout.write('{}');
 } else {
   process.stderr.write('unexpected mock AWS operation: ' + operation);
   process.exit(5);
@@ -170,12 +182,13 @@ if (operation === 'describe-instances') {
 
   const port = await unusedLoopbackPort();
   baseUrl = `http://127.0.0.1:${port}`;
-  child = spawn(process.execPath, ['server.js'], {
+  child = spawn(process.execPath, [path.join(projectDir, 'server.js')], {
     cwd: fixtureDir,
     env: {
       ...process.env,
       HOST: '127.0.0.1',
       PORT: String(port),
+      ORCHESTRATOR_RUNTIME_ROOT: fixtureDir,
       CODEX_HOME: codexHome,
       PATH: `${binDir}:${process.env.PATH || ''}`,
       ORCH_CONTROL_PLANE_MODE: 'foreground',
@@ -184,8 +197,9 @@ if (operation === 'describe-instances') {
       MOCK_AWS_STATE: awsStatePath,
       MOCK_AWS_LOG: awsLogPath,
       MOCK_FAIL_PORT: failPortPath,
+      MOCK_SSH_PEER: sshPeerPath,
       SNAPSHOT_EVENT_MS: '60000',
-      SSH_RESCUE_MONITOR_MS: '60000'
+      SSH_RESCUE_MONITOR_MS: '20'
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -264,4 +278,71 @@ test('rule inventory cleans dashboard-owned broad access but preserves unmanaged
   assert.equal(unmanagedBroad.cleanupEligible, false);
   assert.equal(stale.managed, true);
   assert.equal(stale.cleanupEligible, true);
+});
+
+test('rescue lock refuses confirmation-free and private-only targets without consulting AWS', async () => {
+  const operationsBefore = readFileSync(awsLogPath, 'utf8');
+  const unconfirmed = await request('/api/security/ssh-rescue/lock', {
+    method: 'POST',
+    headers: { cookie: controlCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({})
+  });
+  assert.equal(unconfirmed.status, 400);
+  assert.deepEqual(await jsonResponse(unconfirmed), { error: 'confirmation_required' });
+
+  const confirmed = await request('/api/security/ssh-rescue/lock', {
+    method: 'POST',
+    headers: { cookie: controlCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ confirm: 'lock' })
+  });
+  assert.equal(confirmed.status, 409);
+  assert.deepEqual(await jsonResponse(confirmed), { error: 'no_lte_target_detected' });
+  assert.equal(readFileSync(awsLogPath, 'utf8'), operationsBefore);
+});
+
+test('closing rescue access revokes only the dashboard-owned broad rule and verifies durable state', async () => {
+  const response = await request('/api/security/ssh-rescue/close', {
+    method: 'POST',
+    headers: { cookie: controlCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ confirm: 'close' })
+  });
+  const body = await jsonResponse(response);
+  assert.equal(response.status, 200, JSON.stringify(body));
+  assert.deepEqual(body.revoked, ['sgr-broad']);
+
+  const rules = JSON.parse(readFileSync(awsStatePath, 'utf8'));
+  assert.equal(rules.some((rule) => rule.SecurityGroupRuleId === 'sgr-broad'), false);
+  assert.equal(rules.some((rule) => rule.SecurityGroupRuleId === 'sgr-unmanaged-broad'), true);
+  assert.equal(rules.some((rule) => rule.SecurityGroupRuleId === 'sgr-stale-22'), true);
+
+  const state = JSON.parse(readFileSync(path.join(fixtureDir, 'data', 'ssh-rescue-state.json'), 'utf8'));
+  assert.equal(state.active, false);
+  assert.equal(state.closeReason, 'manual');
+  assert.deepEqual(state.revokedRuleIds, ['sgr-broad']);
+  assert.equal(readFileSync(awsLogPath, 'utf8').includes('revoke-security-group-ingress'), true);
+});
+
+test('SSH peer detection uses the remote ss endpoint rather than the local listener', async () => {
+  writeFileSync(sshPeerPath, '198.51.100.45\n');
+  try {
+    const response = await request('/api/security/ssh-rescue', {
+      headers: { cookie: controlCookie }
+    });
+    assert.equal(response.status, 200);
+    const body = await jsonResponse(response);
+    assert.deepEqual(body.rescue.peerCidrs, ['198.51.100.45/32']);
+    assert.equal(body.rescue.peerCidrs.includes('192.0.2.200/32'), false);
+
+    const operationsBefore = readFileSync(awsLogPath, 'utf8');
+    const lock = await request('/api/security/ssh-rescue/lock', {
+      method: 'POST',
+      headers: { cookie: controlCookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ confirm: 'lock' })
+    });
+    assert.equal(lock.status, 409);
+    assert.deepEqual(await jsonResponse(lock), { error: 'rescue_not_active' });
+    assert.equal(readFileSync(awsLogPath, 'utf8'), operationsBefore);
+  } finally {
+    writeFileSync(sshPeerPath, '');
+  }
 });

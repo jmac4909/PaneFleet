@@ -30,7 +30,7 @@ Read the [Safety model](docs/safety-model.md). Changes must preserve these invar
 - Normal agent input is literal text plus one Enter; interrupt, stop, and forced recovery remain distinct actions.
 - Sensitive terminal actions revalidate the exact tmux session and pane identity immediately before input.
 - Uncertain input is not retried or resubmitted automatically.
-- Mission creation does not dispatch, and completion requires separate human verification.
+- Queued prompts dispatch only after two stable exact-pane green observations; any uncertain attempt pauses for review and is never retried automatically.
 - Service controls are allowlisted in the local registry; unsafe actions require visible confirmation.
 - The dashboard lifecycle cannot destroy the workload tmux server.
 - Filesystem access stays within canonical allowlisted roots and remains bounded and redacted.
@@ -42,11 +42,14 @@ Read the [Safety model](docs/safety-model.md). Changes must preserve these invar
 - Use ES modules and follow the existing plain JavaScript and CSS conventions.
 - Prefer focused modules and pure helpers when extracting behavior from the larger server or UI files.
 - Add tests for the expected behavior and the relevant failure paths. Boundary changes should have a fail-closed regression test.
+- Prefer behavior-level tests against the real `server.js` entrypoint. Use the test-only temporary runtime root and fake executables; do not copy the server into a fixture or invoke live host tools.
+- Keep the coverage floor from regressing. Improve assertions and missing boundary behavior instead of excluding production files.
 - Keep `package-lock.json` synchronized with `package.json`, even though the current application has zero runtime dependencies.
 - Run the source/test check while iterating, then the complete public verification before submitting:
 
 ```bash
 npm run check
+npm run test:coverage
 npm run verify:public
 ```
 
@@ -62,7 +65,7 @@ git diff --cached --stat
 git diff --cached
 ```
 
-The pre-commit hook checks staged content. `npm run privacy:check` also scans tracked files and repository history, but neither can prove that a change is safe to publish.
+The pre-commit hook checks staged content. `npm run privacy:check` also scans modified tracked files, untracked non-ignored files, and repository history, but neither can prove that a change is safe to publish.
 
 ## Pull requests
 

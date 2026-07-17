@@ -58,6 +58,13 @@ test('New Agent preserves the launcher draft and gives distinct review warnings 
   assert.match(typed.notice, /typed|not submitted/i);
   assert.match(typed.notice, /open[^.]*terminal|review/i);
 
+  const notTyped = agentCreateOutcome(result({ promptState: 'not_typed' }), true);
+  assert.equal(notTyped.accepted, false);
+  assert.equal(notTyped.preserveDraft, true);
+  assert.equal(notTyped.tone, 'warning');
+  assert.match(notTyped.notice, /prompt was not typed/i);
+  assert.match(notTyped.notice, /launcher draft was kept/i);
+
   const unknown = agentCreateOutcome(result({ promptState: 'outcome_unknown' }), true);
   assert.equal(unknown.accepted, false);
   assert.equal(unknown.preserveDraft, true);
@@ -68,10 +75,28 @@ test('New Agent preserves the launcher draft and gives distinct review warnings 
   assert.notEqual(unknown.notice, typed.notice);
 });
 
+test('New Agent presents safe defaults when a partial response omits optional display fields', () => {
+  const withoutPrompt = agentCreateOutcome(null, false);
+  assert.deepEqual(withoutPrompt, {
+    accepted: true,
+    preserveDraft: false,
+    notice: 'Started agent session with Codex config · default reasoning.',
+    tone: 'info'
+  });
+
+  const uncertainPrompt = agentCreateOutcome({}, true);
+  assert.equal(uncertainPrompt.accepted, false);
+  assert.equal(uncertainPrompt.preserveDraft, true);
+  assert.match(uncertainPrompt.notice, /^agent session started/);
+  assert.match(uncertainPrompt.notice, /could not confirm/i);
+  assert.match(uncertainPrompt.notice, /no input was resent/i);
+});
+
 test('launcher draft signatures detect edits made while a slow agent start is pending', () => {
   const submitted = { name: 'sample-project', workspace: '/projects/sample-project', prompt: 'First prompt' };
   assert.equal(agentDraftSignature({ ...submitted }), agentDraftSignature({ ...submitted, open: true }));
   assert.notEqual(agentDraftSignature(submitted), agentDraftSignature({ ...submitted, prompt: 'Newer prompt' }));
+  assert.equal(agentDraftSignature(null), JSON.stringify(['', '', '', '', '', '', '']));
 });
 
 test('New Agent result handling records and reloads the session but resets only outside preserve-draft outcomes', async () => {
@@ -104,4 +129,21 @@ test('New Agent result handling records and reloads the session but resets only 
 
   const preserveBranch = createAgent.slice(branch, reset);
   assert.doesNotMatch(preserveBranch, /api\(/, 'uncertain outcomes must never trigger an automatic resend');
+});
+
+test('closing the New Agent launcher preserves its draft without creating or sending anything', async () => {
+  const source = await readFile(path.join(root, 'public', 'app.js'), 'utf8');
+  const closeLauncher = functionSource(source, 'function closeNewAgentLauncher(');
+
+  const readDraft = closeLauncher.indexOf('readAgentDraft(form)');
+  const closeState = closeLauncher.indexOf('state.agentDraft.open = false');
+  const closePanel = closeLauncher.indexOf('launcher.open = false');
+  const restoreFocus = closeLauncher.indexOf("launcher.querySelector('summary')?.focus");
+
+  assert.ok(readDraft >= 0 && readDraft < closeState, 'current form fields must be captured before closing');
+  assert.ok(closeState < closePanel && closePanel < restoreFocus, 'close state and focus return must stay ordered');
+  assert.doesNotMatch(closeLauncher, /api\(|requestSubmit|\.click\(/, 'closing must never create an agent or send input');
+  assert.match(source, /data-action="new-agent-cancel" type="button">Cancel<\/button>/);
+  assert.match(source, /event\.key === 'Escape'[\s\S]*closeNewAgentLauncher\(launcher\)/);
+  assert.match(source, /const openLauncher = document\.querySelector\('\.new-agent-panel\[open\]'\)/);
 });

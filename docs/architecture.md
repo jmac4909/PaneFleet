@@ -9,11 +9,11 @@ PaneFleet is a single Node.js process with a dependency-free browser client. It 
 | `public/index.html` | Static terminal-first shell and accessible control surfaces |
 | `public/app.js` | Browser rendering, interaction state, HTTP/SSE client, terminal windows, queue, Project Desk, and tools |
 | `public/ui-state.js` | Small pure helpers for layouts, drawer state, attention filtering, and launcher outcomes |
-| `server.js` | HTTP authentication, static/API/SSE routing, host snapshots, exact-pane input, missions, notifications, Project Desk, services, and optional EC2 access |
+| `server.js` | HTTP authentication, static/API/SSE routing, host snapshots, exact-pane input, prompt queue, compatibility missions, notifications, Project Desk, services, and optional EC2 access |
 | `process-runner.js` | Central `execFile` adapter, timeouts, output bounds, and permanently forbidden tmux server destruction |
 | `services.json` | Ignored machine-local authority for known services, links, logs, lifecycle commands, and workflow actions |
 | `host-config.json` | Ignored machine-local workspace roots, entries, groups, aliases, and artifact-folder names |
-| `data/` | Private owner-only mission, notification, interaction, sampling, review, audit, network-rule, and optional access-token state |
+| `data/` | Private owner-only prompt queue, compatibility mission, notification, interaction, sampling, review, audit, network-rule, and optional access-token state |
 | user systemd | Supervises PaneFleet outside the workload tmux failure domain |
 | workload tmux server | Source of truth for live sessions, panes, processes, and terminal output |
 | named review tmux socket | Isolated lifecycle for the optional ephemeral read-only review agent |
@@ -55,7 +55,7 @@ Snapshot collection reads several sources concurrently:
 3. `ss` supplies listening sockets and established SSH peer context;
 4. `services.json` supplies reviewed labels, links, log paths, and allowed actions;
 5. Git supplies bounded branch and working-tree state only for a focused allowed workspace; and
-6. local mission, interaction, notification, review, and access-rule stores supply durable coordination state.
+6. local prompt queue, compatibility mission, interaction, notification, review, and access-rule stores supply durable coordination state.
 
 The server normalizes and redacts that data, derives agent/service/attention summaries, then returns a snapshot or emits it through server-sent events. Terminal output and project text are treated as untrusted data, never as authority to run an action.
 
@@ -66,7 +66,8 @@ The server normalizes and redacts that data, derives agent/service/attention sum
 | Live panes, commands, and terminal output | workload tmux server | tmux/process lifetime |
 | Service and workflow authority | operator-reviewed `services.json` | ignored local file |
 | Workspace read authority and display metadata | `host-config.json` plus environment roots | ignored local file and process environment |
-| Missions and transition history | server mission domain | atomic owner-only JSON |
+| Queued prompts, recurring UTC schedules, bounded final-response snapshots, and delivery history | server prompt queue domain | atomic owner-only JSON |
+| Compatibility missions and transition history | server mission domain | atomic owner-only JSON |
 | Notifications and snooze state | server notification domain | atomic owner-only JSON |
 | Agent interactions and samples | server collectors | private JSON |
 | Audit events | server | private append-only JSONL with rotation |
@@ -75,24 +76,28 @@ The server normalizes and redacts that data, derives agent/service/attention sum
 | Per-pane input serialization and supervisor samples | server process | memory |
 | Window placement, pins, drafts, notes, snippets, and send history | browser | browser-local storage |
 
-The browser is not authoritative for pane identity, mission revision, locks, filesystem roots, or allowed commands. It submits expected values that the server compares with current host state.
+The browser is not authoritative for pane identity, prompt queue revision, dispatch reservations, filesystem roots, or allowed commands. It submits expected values that the server compares with current host state.
 
-## Exact-pane mission dispatch
+## Exact-pane green-light dispatch
 
-Mission dispatch crosses the most sensitive boundary in the system. Its sequence is intentionally conservative:
+Queued prompt dispatch crosses the most sensitive boundary in the system. Its sequence is intentionally conservative:
 
 ```mermaid
 sequenceDiagram
     participant B as Browser
-    participant M as Mission domain
+    participant Q as Prompt queue domain
     participant X as Exact-pane input queue
     participant T as Workload tmux
 
-    B->>M: Run Now with mission revision and selected worker
-    M->>T: read current session and pane identity
-    M->>M: validate revision, workspace, Codex state, locks, and concurrency
-    M->>M: persist dispatch claim and exact identity
-    M->>X: enqueue literal marked prompt
+    B->>Q: Add prompt for one exact live terminal
+    Q->>T: read current session and pane identity
+    Q->>Q: persist queued item; perform no terminal input
+    loop snapshots while line has a head item
+        Q->>T: sample exact pane and visible Codex composer
+        Q->>Q: require two stable green observations
+    end
+    Q->>Q: persist one dispatch claim before input
+    Q->>X: enqueue literal marked prompt
     loop bounded chunks
         X->>T: revalidate intrinsic pane ID and PID
         X->>T: send literal text only
@@ -102,19 +107,23 @@ sequenceDiagram
     X->>T: send one Enter
     X->>T: sample stable post-marker acceptance
     alt accepted
-        X-->>M: Running
+        X-->>Q: Sent; wait for stable footer or safely bounded composer return
     else uncertain, replaced, or failed
-        X-->>M: reconciliation or Needs You; never resend
+        X-->>Q: Needs review; pause this line; never resend
     end
 ```
 
-The exact identity includes session name and creation time, window/pane coordinate, intrinsic tmux pane ID, and pane PID. Pane input is serialized so concurrent browser windows cannot merge keystrokes. An uncertain Enter is never retried automatically.
+The exact identity includes session name and creation time, window/pane coordinate, intrinsic tmux pane ID, and pane PID. Before typing, the server enables per-pane `remain-on-exit` and revalidates that identity; failure sends no input. Dead panes remain inspectable, are classified as stopped, and cannot be green or promptable. Pane input is serialized so concurrent browser windows cannot merge keystrokes. An uncertain Enter is never retried automatically. Accepted delivery is not completion: the sent item remains the terminal-line head until the exact pane is stably ready with a Codex `Worked for` final boundary. This prevents intermediate green-looking tool states from completing a ticket or releasing its successor.
+
+Recurring schedules sit strictly before this dispatch sequence. The server parses five-field cron expressions in UTC and, when due, appends an ordinary queue item. It never invokes a shell cron implementation. Each schedule retains its original exact pane identity, permits only one open generated item at a time, skips unavailable identities, and advances to the next future occurrence after downtime so missed intervals cannot create a catch-up burst. All generated items then follow the same durable claim, stable-green, literal-input, one-Enter, and no-retry path above.
+
+Multi-agent prompts are bounded fan-out over these existing single-pane invariants. Queue fan-out validates every requested exact identity against one live snapshot and persists every resulting FIFO item in one atomic store replacement; a stale target aborts the whole queue operation. Immediate fan-out validates all identities first, then runs each target through the normal per-pane input serializer. Since submitted terminal input cannot be rolled back, the response records success or failure per target and PaneFleet never retries a partial or uncertain send.
 
 Initial launcher prompts use the same paired-render and one-Enter philosophy. Direct reviewed terminal prompts also revalidate their exact target and remain separate from interrupt, stop, and forced-recovery controls.
 
 ## Persistence and restart behavior
 
-Mission and notification changes are serialized in process and written through atomic replacement. Mission revisions reject stale browser decisions. Audit history is append-only and rotated when bounded size is exceeded.
+Prompt queue, compatibility mission, and notification changes are serialized in process and written through atomic replacement. Queue and mission revisions reject stale browser decisions. A startup reconciliation turns any in-flight queued prompt into **Needs review** before snapshots can dispatch work, so restart never causes a resend. Audit history is append-only and rotated when bounded size is exceeded.
 
 The control-session cookie rotates whenever PaneFleet restarts. The persistent non-loopback Basic token does not rotate on a normal restart when it comes from the configured environment or existing owner-only token file.
 
@@ -127,7 +136,7 @@ The current implementation concentrates much of the control plane in `server.js`
 A future refactor should preserve behavior while extracting clear seams:
 
 - server adapters for tmux, processes, Git, files, EC2, and persistence;
-- domain modules for exact-pane input, missions, supervision, notifications, services, and access;
+- domain modules for exact-pane input, prompt queue, compatibility missions, notifications, services, and access;
 - small HTTP route modules that depend on those domains; and
 - browser modules for terminals, Project Desk, queue, tools, access, and shared request/state utilities.
 

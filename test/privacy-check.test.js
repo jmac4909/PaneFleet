@@ -48,6 +48,48 @@ test('privacy checker accepts a sanitized tracked tree and history', () => {
   assert.match(result.stdout, /privacy check passed/);
 });
 
+test('privacy checker scans modified tracked content rather than only the index', () => {
+  const directory = repository();
+  const syntheticCredential = `sk-proj-${'w'.repeat(32)}`;
+  writeFileSync(path.join(directory, 'README.md'), `${syntheticCredential}\n`);
+
+  const indexed = runChecker(directory, '--tracked');
+  assert.equal(indexed.status, 0, indexed.stderr);
+  const worktree = runChecker(directory, '--worktree');
+  assert.equal(worktree.status, 1);
+  assert.match(worktree.stderr, /worktree:README\.md: possible OpenAI-style secret/);
+});
+
+test('privacy checker scans untracked publishable files', () => {
+  const directory = repository();
+  const syntheticCredential = `ghp_${'u'.repeat(32)}`;
+  writeFileSync(path.join(directory, 'new-public-file.txt'), `${syntheticCredential}\n`);
+
+  const result = runChecker(directory, '--worktree');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /worktree:new-public-file\.txt: possible GitHub token/);
+});
+
+test('privacy checker ignores files excluded from publication by gitignore', () => {
+  const directory = repository();
+  writeFileSync(path.join(directory, '.gitignore'), 'services.json\n');
+  git(directory, ['add', '.gitignore']);
+  git(directory, ['commit', '-qm', 'ignore local service registry']);
+  writeFileSync(path.join(directory, 'services.json'), '[{"synthetic":"machine-local"}]\n');
+
+  const result = runChecker(directory, '--worktree');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /privacy check passed/);
+});
+
+test('privacy checker accepts a GitHub-provided noreply commit address', () => {
+  const directory = repository();
+  git(directory, ['config', 'user.email', '1234567+synthetic-user@users.noreply.github.com']);
+  git(directory, ['commit', '--allow-empty', '-qm', 'public forge identity']);
+  const result = runChecker(directory, '--tracked', '--history');
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('privacy checker rejects machine-local staged paths', () => {
   const directory = repository();
   writeFileSync(path.join(directory, 'services.json'), '[]\n');

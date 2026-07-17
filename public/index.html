@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0d1724">
     <title>PaneFleet — Terminal Workspace</title>
     <link rel="stylesheet" href="/styles.css">
   </head>
@@ -15,9 +16,9 @@
         </div>
 
         <nav class="tabs primary-nav" aria-label="PaneFleet areas">
-          <button id="agents-tab" class="tab active" data-view="agents" type="button" aria-current="page"><span>Terminals</span></button>
-          <button id="queue-tab" class="tab" data-action="drawer-toggle" data-drawer="queue" type="button" aria-controls="queue-drawer" aria-expanded="false"><span>Queue <em id="queue-badge" class="tab-badge hidden">0</em></span></button>
-          <button id="tools-tab" class="tab" data-action="drawer-toggle" data-drawer="tools" type="button" aria-controls="tools-drawer" aria-expanded="false"><span>Tools</span></button>
+          <button id="agents-tab" class="tab active" data-view="agents" data-shortcut-label="Alt 1" type="button" aria-current="page" aria-keyshortcuts="Alt+1"><span>Terminals</span></button>
+          <button id="queue-tab" class="tab" data-view="queue" data-shortcut-label="Alt 2" type="button" aria-controls="queue-view" aria-keyshortcuts="Alt+2"><span>Queue <em id="queue-badge" class="tab-badge hidden">0</em></span></button>
+          <button id="tools-tab" class="tab" data-action="drawer-toggle" data-drawer="tools" data-shortcut-label="Alt 3" type="button" aria-controls="tools-drawer" aria-expanded="false" aria-keyshortcuts="Alt+3"><span>Tools</span></button>
         </nav>
 
         <section class="summary-grid" aria-label="Host summary">
@@ -30,35 +31,69 @@
 
       <main class="workspace">
         <header class="topbar">
-          <div><span class="eyebrow">Terminal-first control</span><h2>Agent workspace</h2><p id="host-subtitle">Loading host state...</p></div>
-          <div class="topbar-actions"><button class="action-button" data-action="new-agent-open" type="button">New Agent</button><button id="refresh-button" class="icon-button" type="button" aria-label="Refresh">↻</button></div>
+          <div><span id="workspace-eyebrow" class="eyebrow">Terminal-first control</span><h2 id="workspace-title">Agent workspace</h2><p id="host-subtitle">Loading host state...</p></div>
+          <div class="topbar-actions"><span id="connection-pill" class="connection-pill" data-state="init" data-tone="neutral" role="status" aria-live="polite" aria-label="Connecting to dashboard updates" title="Connecting to dashboard updates"><span class="connection-dot" aria-hidden="true"></span><strong id="connection-label">Connecting</strong></span><button class="action-button new-agent-action" data-action="new-agent-open" type="button" aria-label="Create new agent" aria-keyshortcuts="Alt+N" title="Create new agent (Alt+N)"><span class="new-agent-plus" aria-hidden="true">+</span><span class="new-agent-label-full">New Agent</span><span class="new-agent-label-short" aria-hidden="true">New</span></button><button id="shortcut-help-button" class="icon-button shortcut-help-button" data-action="shortcut-help-open" type="button" aria-label="Open keyboard shortcut guide" aria-keyshortcuts="Shift+/" title="Keyboard shortcuts (?)">?</button><button id="refresh-button" class="icon-button" type="button" aria-label="Refresh host state" title="Refresh host state" aria-busy="false">↻</button></div>
         </header>
 
-        <section id="notice" class="notice hidden" role="status" aria-atomic="true"></section>
+        <section id="shortcut-help" class="shortcut-help hidden" role="dialog" aria-modal="true" aria-labelledby="shortcut-help-title" aria-describedby="shortcut-help-description">
+          <header><div><span class="eyebrow">Fast navigation</span><h2 id="shortcut-help-title">Keyboard shortcuts</h2></div><button class="icon-button shortcut-help-close" data-action="shortcut-help-close" type="button" aria-label="Close keyboard shortcut guide">×</button></header>
+          <p id="shortcut-help-description">Shortcuts never run while you are typing in an editor.</p>
+          <div class="shortcut-help-grid">
+            <div><span><kbd>Alt</kbd><kbd>1</kbd></span><strong>Terminals</strong></div>
+            <div><span><kbd>Alt</kbd><kbd>2</kbd></span><strong>Queue</strong></div>
+            <div><span><kbd>Alt</kbd><kbd>3</kbd></span><strong>Tools</strong></div>
+            <div><span><kbd>Alt</kbd><kbd>N</kbd></span><strong>New agent</strong></div>
+            <div><span><kbd>Ctrl/⌘</kbd><kbd>K</kbd></span><strong>Find a session</strong></div>
+            <div><span><kbd>Ctrl/⌘</kbd><kbd>F</kbd></span><strong>Find in active terminal</strong></div>
+            <div><span><kbd>Alt</kbd><kbd>[</kbd> / <kbd>]</kbd></span><strong>Previous / next terminal</strong></div>
+            <div><span><kbd>Alt</kbd><kbd>0</kbd></span><strong>Focus terminal canvas</strong></div>
+            <div><span><kbd>←</kbd><kbd>→</kbd></span><strong>Move through terminal tabs</strong></div>
+            <div><span><kbd>?</kbd></span><strong>Open this guide</strong></div>
+          </div>
+        </section>
+        <div id="shortcut-help-backdrop" class="shortcut-help-backdrop hidden" data-action="shortcut-help-close" aria-hidden="true"></div>
+
+        <section id="notice" class="notice notice-toast hidden" role="status" aria-atomic="true"><span id="notice-message" class="notice-toast-message"></span><button class="notice-dismiss" data-action="notice-dismiss" type="button" aria-label="Dismiss message" title="Dismiss">×</button></section>
         <section id="snapshot-error" class="notice hidden" role="alert" aria-atomic="true"></section>
 
         <section id="agents-view" class="view active terminal-home-view" aria-labelledby="agents-tab">
           <div class="terminal-home">
-            <aside class="session-rail" aria-label="Agent sessions">
-              <div class="session-rail-head"><div><span class="eyebrow">Agents</span><h2>Sessions</h2></div><strong id="session-count">0</strong></div>
-              <label class="session-search"><span class="sr-only">Find a session</span><input id="session-search" type="search" autocomplete="off" placeholder="Find session or project"></label>
-              <div id="session-list" class="session-list" aria-live="polite"></div>
+            <aside id="session-rail" class="session-rail" aria-label="Agent sessions">
+              <div class="session-rail-head"><div><span class="eyebrow">Agents</span><h2>Sessions</h2></div><strong id="session-count" aria-label="0 sessions" title="0 sessions">0</strong></div>
+              <label class="session-search"><span class="sr-only">Find a session</span><input id="session-search" type="search" autocomplete="off" enterkeyhint="go" placeholder="Find session or project" aria-keyshortcuts="Control+K Meta+K /" aria-controls="session-list" aria-describedby="session-search-help"><kbd class="session-search-shortcut" aria-hidden="true">Ctrl K</kbd><span id="session-search-help" class="sr-only">Enter opens the first matching session. Up and Down move through visible results. Escape clears search.</span></label>
+              <div id="session-filters" class="session-filters" role="group" aria-label="Filter sessions by status">
+                <button class="session-filter active" data-action="session-filter" data-filter="all" type="button" aria-pressed="true"><span>All</span><em>0</em></button>
+                <button class="session-filter" data-action="session-filter" data-filter="needs" type="button" aria-pressed="false"><span>Needs you</span><em>0</em></button>
+                <button class="session-filter" data-action="session-filter" data-filter="active" type="button" aria-pressed="false"><span>Active</span><em>0</em></button>
+                <button class="session-filter" data-action="session-filter" data-filter="idle" type="button" aria-pressed="false"><span>Idle</span><em>0</em></button>
+              </div>
+              <div id="session-list" class="session-list" aria-live="polite" data-empty-message="No matching sessions"></div>
               <div id="new-agent-container" class="new-agent-container"></div>
             </aside>
 
             <section class="terminal-workspace" aria-label="Open terminals">
               <header class="terminal-workspace-bar">
                 <div><span class="eyebrow">Workspace</span><strong id="open-terminal-count">No terminals open</strong></div>
-                <div class="terminal-layout-controls" role="toolbar" aria-label="Terminal layout">
-                  <button class="layout-button active" data-action="terminal-layout" data-layout="free" type="button" aria-pressed="true">Free</button>
-                  <button class="layout-button" data-action="terminal-layout" data-layout="focus" type="button" aria-pressed="false">1</button>
-                  <button class="layout-button" data-action="terminal-layout" data-layout="split" type="button" aria-pressed="false">2</button>
-                  <button class="layout-button" data-action="terminal-layout" data-layout="grid" type="button" aria-pressed="false">4</button>
+                <div class="terminal-layout-controls" role="toolbar" aria-label="Terminal workspace controls">
+                  <span class="workspace-panel-controls" role="group" aria-label="Workspace panels">
+                    <button id="session-panel-toggle" class="layout-button workspace-panel-toggle active" data-action="workspace-panel-toggle" data-panel="sessions" type="button" aria-pressed="true" aria-controls="session-rail" title="Hide sessions panel"><span class="layout-label-full">Sessions</span><span class="layout-label-short" aria-hidden="true">☰</span></button>
+                    <button id="inspector-panel-toggle" class="layout-button workspace-panel-toggle active" data-action="workspace-panel-toggle" data-panel="inspector" type="button" aria-pressed="true" aria-controls="terminal-inspector" title="Hide selected-agent details"><span class="layout-label-full">Details</span><span class="layout-label-short" aria-hidden="true">ⓘ</span></button>
+                  </span>
+                  <span class="terminal-cycle-controls" role="group" aria-label="Switch open terminal">
+                    <button class="layout-button terminal-cycle-button" data-action="terminal-cycle-active" data-direction="-1" type="button" aria-label="Previous open terminal" aria-keyshortcuts="Alt+[" title="Previous open terminal (Alt+[)" disabled><span class="layout-label-full">Previous</span><span class="layout-label-short" aria-hidden="true">‹</span></button>
+                    <button class="layout-button terminal-cycle-button" data-action="terminal-cycle-active" data-direction="1" type="button" aria-label="Next open terminal" aria-keyshortcuts="Alt+]" title="Next open terminal (Alt+])" disabled><span class="layout-label-full">Next</span><span class="layout-label-short" aria-hidden="true">›</span></button>
+                  </span>
+                  <label class="terminal-jump-field"><span>Jump to</span><select id="terminal-jump-select" aria-label="Jump to open terminal" disabled><option value="">No terminals open</option></select></label>
+                  <button class="layout-button active" data-action="terminal-layout" data-layout="free" type="button" aria-pressed="true" aria-label="Freeform terminal windows" title="Freeform windows"><span class="layout-label-full">Freeform</span><span class="layout-label-short" aria-hidden="true">Free</span></button>
+                  <button class="layout-button" data-action="terminal-layout" data-layout="focus" type="button" aria-pressed="false" aria-label="Focus one terminal" title="Focus one terminal"><span class="layout-label-full">Focus</span><span class="layout-label-short" aria-hidden="true">1</span></button>
+                  <button class="layout-button" data-action="terminal-layout" data-layout="split" type="button" aria-pressed="false" aria-label="Split two terminals" title="Split two terminals"><span class="layout-label-full">Split</span><span class="layout-label-short" aria-hidden="true">2</span></button>
+                  <button class="layout-button" data-action="terminal-layout" data-layout="grid" type="button" aria-pressed="false" aria-label="Grid four terminals" title="Grid four terminals"><span class="layout-label-full">Grid</span><span class="layout-label-short" aria-hidden="true">4</span></button>
+                  <button id="workspace-focus-toggle" class="layout-button workspace-focus-toggle" data-action="workspace-focus-toggle" type="button" aria-pressed="false" aria-keyshortcuts="Alt+0" title="Hide side panels and expand the terminal canvas (Alt+0)"><span class="layout-label-full">Focus canvas</span><span class="layout-label-short" aria-hidden="true">Canvas</span></button>
                   <button class="layout-button terminal-full-height-button" data-action="terminal-full-height" type="button" aria-pressed="false" title="Stretch all open floating terminals to the viewport height">Full height</button>
-                  <button class="layout-button" data-action="close-finished-terminals" type="button">Close idle</button>
+                  <button class="layout-button" data-action="close-finished-terminals" type="button" aria-label="Close inactive terminal views; agents keep running" title="Close inactive views only; no tmux session is stopped"><span class="layout-label-full">Close inactive views</span><span class="layout-label-short" aria-hidden="true">Clear views</span></button>
                 </div>
               </header>
-              <div id="terminal-tabs" class="terminal-tabs hidden" aria-label="Open terminal tabs"></div>
+              <div id="terminal-tabs" class="terminal-tabs hidden" role="tablist" aria-label="Open terminal tabs"></div>
               <div id="terminal-stage" class="terminal-stage">
                 <div id="terminal-empty" class="terminal-empty"><span class="terminal-empty-mark" aria-hidden="true">&gt;_</span><h2>Open an agent terminal</h2><p>Choose a session. Drafts and windows stay here while you inspect the queue or tools.</p><button class="primary-button" data-action="open-active-agents" type="button">Open active agents</button></div>
                 <section id="project-desk" class="project-desk hidden" aria-labelledby="project-desk-title">
@@ -68,7 +103,10 @@
                       <h2 id="project-desk-title">Project Desk</h2>
                       <p id="project-desk-subtitle">Focus a live agent terminal to load its project.</p>
                     </div>
-                    <button id="project-desk-refresh" class="action-button" data-action="project-desk-refresh" type="button">Refresh project</button>
+                    <div class="project-desk-actions">
+                      <button class="action-button primary" data-action="project-new-agent" type="button">New Codex here</button>
+                      <button id="project-desk-refresh" class="action-button" data-action="project-desk-refresh" type="button">Refresh project</button>
+                    </div>
                   </header>
 
                   <div class="project-desk-grid">
@@ -151,17 +189,14 @@
             <aside id="terminal-inspector" class="terminal-inspector" aria-label="Selected agent summary"><div class="inspector-empty"><span class="eyebrow">Inspector</span><h2>No session selected</h2><p>Open a terminal to see its task, mission, and anything that needs you.</p></div></aside>
           </div>
         </section>
+
+        <section id="queue-view" class="view queue-workspace-view" aria-labelledby="queue-tab" hidden></section>
       </main>
 
       <div id="terminal-layer" class="terminal-layer"></div>
       <div id="terminal-dock" class="terminal-dock hidden" aria-label="Minimized terminal windows"></div>
 
       <div id="drawer-backdrop" class="drawer-backdrop hidden" data-action="drawer-close" aria-hidden="true"></div>
-      <aside id="queue-drawer" class="control-drawer queue-drawer hidden" role="dialog" aria-modal="true" aria-labelledby="queue-drawer-title" aria-hidden="true" tabindex="-1">
-        <header class="drawer-header"><div><span class="eyebrow">Background work</span><h2 id="queue-drawer-title">Queue</h2><p>Exceptions, active missions, and what runs next.</p></div><button class="drawer-close" data-action="drawer-close" type="button" aria-label="Close queue">×</button></header>
-        <section id="queue-view" class="drawer-content" aria-labelledby="queue-tab"></section>
-      </aside>
-
       <aside id="tools-drawer" class="control-drawer tools-drawer hidden" role="dialog" aria-modal="true" aria-labelledby="tools-drawer-title" aria-hidden="true" tabindex="-1">
         <header class="drawer-header"><div><span class="eyebrow">Host controls</span><h2 id="tools-drawer-title">Tools</h2><p>Services, access, health, and diagnostics.</p></div><button class="drawer-close" data-action="drawer-close" type="button" aria-label="Close tools">×</button></header>
         <nav class="tool-tabs" aria-label="Tool sections">
