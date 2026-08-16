@@ -655,6 +655,24 @@ test('interrupt remains explicit, exact-pane-bound, and blocked for exited panes
   assert.doesNotMatch(toolLog().slice(deadBefore.length), /send-keys/);
 });
 
+test('session interrupt alias requires exact confirmation and sends one C-c', async () => {
+  setAgentMode('node');
+  writeFileSync(tmuxFailurePath, '');
+  const before = toolLog();
+
+  const unconfirmed = await post('/api/session/codex-control/interrupt', { confirm: true });
+  assert.equal(unconfirmed.status, 400);
+  assert.deepEqual(await responseJson(unconfirmed), { error: 'confirmation_required' });
+  assert.doesNotMatch(toolLog().slice(before.length), /send-keys/);
+
+  const interrupted = await post('/api/session/codex-control/interrupt', { confirm: 'interrupt' });
+  assert.equal(interrupted.status, 200);
+  assert.deepEqual(await responseJson(interrupted), { ok: true, session: 'codex-control' });
+  const operations = toolLog().slice(before.length);
+  assert.equal((operations.match(/tmux <send-keys>/g) || []).length, 1);
+  assert.match(operations, /tmux <send-keys> <-t> <codex-control:0\.0> <C-c>/);
+});
+
 test('picker input reports exact-pane send failures without retrying or changing targets', async () => {
   setAgentMode('node');
   writeFileSync(tmuxFailurePath, '');
@@ -1036,6 +1054,41 @@ test('audit maintenance retries immediately after a transient filesystem failure
   assert.equal(archiveNames().some((name) => !beforeArchives.has(name)), true);
   assert.match(readFileSync(auditPath, 'utf8'), /"action":"agent\.open"/);
   assert.equal(statSync(auditPath).size < 64 * 1024, true);
+});
+
+test('event stream reports an initial snapshot failure to the connected client', async () => {
+  const controller = new AbortController();
+  const servicesPath = path.join(fixtureDir, 'services.json');
+  const servicesSource = readFileSync(servicesPath, 'utf8');
+  let reader;
+  try {
+    writeFileSync(servicesPath, '{ invalid fixture JSON\n');
+    const response = await withTimeout(
+      () => fetch(`${baseUrl}/api/events`, {
+        headers: { cookie: controlCookie },
+        signal: controller.signal
+      }),
+      { timeoutMs: 2500, label: 'initial event stream failure connection' }
+    );
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type') || '', /^text\/event-stream/);
+    reader = response.body.getReader();
+    const payload = await withTimeout(async () => {
+      let received = '';
+      while (!received.includes('event: error')) {
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error('event stream closed before the initial error');
+        received += Buffer.from(chunk.value || []).toString('utf8');
+      }
+      return received;
+    }, { timeoutMs: 2500, label: 'initial event stream error' });
+    assert.match(payload, /event: error/);
+    assert.match(payload, /services\.json invalid JSON/);
+  } finally {
+    writeFileSync(servicesPath, servicesSource);
+    controller.abort();
+    if (reader) await reader.cancel().catch(() => {});
+  }
 });
 
 test('event stream shares snapshots and shuts down cleanly with active clients', async () => {
