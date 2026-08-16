@@ -1,0 +1,5 @@
+# The repository owner reviews every change to the protected default branch.
+* @jmac4909
+
+# Keep ownership and automation policy under explicit owner review.
+/.github/ @jmac4909
