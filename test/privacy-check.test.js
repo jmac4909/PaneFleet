@@ -183,6 +183,31 @@ test('privacy checker accepts a GitHub-provided noreply commit address', () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('privacy checker accepts GitHub automation noreply commit and tag metadata', () => {
+  const directory = repository();
+  git(directory, ['config', 'user.email', ['noreply', 'github.com'].join('@')]);
+  git(directory, ['commit', '--allow-empty', '-qm', 'automated dependency update']);
+  git(directory, ['tag', '-a', 'synthetic-automation', '-m', 'automated release metadata']);
+  const result = runChecker(directory, '--tracked', '--history');
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('privacy checker still rejects other GitHub-domain email identities', () => {
+  for (const email of [
+    ['synthetic-person', 'github.com'].join('@'),
+    ['noreply', 'github.com.invalid'].join('@'),
+    ['noreply', 'subdomain.github.com'].join('@')
+  ]) {
+    const directory = repository();
+    git(directory, ['config', 'user.email', email]);
+    git(directory, ['commit', '--allow-empty', '-qm', 'synthetic private identity']);
+    const result = runChecker(directory, '--history');
+    assert.equal(result.status, 1, 'only the exact GitHub automation address is allowed');
+    assert.match(result.stderr, /non-example email address/);
+    assert.equal((result.stdout + result.stderr).includes(email), false);
+  }
+});
+
 test('privacy checker rejects machine-local staged paths', () => {
   const directory = repository();
   writeFileSync(path.join(directory, 'services.json'), '[]\n');
