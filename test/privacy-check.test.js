@@ -208,6 +208,16 @@ test('privacy checker still rejects other GitHub-domain email identities', () =>
   }
 });
 
+test('privacy checker accepts the public Dependabot sign-off in stored commit metadata', () => {
+  const directory = repository();
+  git(directory, ['config', 'user.email', ['noreply', 'github.com'].join('@')]);
+  const publicSignoff = ['support', 'github.com'].join('@');
+  git(directory, ['commit', '--allow-empty', '-qm',
+    `Automated dependency update\n\nSigned-off-by: dependabot[bot] <${publicSignoff}>`]);
+  const result = runChecker(directory, '--history');
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('privacy checker rejects machine-local staged paths', () => {
   const directory = repository();
   writeFileSync(path.join(directory, 'services.json'), '[]\n');

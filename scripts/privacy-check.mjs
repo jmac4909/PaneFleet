@@ -78,9 +78,9 @@ function allowedIpv4(ip) {
 
 function allowedEmail(address) {
   const normalized = String(address || '').toLowerCase();
-  // GitHub uses this public address for automated merge/rebase metadata.
+  // GitHub's automation committer and Dependabot sign-off addresses are public.
   // Do not allow every github.com mailbox: other identities may be personal.
-  if (normalized === 'noreply@github.com') return true;
+  if (['noreply@github.com', 'support@github.com'].includes(normalized)) return true;
   const domain = normalized.split('@')[1] || '';
   return ['example.com', 'example.org', 'example.net', 'users.noreply.github.com'].includes(domain);
 }
