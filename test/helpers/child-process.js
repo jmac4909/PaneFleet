@@ -22,7 +22,10 @@ export async function waitForChildExit(child, {
   });
 }
 
-export async function stopChildProcess(child, timeoutMs = 2000) {
+export async function stopChildProcess(
+  child,
+  timeoutMs = process.env.NODE_V8_COVERAGE ? 15_000 : 2_000
+) {
   if (!childRunning(child)) return;
   const exited = once(child, 'exit');
   child.kill('SIGTERM');

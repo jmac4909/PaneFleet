@@ -225,6 +225,27 @@ fixtureTest('allowing a current IP authorizes exact rules without revoking stale
   assert.equal(rules.some((rule) => rule.CidrIpv4 === `${REQUEST_TEST_IP}/32` && String(rule.Description).startsWith('host-control-ip ')), true);
 });
 
+fixtureTest('exact-IP dry run returns the bounded rule plan without authorizing ingress', async () => {
+  const operationsBefore = readFileSync(awsLogPath, 'utf8');
+  const response = await request('/api/security/ssh-rescue/open', {
+    method: 'POST',
+    headers: { cookie: controlCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      confirm: 'authorize',
+      ip: REQUEST_TEST_IP,
+      dryRun: true
+    })
+  });
+  const body = await jsonResponse(response);
+  assert.equal(response.status, 200, JSON.stringify(body));
+  assert.equal(body.ok, true);
+  assert.equal(body.dryRun, true);
+  assert.equal(body.cidr, `${REQUEST_TEST_IP}/32`);
+  assert.deepEqual(body.ports, [22, 8787, Number(new URL(baseUrl).port)].sort((left, right) => left - right));
+  const newOperations = readFileSync(awsLogPath, 'utf8').slice(operationsBefore.length);
+  assert.doesNotMatch(newOperations, /authorize-security-group-ingress|revoke-security-group-ingress/);
+});
+
 fixtureTest('a partial add failure never invokes rule revocation', async () => {
   writeFileSync(failPortPath, '8787\n');
   const response = await request('/api/security/ssh-rescue/open', {

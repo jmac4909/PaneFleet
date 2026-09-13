@@ -30,12 +30,20 @@ let workspaceSubdir;
 let deliverablesDir;
 let workspacePublicDir;
 let workspaceStaticDir;
+let workspaceDocsDir;
+let workspaceDistDir;
 let durableRootHtmlPath;
 let deliverableHtmlPath;
 let publicSiteHtmlPath;
 let staticSiteHtmlPath;
 let sessionMarkdownPath;
+let sessionDocsMarkdownPath;
 let sessionHtmlPath;
+let distZipPath;
+let parentWorkspace;
+let nestedWorkspace;
+let nestedPlanPath;
+let secondNestedWorkspace;
 let outsideDir;
 let toolLogPath;
 let gitModePath;
@@ -60,11 +68,12 @@ async function request(pathname, { method = 'GET', body, cookie = true } = {}) {
 }
 
 function deskPath(session = 'codex-alpha', overrides = {}) {
+  const parentWorkspaceSession = session === 'codex-parent';
   const values = {
     sessionCreatedAt: '2023-11-14T22:13:20.000Z',
     paneId: `${session}:0.0`,
-    tmuxPaneId: session === 'codex-outside' ? '%8' : '%7',
-    panePid: session === 'codex-outside' ? '5252' : '4242',
+    tmuxPaneId: session === 'codex-outside' ? '%8' : parentWorkspaceSession ? '%9' : '%7',
+    panePid: session === 'codex-outside' ? '5252' : parentWorkspaceSession ? '6262' : '4242',
     ...overrides
   };
   return `/api/project-desk/${encodeURIComponent(session)}?${new URLSearchParams(values)}`;
@@ -88,6 +97,12 @@ before(async () => {
   deliverablesDir = path.join(workspace, 'deliverables');
   workspacePublicDir = path.join(workspace, 'public');
   workspaceStaticDir = path.join(workspace, 'static');
+  workspaceDocsDir = path.join(workspace, 'docs');
+  workspaceDistDir = path.join(workspace, 'dist');
+  parentWorkspace = path.join(projectsRoot, 'poker');
+  nestedWorkspace = path.join(parentWorkspace, 'poker-monorepo');
+  secondNestedWorkspace = path.join(parentWorkspace, 'poker-bots');
+  const nestedDocsDir = path.join(nestedWorkspace, 'docs');
   outsideDir = path.join(fixtureDir, 'outside');
   const codexHome = path.join(fixtureDir, 'codex-home');
   const extraWorkspaceRoot = path.join(fixtureDir, 'extra-workspace');
@@ -101,6 +116,10 @@ before(async () => {
     deliverablesDir,
     workspacePublicDir,
     workspaceStaticDir,
+    workspaceDocsDir,
+    workspaceDistDir,
+    nestedDocsDir,
+    secondNestedWorkspace,
     outsideDir,
     codexHome,
     extraWorkspaceRoot,
@@ -109,10 +128,19 @@ before(async () => {
   ]) {
     mkdirSync(directory, { recursive: true });
   }
+  mkdirSync(path.join(workspace, '.git'));
+  mkdirSync(path.join(nestedWorkspace, '.git'));
+  mkdirSync(path.join(secondNestedWorkspace, '.git'));
 
   writeFileSync(path.join(fixtureDir, 'package.json'), '{"type":"module"}\n');
   writeFileSync(path.join(publicDir, 'index.html'), '<!doctype html><title>Project Desk Test</title>\n');
-  writeFileSync(path.join(fixtureDir, 'host-config.json'), '{"artifactDirectories":["static"]}\n');
+  writeFileSync(path.join(fixtureDir, 'host-config.json'), JSON.stringify({
+    artifactDirectories: ['static'],
+    workspaceEntries: [
+      { path: nestedWorkspace, label: 'Poker App', group: 'Known services' },
+      { path: secondNestedWorkspace, label: 'Poker Bots', group: 'Project tools' }
+    ]
+  }));
   writeFileSync(path.join(codexHome, 'models_cache.json'), '{"models":[]}\n');
   writeFileSync(gitModePath, 'normal\n');
   const fakeTestCredential = `sk-proj-${'x'.repeat(32)}`;
@@ -127,6 +155,8 @@ before(async () => {
   deliverableHtmlPath = path.join(deliverablesDir, 'release-console.html');
   writeFileSync(deliverableHtmlPath, '<!doctype html>\n<html><body>Durable output console</body></html>\n');
   writeFileSync(path.join(deliverablesDir, 'private-notes.md'), '# not downloadable\n');
+  distZipPath = path.join(workspaceDistDir, 'release-package.zip');
+  writeFileSync(distZipPath, Buffer.from('504b0506000000000000000000000000000000000000', 'hex'));
   publicSiteHtmlPath = path.join(workspacePublicDir, 'index.html');
   writeFileSync(publicSiteHtmlPath, [
     '<!doctype html>',
@@ -157,10 +187,23 @@ before(async () => {
   writeFileSync(durableRootHtmlPath, '<!doctype html>\n<html><body>Durable root console</body></html>\n');
   utimesSync(durableRootHtmlPath, beforeSession, beforeSession);
   sessionMarkdownPath = path.join(workspace, 'session-call-sheet.md');
+  sessionDocsMarkdownPath = path.join(workspaceDocsDir, 'developer-plan.md');
   sessionHtmlPath = path.join(workspace, 'session-call-sheet.html');
   writeFileSync(sessionMarkdownPath, '# Session call sheet\n\nCreated by the current exact agent session.\n');
+  writeFileSync(sessionDocsMarkdownPath, '# Developer plan\n\nCurrent-session plan under docs.\n');
+  const staleDocsMarkdownPath = path.join(workspaceDocsDir, 'old-plan.md');
+  writeFileSync(staleDocsMarkdownPath, '# Old plan\n\nNot from the current session.\n');
+  utimesSync(staleDocsMarkdownPath, beforeSession, beforeSession);
+  writeFileSync(path.join(workspaceDocsDir, 'README.md'), '# Canonical documentation index\n');
+  writeFileSync(path.join(workspaceDocsDir, 'not-markdown.txt'), 'not an artifact\n');
   writeFileSync(sessionHtmlPath, '<!doctype html>\n<html><body>Current session output</body></html>\n');
   writeFileSync(path.join(workspace, 'README.md'), '# Project metadata, not a downloadable session output\n');
+  writeFileSync(path.join(nestedWorkspace, 'AGENTS.md'), '# Nested poker instructions\nUse the monorepo checks.\n');
+  writeFileSync(path.join(nestedWorkspace, 'package.json'), JSON.stringify({
+    scripts: { check: 'node --check nested.js', test: 'node --test nested' }
+  }));
+  nestedPlanPath = path.join(nestedDocsDir, 'developer-collaboration-plan.md');
+  writeFileSync(nestedPlanPath, '# Collaboration plan\n\nDiscovered from the registered nested project.\n');
   const privateProjectDir = path.join(workspace, 'private-documents');
   mkdirSync(privateProjectDir, { recursive: true });
   writeFileSync(path.join(privateProjectDir, 'in-project-private.pdf'), '%PDF-1.4\nin-project private\n%%EOF\n');
@@ -200,6 +243,7 @@ case "$1" in
     case "$3" in
       '=codex-alpha') printf '%s\n' "codex-alpha|1700000000|0|0|1|node|$PROJECT_DESK_WORKSPACE|%7|4242" ;;
       '=codex-outside') printf '%s\n' "codex-outside|1700000000|0|0|1|node|$PROJECT_DESK_OUTSIDE|%8|5252" ;;
+      '=codex-parent') printf '%s\n' "codex-parent|1700000000|0|0|1|node|$PROJECT_DESK_PARENT|%9|6262" ;;
       *) exit 1 ;;
     esac
     ;;
@@ -217,23 +261,32 @@ printf ' <%s>' "$@" >> "$ORCH_TOOL_LOG"
 printf '\n' >> "$ORCH_TOOL_LOG"
 mode="$(cat "$PROJECT_DESK_GIT_MODE" 2>/dev/null)"
 if [ "$mode" = 'not-git' ]; then exit 2; fi
-if [ "$mode" = 'outside-root' ] && printf '%s ' "$@" | grep -q 'rev-parse --show-toplevel'; then
+git_workspace=''
+previous=''
+for argument in "$@"; do
+  if [ "$previous" = '-C' ]; then git_workspace="$argument"; break; fi
+  previous="$argument"
+done
+if [ "$git_workspace" = "$PROJECT_DESK_PARENT" ]; then exit 2; fi
+if [ "$git_workspace" = "$PROJECT_DESK_NESTED_SECOND" ] && [ "$mode" != 'nested-ambiguous' ]; then exit 2; fi
+repo="$PROJECT_DESK_REPO"
+branch='feature/project-desk'
+if [ "$git_workspace" = "$PROJECT_DESK_NESTED" ] || [ "$git_workspace" = "$PROJECT_DESK_NESTED_SECOND" ]; then
+  repo="$git_workspace"
+  branch='feature/nested-project'
+fi
+if [ "$mode" = 'outside-root' ] && printf '%s ' "$@" | grep -q -- '--show-toplevel'; then
   printf '%s\n' "$PROJECT_DESK_OUTSIDE"
   exit 0
 fi
-if [ "$mode" = 'detached' ] && printf '%s ' "$@" | grep -q 'symbolic-ref --quiet --short HEAD'; then exit 1; fi
-if [ "$mode" = 'status-fail' ] && printf '%s ' "$@" | grep -q 'status --porcelain=v1'; then exit 3; fi
+if [ "$mode" = 'detached' ] && printf '%s ' "$@" | grep -q 'symbolic-ref --quiet HEAD'; then exit 1; fi
 case " $* " in
-  *' rev-parse --show-toplevel '*) printf '%s\n' "$PROJECT_DESK_REPO" ;;
-  *' symbolic-ref --quiet --short HEAD '*) printf '%s\n' 'feature/project-desk' ;;
-  *' rev-parse --short=12 HEAD '*) printf '%s\n' 'abc123def456' ;;
-  *' status --porcelain=v1 -z '*)
-    index=1
-    while [ "$index" -le 105 ]; do
-      printf ' M file-%03d.js\\0' "$index"
-      index=$((index + 1))
-    done
-    ;;
+  *' --show-toplevel '*) printf '%s\n' "$repo" ;;
+  *' --absolute-git-dir '*) printf '%s/.git\n' "$repo" ;;
+  *' --git-common-dir '*) printf '%s/.git\n' "$repo" ;;
+  *' --show-object-format '*) printf '%s\n' 'sha1' ;;
+  *' symbolic-ref --quiet HEAD '*) printf 'refs/heads/%s\n' "$branch" ;;
+  *' rev-parse --verify HEAD '*) printf '%s\n' 'abc123def456abc123def456abc123def456abcd' ;;
   *) exit 2 ;;
 esac
 `);
@@ -260,6 +313,9 @@ esac
       ORCHESTRATOR_EXTRA_WORKSPACE_ROOTS: extraWorkspaceRoot,
       PROJECT_DESK_WORKSPACE: workspaceSubdir,
       PROJECT_DESK_REPO: workspace,
+      PROJECT_DESK_PARENT: parentWorkspace,
+      PROJECT_DESK_NESTED: nestedWorkspace,
+      PROJECT_DESK_NESTED_SECOND: secondNestedWorkspace,
       PROJECT_DESK_OUTSIDE: outsideDir,
       PROJECT_DESK_GIT_MODE: gitModePath,
       SNAPSHOT_EVENT_MS: '3600000',
@@ -298,6 +354,38 @@ test('Project Desk rejects incomplete durable identity before inspecting tmux or
   assert.equal(toolLog(), before);
 });
 
+test('Code City returns only bounded local structural metadata for an exact selectable project', async () => {
+  const unauthenticated = await request(`/api/code-city?workspace=${encodeURIComponent(workspace)}`, { cookie: false });
+  assert.equal(unauthenticated.status, 401);
+
+  const before = toolLog();
+  const response = await request(`/api/code-city?workspace=${encodeURIComponent(workspace)}`);
+  assert.equal(response.status, 200, childOutput);
+  const payload = await responseJson(response);
+  assert.equal(payload.city.rootName, 'alpha');
+  assert.deepEqual(payload.city.privacy, {
+    sourceAnalyzedLocally: true,
+    sourceContentIncluded: false,
+    absolutePathsIncluded: false,
+    externalRequestsRequired: false
+  });
+  assert.ok(payload.city.files.some((file) => file.path === 'public/app.js'));
+  assert.equal(payload.city.version, 3);
+  assert.ok(payload.city.files.every((file) => ['ui', 'backend', 'test', 'shared', 'config', 'docs', 'ops'].includes(file.role)));
+  assert.ok(Array.isArray(payload.city.connections));
+  const encoded = JSON.stringify(payload);
+  assert.doesNotMatch(encoded, /PRIVATE_PREVIEW_SENTINEL|OPENAI_API_KEY|synthetic test credential/);
+  assert.doesNotMatch(encoded, new RegExp(workspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.doesNotMatch(toolLog().slice(before.length), /git|npm|node /);
+
+  const unlistedSubdirectory = await request(`/api/code-city?workspace=${encodeURIComponent(workspaceSubdir)}`);
+  assert.equal(unlistedSubdirectory.status, 400);
+  assert.deepEqual(await responseJson(unlistedSubdirectory), { error: 'code_city_workspace_not_selectable' });
+  const outside = await request(`/api/code-city?workspace=${encodeURIComponent(outsideDir)}`);
+  assert.equal(outside.status, 400);
+  assert.deepEqual(await responseJson(outside), { error: 'code_city_workspace_invalid' });
+});
+
 test('Project Desk is exact-pane-bound and returns only capped, allowlisted project context', async () => {
   const response = await request(deskPath());
   assert.equal(response.status, 200, childOutput);
@@ -318,9 +406,10 @@ test('Project Desk is exact-pane-bound and returns only capped, allowlisted proj
   assert.equal(desk.git.available, true);
   assert.equal(desk.git.branch, 'feature/project-desk');
   assert.equal(desk.git.head, 'abc123def456');
-  assert.equal(desk.git.changedCount, 105);
-  assert.equal(desk.git.changes.length, 100);
-  assert.equal(desk.git.truncated, true);
+  assert.equal(desk.git.reason, 'working_tree_status_not_collected');
+  assert.equal(desk.git.changedCount, null);
+  assert.deepEqual(desk.git.changes, []);
+  assert.equal(desk.git.truncated, false);
   assert.equal('canonicalRepoRoot' in desk.git, false);
   assert.equal('remote' in desk.git, false);
 
@@ -360,6 +449,16 @@ test('Project Desk is exact-pane-bound and returns only capped, allowlisted proj
       type: 'pdf'
     },
     {
+      name: 'release-package.zip',
+      path: 'dist/release-package.zip',
+      type: 'zip'
+    },
+    {
+      name: 'developer-plan.md',
+      path: 'docs/developer-plan.md',
+      type: 'markdown'
+    },
+    {
       name: 'durable-console.html',
       path: 'durable-console.html',
       type: 'html'
@@ -388,9 +487,51 @@ test('Project Desk is exact-pane-bound and returns only capped, allowlisted proj
   const releaseArtifact = desk.artifacts.find((artifact) => artifact.name === 'release-notes.pdf');
   assert.match(releaseArtifact.id, /^[a-f0-9]{32}$/);
   assert.equal(releaseArtifact.size, readFileSync(path.join(deliverablesDir, 'release-notes.pdf')).length);
-  assert.doesNotMatch(JSON.stringify(desk.artifacts), /outside-link|private-notes|root-document|in-project-private|README|\/home\//);
+  assert.doesNotMatch(JSON.stringify(desk.artifacts), /outside-link|private-notes|root-document|in-project-private|old-plan|not-markdown|README|\/home\//);
   assert.doesNotMatch(JSON.stringify(desk), /Never Return|9999/);
   assert.doesNotMatch(toolLog(), /FORBIDDEN/);
+  assert.doesNotMatch(toolLog(), /<status>|<diff-files>|<hash-object>/, 'Project Desk must not invoke content-converting Git commands');
+});
+
+test('Project Desk resolves one registered nested Git project without moving the exact pane', async () => {
+  const response = await request(deskPath('codex-parent'));
+  assert.equal(response.status, 200, childOutput);
+  const desk = await responseJson(response);
+
+  assert.equal(desk.workspace.path, parentWorkspace);
+  assert.equal(desk.workspace.terminalPath, parentWorkspace);
+  assert.equal(desk.workspace.projectPath, nestedWorkspace);
+  assert.equal(desk.workspace.resolution, 'registered_nested');
+  assert.equal(desk.workspace.label, 'Poker App');
+  assert.equal(desk.git.available, true);
+  assert.equal(desk.git.branch, 'feature/nested-project');
+  assert.deepEqual(desk.checks.scripts, [
+    { name: 'check', command: 'node --check nested.js' },
+    { name: 'test', command: 'node --test nested' }
+  ]);
+  assert.ok(desk.instructions.some((item) => item.path.endsWith('/poker/poker-monorepo/AGENTS.md')));
+  const plan = desk.artifacts.find((item) => item.path === 'docs/developer-collaboration-plan.md');
+  assert.ok(plan);
+
+  const preview = await request(artifactPreviewPath(plan.id, 'codex-parent'));
+  assert.equal(preview.status, 200, childOutput);
+  assert.match(await preview.text(), /Discovered from the registered nested project/);
+});
+
+test('Project Desk fails closed instead of guessing between multiple registered nested repositories', async () => {
+  writeFileSync(gitModePath, 'nested-ambiguous\n');
+  try {
+    const response = await request(deskPath('codex-parent'));
+    assert.equal(response.status, 200, childOutput);
+    const desk = await responseJson(response);
+    assert.equal(desk.workspace.path, parentWorkspace);
+    assert.equal(desk.workspace.projectPath, parentWorkspace);
+    assert.equal(desk.workspace.resolution, 'ambiguous_nested');
+    assert.equal(desk.git.available, false);
+    assert.equal(desk.artifacts.length, 0);
+  } finally {
+    writeFileSync(gitModePath, 'normal\n');
+  }
 });
 
 test('Project Desk reports bounded Git degradation states without failing the workspace view', async () => {
@@ -405,11 +546,7 @@ test('Project Desk reports bounded Git degradation states without failing the wo
     },
     {
       mode: 'detached',
-      expected: { available: true, reason: '', detached: true, changedCount: 105 }
-    },
-    {
-      mode: 'status-fail',
-      expected: { available: true, reason: 'status_unavailable', detached: false, changedCount: null }
+      expected: { available: true, reason: 'working_tree_status_not_collected', detached: true, changedCount: null }
     }
   ];
 
@@ -425,7 +562,7 @@ test('Project Desk reports bounded Git degradation states without failing the wo
       assert.equal(desk.git.changedCount, testCase.expected.changedCount, testCase.mode);
       assert.equal('canonicalRepoRoot' in desk.git, false);
       assert.equal(JSON.stringify(desk.git).includes(outsideDir), false);
-      if (testCase.mode === 'status-fail') assert.deepEqual(desk.git.changes, []);
+      if (testCase.expected.available) assert.deepEqual(desk.git.changes, []);
       if (testCase.mode === 'detached') {
         assert.equal(desk.git.branch, '');
         assert.equal(desk.git.head, 'abc123def456');
@@ -465,12 +602,32 @@ test('Project Desk downloads one discovered PDF with attachment headers', async 
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), readFileSync(path.join(deliverablesDir, artifact.name)));
 });
 
+test('Project Desk downloads a validated ZIP from dist with attachment headers', async () => {
+  const desk = await responseJson(await request(deskPath()));
+  const artifact = desk.artifacts.find((item) => item.name === path.basename(distZipPath));
+  assert.ok(artifact);
+  assert.equal(artifact.path, 'dist/release-package.zip');
+  assert.equal(artifact.type, 'zip');
+  const response = await request(artifactPath(artifact.id));
+  assert.equal(response.status, 200, childOutput);
+  assert.equal(response.headers.get('content-type'), 'application/zip');
+  assert.match(response.headers.get('content-disposition') || '', /^attachment;.*release-package\.zip/i);
+  assert.equal(response.headers.get('cache-control'), 'private, no-store');
+  assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), readFileSync(distZipPath));
+});
+
 test('Project Desk downloads current-session Markdown plus durable HTML outputs', async () => {
   const desk = await responseJson(await request(deskPath()));
   const cases = [
     {
       name: path.basename(sessionMarkdownPath),
       file: sessionMarkdownPath,
+      contentType: 'text/markdown; charset=utf-8'
+    },
+    {
+      name: path.basename(sessionDocsMarkdownPath),
+      file: sessionDocsMarkdownPath,
       contentType: 'text/markdown; charset=utf-8'
     },
     {
@@ -495,7 +652,8 @@ test('Project Desk downloads current-session Markdown plus durable HTML outputs'
     }
   ];
   for (const testCase of cases) {
-    const artifact = desk.artifacts.find((item) => item.name === testCase.name);
+    const expectedPath = path.relative(workspace, testCase.file).split(path.sep).join('/');
+    const artifact = desk.artifacts.find((item) => item.path === expectedPath);
     assert.ok(artifact, testCase.name);
     const response = await request(artifactPath(artifact.id));
     assert.equal(response.status, 200, childOutput);
@@ -505,6 +663,32 @@ test('Project Desk downloads current-session Markdown plus durable HTML outputs'
       new RegExp('^attachment;.*' + testCase.name.replace('.', '\\.'), 'i')
     );
     assert.deepEqual(Buffer.from(await response.arrayBuffer()), readFileSync(testCase.file));
+  }
+});
+
+test('Project Desk serves current-session Markdown as an escaped mobile-readable preview', async () => {
+  const desk = await responseJson(await request(deskPath()));
+  const artifact = desk.artifacts.find((item) => item.path === 'docs/developer-plan.md');
+  assert.ok(artifact);
+  const original = readFileSync(sessionDocsMarkdownPath, 'utf8');
+  writeFileSync(sessionDocsMarkdownPath, `${original}<script>globalThis.PREVIEW_ESCAPE_FAILURE = true;</script>\n`);
+  try {
+    const refreshedDesk = await responseJson(await request(deskPath()));
+    const refreshedArtifact = refreshedDesk.artifacts.find((item) => item.path === 'docs/developer-plan.md');
+    const response = await request(artifactPreviewPath(refreshedArtifact.id));
+    assert.equal(response.status, 200, childOutput);
+    assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
+    assert.equal(response.headers.get('content-disposition'), 'inline');
+    assert.equal(response.headers.get('cache-control'), 'private, no-store');
+    assert.match(response.headers.get('content-security-policy') || '', /^sandbox;/);
+    assert.doesNotMatch(response.headers.get('content-security-policy') || '', /allow-scripts|script-src/);
+    const html = await response.text();
+    assert.match(html, /<meta name="viewport"/);
+    assert.match(html, /white-space:pre-wrap/);
+    assert.match(html, /&lt;script&gt;globalThis\.PREVIEW_ESCAPE_FAILURE = true;&lt;\/script&gt;/);
+    assert.doesNotMatch(html, /<script>/);
+  } finally {
+    writeFileSync(sessionDocsMarkdownPath, original);
   }
 });
 
@@ -533,6 +717,33 @@ test('Project Desk serves a self-contained sandboxed preview for output-folder H
   assert.doesNotMatch(html, /http-equiv="Content-Security-Policy"/i);
   assert.doesNotMatch(html, /href="\/styles\.css"|src="\/(?:app\.js|assets\/example\.png)"/);
   assert.doesNotMatch(html, /PRIVATE_PREVIEW_SENTINEL/);
+});
+
+test('Project Desk validates and embeds each allowlisted image signature', async () => {
+  const originalHtml = readFileSync(publicSiteHtmlPath, 'utf8');
+  const assets = [
+    ['fixture.jpg', Buffer.from([0xff, 0xd8, 0xff, 0x00])],
+    ['fixture.gif', Buffer.from('GIF89a', 'ascii')],
+    ['fixture.webp', Buffer.concat([Buffer.from('RIFF', 'ascii'), Buffer.alloc(4), Buffer.from('WEBP', 'ascii')])]
+  ];
+  for (const [name, payload] of assets) writeFileSync(path.join(workspacePublicDir, 'assets', name), payload);
+  writeFileSync(publicSiteHtmlPath, `<!doctype html><html><body>${assets
+    .map(([name]) => `<img src="/assets/${name}">`)
+    .join('')}</body></html>\n`);
+  try {
+    const desk = await responseJson(await request(deskPath()));
+    const artifact = desk.artifacts.find((item) => item.path === 'public/index.html');
+    assert.ok(artifact);
+    const response = await request(artifactPreviewPath(artifact.id));
+    assert.equal(response.status, 200, childOutput);
+    const html = await response.text();
+    assert.match(html, /data:image\/jpeg;base64,/);
+    assert.match(html, /data:image\/gif;base64,/);
+    assert.match(html, /data:image\/webp;base64,/);
+  } finally {
+    writeFileSync(publicSiteHtmlPath, originalHtml);
+    for (const [name] of assets) rmSync(path.join(workspacePublicDir, 'assets', name), { force: true });
+  }
 });
 
 test('Project Desk previews HTML from a configured static output folder', async () => {
@@ -601,6 +812,21 @@ test('Project Desk rejects non-PDF content carrying a .pdf filename', async () =
     assert.deepEqual(await responseJson(response), { error: 'artifact_content_not_allowed' });
   } finally {
     rmSync(fakePdf, { force: true });
+  }
+});
+
+test('Project Desk rejects non-ZIP content carrying a .zip filename', async () => {
+  const fakeZip = path.join(workspaceDistDir, 'not-really-a-zip.zip');
+  writeFileSync(fakeZip, 'plain text with a misleading extension\n');
+  try {
+    const desk = await responseJson(await request(deskPath()));
+    const artifact = desk.artifacts.find((item) => item.name === path.basename(fakeZip));
+    assert.ok(artifact);
+    const response = await request(artifactPath(artifact.id));
+    assert.equal(response.status, 415);
+    assert.deepEqual(await responseJson(response), { error: 'artifact_content_not_allowed' });
+  } finally {
+    rmSync(fakeZip, { force: true });
   }
 });
 

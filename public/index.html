@@ -19,7 +19,10 @@
         <nav class="tabs primary-nav" aria-label="PaneFleet areas">
           <button id="agents-tab" class="tab active" data-view="agents" data-shortcut-label="Alt 1" type="button" aria-current="page" aria-keyshortcuts="Alt+1"><span>Terminals</span></button>
           <button id="queue-tab" class="tab" data-view="queue" data-shortcut-label="Alt 2" type="button" aria-controls="queue-view" aria-keyshortcuts="Alt+2"><span>Queue <em id="queue-badge" class="tab-badge hidden">0</em></span></button>
-          <button id="tools-tab" class="tab" data-action="drawer-toggle" data-drawer="tools" data-shortcut-label="Alt 3" type="button" aria-controls="tools-drawer" aria-expanded="false" aria-keyshortcuts="Alt+3"><span>Tools</span></button>
+          <button id="sdlc-tab" class="tab" data-view="sdlc" data-shortcut-label="Alt 3" type="button" aria-controls="sdlc-view" aria-keyshortcuts="Alt+3"><span>SDLC <em id="sdlc-badge" class="tab-badge hidden">0</em></span></button>
+          <button id="code-city-tab" class="tab" data-view="code-city" data-shortcut-label="Alt 4" type="button" aria-controls="code-city-view" aria-keyshortcuts="Alt+4"><span>Code City</span></button>
+          <button id="commons-tab" class="tab" data-view="commons" data-shortcut-label="Alt 5" type="button" aria-controls="commons-view" aria-keyshortcuts="Alt+5"><span>Commons <em id="commons-badge" class="tab-badge hidden">0</em></span></button>
+          <button id="tools-tab" class="tab" data-action="drawer-toggle" data-drawer="tools" data-shortcut-label="Alt 6" type="button" aria-controls="tools-drawer" aria-expanded="false" aria-keyshortcuts="Alt+6"><span>Tools</span></button>
         </nav>
 
         <section class="summary-grid" aria-label="Host summary">
@@ -42,7 +45,10 @@
           <div class="shortcut-help-grid">
             <div><span><kbd>Alt</kbd><kbd>1</kbd></span><strong>Terminals</strong></div>
             <div><span><kbd>Alt</kbd><kbd>2</kbd></span><strong>Queue</strong></div>
-            <div><span><kbd>Alt</kbd><kbd>3</kbd></span><strong>Tools</strong></div>
+            <div><span><kbd>Alt</kbd><kbd>3</kbd></span><strong>SDLC</strong></div>
+            <div><span><kbd>Alt</kbd><kbd>4</kbd></span><strong>Code City</strong></div>
+            <div><span><kbd>Alt</kbd><kbd>5</kbd></span><strong>Agent Commons</strong></div>
+            <div><span><kbd>Alt</kbd><kbd>6</kbd></span><strong>Tools</strong></div>
             <div><span><kbd>Alt</kbd><kbd>N</kbd></span><strong>New agent</strong></div>
             <div><span><kbd>Ctrl/⌘</kbd><kbd>K</kbd></span><strong>Find a session</strong></div>
             <div><span><kbd>Ctrl/⌘</kbd><kbd>F</kbd></span><strong>Find in active terminal</strong></div>
@@ -147,7 +153,7 @@
                       </section>
 
                       <section class="project-card" aria-labelledby="project-artifacts-title">
-                        <div class="project-card-head"><div><h3 id="project-artifacts-title">Files</h3><p>Downloadable PDF, HTML, and current-session Markdown outputs.</p></div><span id="project-artifact-count">0</span></div>
+                        <div class="project-card-head"><div><h3 id="project-artifacts-title">Files</h3><p>Downloadable PDF, HTML, ZIP, and current-session Markdown outputs.</p></div><span id="project-artifact-count">0</span></div>
                         <div id="project-artifacts" class="project-artifact-list"><p class="project-empty-copy">No downloadable project files.</p></div>
                       </section>
                     </div>
@@ -159,7 +165,7 @@
                       </section>
 
                       <section class="project-card scratchpad-card" aria-labelledby="scratchpad-title">
-                        <div class="project-card-head"><div><h3 id="scratchpad-title">Prompt scratchpad</h3><p id="scratchpad-target">Focus a live terminal to choose an exact target.</p></div><span id="scratchpad-counter">0/4000</span></div>
+                        <div class="project-card-head"><div><h3 id="scratchpad-title">Prompt scratchpad</h3><p id="scratchpad-target">Focus a live terminal to choose an exact target.</p></div><span id="scratchpad-counter">0/30000</span></div>
 
                         <div class="snippet-tools" aria-label="Reusable prompt snippets">
                           <label for="scratchpad-snippet-select">Reusable snippet</label>
@@ -175,7 +181,7 @@
                         </div>
 
                         <label class="sr-only" for="scratchpad-text">Prompt draft</label>
-                        <textarea id="scratchpad-text" rows="9" maxlength="4000" placeholder="Draft a prompt here. Nothing is sent until you review it and confirm the exact terminal."></textarea>
+                        <textarea id="scratchpad-text" rows="9" maxlength="30000" placeholder="Draft a prompt here. Nothing is sent until you review it and confirm the exact terminal."></textarea>
                         <div class="scratchpad-actions">
                           <span id="scratchpad-safety">Draft only · no terminal input sent</span>
                           <button id="scratchpad-review" class="primary-button" data-action="scratchpad-review" type="button" disabled>Review for terminal</button>
@@ -199,6 +205,9 @@
         </section>
 
         <section id="queue-view" class="view queue-workspace-view" aria-labelledby="queue-tab" hidden></section>
+        <section id="sdlc-view" class="view sdlc-workspace-view" aria-labelledby="sdlc-tab" hidden></section>
+        <section id="code-city-view" class="view code-city-workspace-view" aria-labelledby="code-city-tab" hidden></section>
+        <section id="commons-view" class="view commons-workspace-view" aria-labelledby="commons-tab" hidden></section>
       </main>
 
       <div id="terminal-layer" class="terminal-layer"></div>

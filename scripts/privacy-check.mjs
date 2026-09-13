@@ -18,6 +18,20 @@ const REVIEWED_PUBLIC_CAPTURES = new Set([
 ]);
 const findings = [];
 const scannedObjects = new Set();
+const privateMarkers = [...new Set(String(process.env.PANEFLEET_PUBLICATION_DENY_TERMS || '')
+  .split('|').map((value) => value.trim().toLowerCase()).filter(Boolean))];
+if (privateMarkers.some((value) => value.length < 3)) {
+  process.stderr.write('publication deny terms must each contain at least 3 characters\n');
+  process.exit(2);
+}
+const PRIVATE_MAINTENANCE_PATHS = new Set([
+  'deploy/aws/panefleet-resize-automation-role.json',
+  'scripts/capture-panefleet-resize-preflight.mjs',
+  'scripts/resize-panefleet-instance.mjs',
+  'test/capture-panefleet-resize-preflight.test.js',
+  'test/panefleet-resize-role-template.test.js',
+  'test/resize-panefleet-instance.test.js'
+]);
 
 function publicPath(file) {
   return String(file || '').replace(/^(?:staged|tracked|worktree|history):/, '').replaceAll('\\', '/');
@@ -35,6 +49,9 @@ function git(args, options = {}) {
 function privatePathReason(file) {
   const normalized = publicPath(file);
   const base = path.posix.basename(normalized);
+  if (privateMarkers.some((marker) => normalized.toLowerCase().includes(marker))) return 'private publication marker in path';
+  if (/^docs\/(?:host-audit-[^/]+|host-security-sweep-[^/]+|[^/]+-dns-rollout-plan)\.md$/i.test(normalized)) return 'machine-local maintenance artifact';
+  if (PRIVATE_MAINTENANCE_PATHS.has(normalized)) return 'machine-local maintenance artifact';
   if (REVIEWED_PUBLIC_CAPTURES.has(normalized)) return '';
   if (['services.json', 'host-config.json', 'AGENTS.md'].includes(normalized) || base === 'AGENTS.md') return 'machine-local configuration';
   if (/^(?:data|tmp|screenshots|captures)(?:\/|$)/.test(normalized)) return 'private runtime directory';
@@ -65,11 +82,15 @@ function allowedEmail(address) {
 }
 
 function inspectText(file, text) {
+  if (privateMarkers.some((marker) => text.toLowerCase().includes(marker))) {
+    findings.push(`${file}: private publication marker`);
+  }
   const patterns = [
     ['private key', /-----BEGIN [A-Z ]*PRIVATE KEY-----/i],
     ['AWS access key', /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
     ['OpenAI-style secret', /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/],
     ['GitHub token', /\bgh[pousr]_[A-Za-z0-9]{20,}\b/],
+    ['GitHub fine-grained token', /\bgithub_pat_[A-Za-z0-9_]{20,}\b/],
     ['GitLab token', /\bglpat-[A-Za-z0-9_-]{20,}\b/],
     ['Slack token', /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/],
     ['Google API key', /\bAIza[A-Za-z0-9_-]{30,}\b/],
@@ -107,6 +128,8 @@ function inspectText(file, text) {
 
 function inspectBuffer(file, buffer) {
   const normalized = publicPath(file);
+  const reason = privatePathReason(file);
+  if (reason) findings.push(`${file}: ${reason}`);
   if (REVIEWED_PUBLIC_CAPTURES.has(normalized)) {
     const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     if (buffer.length > MAX_REVIEWED_CAPTURE_BYTES) findings.push(`${file}: reviewed capture exceeds 512 KiB limit`);
@@ -115,8 +138,6 @@ function inspectBuffer(file, buffer) {
     }
     return;
   }
-  const reason = privatePathReason(file);
-  if (reason) findings.push(`${file}: ${reason}`);
   if (buffer.length > MAX_PUBLIC_FILE_BYTES) findings.push(`${file}: exceeds 2 MiB public-file limit`);
   if (buffer.includes(0)) {
     findings.push(`${file}: binary content is not allowed`);
@@ -230,7 +251,12 @@ if (modes.has('--history')) {
 
 if (findings.length) {
   process.stderr.write(`privacy check failed with ${findings.length} finding(s):\n`);
-  for (const finding of [...new Set(findings)].sort()) process.stderr.write(`- ${finding}\n`);
+  for (const finding of [...new Set(findings)].sort()) {
+    const safeFinding = privateMarkers.some((marker) => finding.toLowerCase().includes(marker))
+      ? 'private publication marker in diagnostic label (redacted)'
+      : finding;
+    process.stderr.write(`- ${safeFinding}\n`);
+  }
   process.exit(1);
 }
 

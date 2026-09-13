@@ -19,18 +19,24 @@
     "test": "node scripts/run-tests.mjs all",
     "test:core": "node scripts/run-tests.mjs core",
     "test:features": "node scripts/run-tests.mjs features",
-    "test:coverage": "c8 --clean --all --reporter=text --reporter=json-summary --include=server.js --include=codex-telemetry.js --include=durable-json.js --include=host-metrics.js --include=observation-cache.js --include=trusted-proxy.js --include=snapshot-events.js --include=network-monitor.js --include=runtime-config.js --include=site-onboarding.js --include=operator-access-token.js --include=runtime-retention.js --include=prompt-schedule.js --include=process-runner.js --include=sensitive-text.js --include=public/ui-state.js --check-coverage --per-file --statements=96 --branches=81 --functions=100 --lines=96 npm test",
-    "check:shell": "bash -n scripts/*.sh .githooks/pre-commit",
-    "check": "npm run check:shell && node --check server.js && node --check codex-telemetry.js && node --check durable-json.js && node --check host-metrics.js && node --check observation-cache.js && node --check trusted-proxy.js && node --check snapshot-events.js && node --check network-monitor.js && node --check runtime-config.js && node --check site-onboarding.js && node --check operator-access-token.js && node --check runtime-retention.js && node --check prompt-schedule.js && node --check process-runner.js && node --check sensitive-text.js && node --check public/app.js && node --check public/theme-bootstrap.js && node --check public/ui-state.js && node --check scripts/plan-private-site.mjs && node --check scripts/run-tests.mjs && node --check scripts/test-suites.mjs && node --check scripts/privacy-check.mjs && node --check scripts/capture-readme-screenshots.mjs && npm run test:coverage && npm run privacy:check",
+    "test:coverage": "c8 --clean --merge-async --all --reporter=text --reporter=json-summary --include=server.js --include=agent-commons.js --include=dashboard-presenters.js --include=agent-recovery.js --include=workload-isolation.js --include=code-city.js --include=codex-telemetry.js --include=delivery-plan.js --include=delivery-plan-store.js --include=delivery-run.js --include=delivery-run-store.js --include=delivery-planning-run.js --include=delivery-planning-run-store.js --include=planning-role-report.js --include=planning-codex-resolver.js --include=workspace-baseline.js --include=durable-json.js --include=host-metrics.js --include=observation-cache.js --include=trusted-proxy.js --include=snapshot-events.js --include=network-monitor.js --include=runtime-config.js --include=site-onboarding.js --include=operator-access-token.js --include=operator-device-auth.js --include=runtime-retention.js --include=prompt-schedule.js --include=process-runner.js --include=sensitive-text.js --include=terminal-ansi.js --include=public/ui-state.js --check-coverage --per-file --statements=96 --branches=81 --functions=100 --lines=96 npm test",
+    "check:shell": "for file in scripts/*.sh .githooks/pre-commit; do bash -n \"$file\" || exit; done",
+    "check": "npm run check:syntax && npm run test:coverage && npm run privacy:check",
     "screenshots:readme": "node scripts/capture-readme-screenshots.mjs",
     "hooks:install": "git config core.hooksPath .githooks",
     "privacy:check": "node scripts/privacy-check.mjs --worktree --history",
-    "verify:public": "npm run check"
+    "verify:public": "npm run check",
+    "test:focused": "node scripts/run-tests.mjs --files",
+    "bench:telemetry": "node --max-old-space-size=256 scripts/benchmark-telemetry.mjs",
+    "check:syntax": "npm run check:shell && node --check server.js && node --check agent-commons.js && node --check dashboard-presenters.js && node --check agent-recovery.js && node --check workload-isolation.js && node --check code-city.js && node --check codex-telemetry.js && node --check delivery-plan.js && node --check delivery-plan-store.js && node --check delivery-run.js && node --check delivery-run-store.js && node --check delivery-planning-run.js && node --check delivery-planning-run-store.js && node --check planning-role-report.js && node --check planning-codex-resolver.js && node --check workspace-baseline.js && node --check durable-json.js && node --check host-metrics.js && node --check observation-cache.js && node --check trusted-proxy.js && node --check snapshot-events.js && node --check network-monitor.js && node --check runtime-config.js && node --check site-onboarding.js && node --check operator-access-token.js && node --check operator-device-auth.js && node --check runtime-retention.js && node --check prompt-schedule.js && node --check process-runner.js && node --check sensitive-text.js && node --check terminal-ansi.js && node --check public/app.js && node --check public/terminal-presentation.js && node --check public/theme-bootstrap.js && node --check public/ui-state.js && node --check scripts/agent-commons.mjs && node --check scripts/plan-private-site.mjs && node --check scripts/run-tests.mjs && node --check scripts/test-suites.mjs && node --check scripts/privacy-check.mjs && node --check scripts/capture-readme-screenshots.mjs && node --check scripts/benchmark-telemetry.mjs"
   },
   "engines": {
     "node": ">=22.23.0 <23"
   },
   "devDependencies": {
     "c8": "^11.0.0"
+  },
+  "dependencies": {
+    "bcryptjs": "3.0.3"
   }
 }

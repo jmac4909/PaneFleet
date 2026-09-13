@@ -33,13 +33,106 @@ function repository() {
   return directory;
 }
 
-function runChecker(directory, ...modes) {
+function runCheckerWithEnvironment(directory, environment, ...modes) {
   return spawnSync(process.execPath, [checker, ...modes], {
     cwd: directory,
     encoding: 'utf8',
-    timeout: 10000
+    timeout: 10000,
+    env: { ...process.env, PANEFLEET_PUBLICATION_DENY_TERMS: '', ...environment }
   });
 }
+
+function runChecker(directory, ...modes) {
+  return runCheckerWithEnvironment(directory, {}, ...modes);
+}
+
+test('privacy checker refuses force-added private host maintenance material', () => {
+  const directory = repository();
+  const files = [
+    'docs/host-audit-cleanup-plan.md',
+    'docs/host-security-sweep-2000-01-01.md',
+    'docs/example-dns-rollout-plan.md',
+    'deploy/aws/panefleet-resize-automation-role.json',
+    'scripts/capture-panefleet-resize-preflight.mjs',
+    'scripts/resize-panefleet-instance.mjs',
+    'test/capture-panefleet-resize-preflight.test.js',
+    'test/panefleet-resize-role-template.test.js',
+    'test/resize-panefleet-instance.test.js'
+  ];
+  for (const file of files) {
+    mkdirSync(path.dirname(path.join(directory, file)), { recursive: true });
+    writeFileSync(path.join(directory, file), 'synthetic local-only maintenance\n');
+    git(directory, ['add', '-f', file]);
+  }
+  const result = runChecker(directory, '--staged');
+  assert.equal(result.status, 1);
+  assert.equal((result.stderr.match(/machine-local maintenance artifact/g) || []).length, files.length);
+});
+
+test('private publication markers are case-insensitive and never printed', () => {
+  const directory = repository();
+  const marker = ['Fictional', 'Employer', 'Sentinel'].join('');
+  writeFileSync(path.join(directory, 'README.md'), marker.toUpperCase());
+  const result = runCheckerWithEnvironment(directory, {
+    PANEFLEET_PUBLICATION_DENY_TERMS: marker
+  }, '--worktree');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /private publication marker/);
+  assert.equal((result.stdout + result.stderr).toLowerCase().includes(marker.toLowerCase()), false);
+});
+
+test('private publication markers inspect history after working-tree removal', () => {
+  const directory = repository();
+  const marker = ['Fictional', 'History', 'Sentinel'].join('');
+  writeFileSync(path.join(directory, 'README.md'), marker);
+  git(directory, ['add', 'README.md']);
+  git(directory, ['commit', '-qm', 'synthetic private marker']);
+  writeFileSync(path.join(directory, 'README.md'), '# Safe current text\n');
+  git(directory, ['add', 'README.md']);
+  git(directory, ['commit', '-qm', 'safe working copy']);
+  const result = runCheckerWithEnvironment(directory, {
+    PANEFLEET_PUBLICATION_DENY_TERMS: marker
+  }, '--history');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /private publication marker/);
+  assert.equal((result.stdout + result.stderr).includes(marker), false);
+});
+
+test('private filenames fail publication without exposing the filename marker', () => {
+  const directory = repository();
+  const marker = ['Fictional', 'Path', 'Sentinel'].join('');
+  const filename = `${marker.toUpperCase()}.md`;
+  writeFileSync(path.join(directory, filename), '# Synthetic contents\n');
+  for (const modes of [['--worktree'], ['--staged'], ['--history']]) {
+    if (modes[0] === '--staged') git(directory, ['add', filename]);
+    if (modes[0] === '--history') git(directory, ['commit', '-qm', 'synthetic path fixture']);
+    const result = runCheckerWithEnvironment(directory, {
+      PANEFLEET_PUBLICATION_DENY_TERMS: marker
+    }, ...modes);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /private publication marker/);
+    assert.equal((result.stdout + result.stderr).toLowerCase().includes(marker.toLowerCase()), false);
+  }
+});
+
+test('publication markers reject ineffective short entries without disclosure', () => {
+  const directory = repository();
+  const result = runCheckerWithEnvironment(directory, {
+    PANEFLEET_PUBLICATION_DENY_TERMS: 'xy'
+  }, '--worktree');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /at least 3 characters/);
+});
+
+test('privacy checker rejects fine-grained GitHub tokens without disclosing them', () => {
+  const directory = repository();
+  const token = ['github', 'pat', 'x'.repeat(30)].join('_');
+  writeFileSync(path.join(directory, 'README.md'), token);
+  const result = runChecker(directory, '--worktree');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /GitHub fine-grained token/);
+  assert.equal((result.stdout + result.stderr).includes(token), false);
+});
 
 test('privacy checker accepts a sanitized tracked tree and history', () => {
   const directory = repository();

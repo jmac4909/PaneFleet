@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 WORKLOAD_UNIT="panefleet-workloads.service"
 DASHBOARD_UNIT="${ORCH_SYSTEMD_UNIT:-agent-orchestrator.service}"
+MANAGED_SOCKET="${ORCH_MANAGED_TMUX_SOCKET:-host-control-managed}"
 TEMPLATE="$ROOT/ops/panefleet-workloads.service.in"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 USER_UNIT_DIR="$CONFIG_HOME/systemd/user"
@@ -14,6 +15,7 @@ DASHBOARD_DROPIN_PATH="$DASHBOARD_DROPIN_DIR/workload-isolation.conf"
 NODE_BIN="$(command -v node || true)"
 
 [[ "$DASHBOARD_UNIT" =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}\.service$ ]] || { printf 'invalid ORCH_SYSTEMD_UNIT\n' >&2; exit 2; }
+[[ "$MANAGED_SOCKET" =~ ^[A-Za-z0-9_.-]{1,128}$ ]] || { printf 'invalid ORCH_MANAGED_TMUX_SOCKET\n' >&2; exit 2; }
 [[ "$ROOT" == /* && -d "$ROOT" && "$ROOT" != *$'\n'* ]] || { printf 'invalid project root\n' >&2; exit 2; }
 [[ "$HOME" == /* && -d "$HOME" && "$HOME" != *$'\n'* ]] || { printf 'invalid HOME\n' >&2; exit 2; }
 [[ "$CONFIG_HOME" == /* && "$CONFIG_HOME" != *$'\n'* ]] || { printf 'invalid XDG_CONFIG_HOME\n' >&2; exit 2; }
@@ -23,13 +25,34 @@ command -v tmux >/dev/null || { printf 'tmux is required\n' >&2; exit 2; }
 command -v systemctl >/dev/null || { printf 'systemctl is required\n' >&2; exit 2; }
 command -v systemd-analyze >/dev/null || { printf 'systemd-analyze is required\n' >&2; exit 2; }
 
-workload_inventory() {
-  if ! tmux list-panes -a >/dev/null 2>&1; then
-    printf 'server=absent\n'
-    return 0
+tmux_server() {
+  local socket="$1"
+  shift
+  if [[ -n "$socket" ]]; then
+    tmux -L "$socket" "$@"
+  else
+    tmux "$@"
   fi
-  tmux list-panes -a -F '#{session_name}|#{session_id}|#{session_created}|#{window_index}.#{pane_index}|#{pane_id}|#{pane_pid}|#{pane_start_command}' \
-    | LC_ALL=C sort
+}
+
+workload_inventory() {
+  local label socket pid panes
+  while IFS='|' read -r label socket; do
+    pid="$(tmux_server "$socket" display-message -p '#{pid}' 2>/dev/null || true)"
+    if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]]; then
+      printf '%s|server=absent\n' "$label"
+      continue
+    fi
+    panes="$(tmux_server "$socket" list-panes -a -F '#{session_name}|#{session_id}|#{session_created}|#{window_index}.#{pane_index}|#{pane_id}|#{pane_pid}|#{pane_start_command}' 2>/dev/null || true)"
+    if [[ -z "$panes" ]]; then
+      printf '%s|server=empty|pid=%s\n' "$label" "$pid"
+      continue
+    fi
+    printf '%s\n' "$panes" | sed "s/^/$label|/" | LC_ALL=C sort
+  done <<EOF
+default|
+managed|$MANAGED_SOCKET
+EOF
 }
 
 process_cgroup() {
@@ -91,40 +114,64 @@ expected_prefix="/user.slice/user-$(id -u).slice/user@$(id -u).service/"
 target_procs="/sys/fs/cgroup$target_cgroup/cgroup.procs"
 [[ -w "$target_procs" && ! -L "$target_procs" ]] || { printf 'workload cgroup is not writable\n' >&2; exit 3; }
 
-before="$(workload_inventory)"
-if [[ "$before" == 'server=absent' ]]; then
-  printf 'workload isolation installed; dedicated tmux server will own future sessions\n'
-  exit 0
-fi
-
-tmux_pid="$(tmux display-message -p '#{pid}')"
-[[ "$tmux_pid" =~ ^[1-9][0-9]*$ && -r "/proc/$tmux_pid/stat" ]] || { printf 'could not resolve workload tmux server\n' >&2; exit 4; }
 dashboard_pid="$(systemctl --user show "$DASHBOARD_UNIT" -p MainPID --value)"
-[[ "$tmux_pid" != "$dashboard_pid" ]] || { printf 'dashboard cannot be the workload tmux server\n' >&2; exit 4; }
+before="$(workload_inventory)"
 
-printf '%s\n' "$tmux_pid" > "$target_procs"
-for _ in $(seq 1 10); do
-  moved=0
+approved_transient_agent_scope() {
+  [[ "$1" =~ /panefleet-agent-[A-Za-z0-9_.-]+\.(scope|service)$ ]] \
+    || [[ "$1" =~ /panefleet-planning-[a-f0-9]{24}\.scope$ ]]
+}
+
+isolate_tmux_server() {
+  local socket="$1"
+  local label="$2"
+  local tmux_pid source_cgroup moved remaining pid current_cgroup
+  tmux_pid="$(tmux_server "$socket" display-message -p '#{pid}' 2>/dev/null || true)"
+  [[ "$tmux_pid" =~ ^[1-9][0-9]*$ && -r "/proc/$tmux_pid/stat" ]] || {
+    printf 'could not resolve %s tmux server\n' "$label" >&2
+    return 1
+  }
+  [[ "$tmux_pid" != "$dashboard_pid" ]] || { printf 'dashboard cannot be the %s tmux server\n' "$label" >&2; return 1; }
+  source_cgroup="$(process_cgroup "$tmux_pid" || true)"
+  [[ -n "$source_cgroup" ]] || { printf 'could not resolve %s tmux cgroup\n' "$label" >&2; return 1; }
+  if [[ "$source_cgroup" == "$target_cgroup" ]]; then
+    return 0
+  fi
+
+  printf '%s\n' "$tmux_pid" > "$target_procs"
+  for _ in $(seq 1 10); do
+    moved=0
+    while IFS= read -r pid; do
+      [[ "$pid" =~ ^[1-9][0-9]*$ && -r "/proc/$pid/cgroup" ]] || continue
+      current_cgroup="$(process_cgroup "$pid" || true)"
+      if [[ "$current_cgroup" == "$source_cgroup" ]]; then
+        printf '%s\n' "$pid" > "$target_procs" 2>/dev/null || true
+        moved=1
+      elif [[ "$current_cgroup" == "$target_cgroup" ]] || approved_transient_agent_scope "$current_cgroup"; then
+        :
+      else
+        printf '%s tmux descendant %s is in unexpected cgroup %s\n' "$label" "$pid" "$current_cgroup" >&2
+        return 1
+      fi
+    done < <(descendant_pids "$tmux_pid")
+    [[ "$moved" == 0 ]] && break
+    sleep 0.1
+  done
+
+  remaining=0
   while IFS= read -r pid; do
     [[ "$pid" =~ ^[1-9][0-9]*$ && -r "/proc/$pid/cgroup" ]] || continue
-    if [[ "$(process_cgroup "$pid" || true)" != "$target_cgroup" ]]; then
-      printf '%s\n' "$pid" > "$target_procs" 2>/dev/null || true
-      moved=1
+    current_cgroup="$(process_cgroup "$pid" || true)"
+    if [[ "$current_cgroup" != "$target_cgroup" ]] && ! approved_transient_agent_scope "$current_cgroup"; then
+      printf '%s tmux descendant %s did not enter an approved workload cgroup\n' "$label" "$pid" >&2
+      remaining=1
     fi
   done < <(descendant_pids "$tmux_pid")
-  [[ "$moved" == 0 ]] && break
-  sleep 0.1
-done
+  [[ "$remaining" == 0 ]]
+}
 
-remaining=0
-while IFS= read -r pid; do
-  [[ "$pid" =~ ^[1-9][0-9]*$ && -r "/proc/$pid/cgroup" ]] || continue
-  if [[ "$(process_cgroup "$pid" || true)" != "$target_cgroup" ]]; then
-    printf 'tmux descendant %s did not enter the workload cgroup\n' "$pid" >&2
-    remaining=1
-  fi
-done < <(descendant_pids "$tmux_pid")
-[[ "$remaining" == 0 ]] || exit 5
+isolate_tmux_server '' 'default' || exit 4
+isolate_tmux_server "$MANAGED_SOCKET" 'managed' || exit 4
 [[ "$(process_cgroup "$dashboard_pid")" == "$dashboard_cgroup" ]] || { printf 'dashboard cgroup changed unexpectedly\n' >&2; exit 5; }
 
 after="$(workload_inventory)"
@@ -134,4 +181,4 @@ if [[ "$before" != "$after" ]]; then
   exit 6
 fi
 
-printf 'workload tmux isolated in %s; inventory unchanged\n' "$WORKLOAD_UNIT"
+printf 'workload tmux servers isolated in %s; inventory unchanged\n' "$WORKLOAD_UNIT"

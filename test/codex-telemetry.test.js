@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { appendFile, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -9,7 +9,11 @@ import {
   codexRolloutForPid,
   createCodexUsageStore,
   latestCodexAccountTelemetry,
+  parseCodexRolloutLineageText,
   parseCodexTelemetryText,
+  readCodexDeliveryResult,
+  readCodexLatestFinalResponse,
+  readCodexRolloutLineage,
   readCodexUsageEventBatch,
   readCodexTelemetryFile,
   readCodexTelemetryForPids,
@@ -75,6 +79,62 @@ function token(timestamp, overrides = {}) {
   };
 }
 
+function task(timestamp, type) {
+  return { timestamp, type: 'event_msg', payload: { type } };
+}
+
+test('rollout lineage accepts only root interactive sessions and rejects parented sub-agents', async () => {
+  const rootMetadata = JSON.stringify({
+    type: 'session_meta',
+    payload: { id: '11111111-2222-3333-4444-555555555555', source: 'cli' }
+  });
+  const childMetadata = JSON.stringify({
+    type: 'session_meta',
+    payload: {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      source: { subagent: { role: 'worker' } },
+      parent_thread_id: '11111111-2222-3333-4444-555555555555'
+    }
+  });
+  assert.deepEqual(parseCodexRolloutLineageText(rootMetadata), {
+    rootInteractive: true,
+    subagent: false,
+    parented: false
+  });
+  assert.deepEqual(parseCodexRolloutLineageText(childMetadata), {
+    rootInteractive: false,
+    subagent: true,
+    parented: true
+  });
+  assert.equal(parseCodexRolloutLineageText('{bad json'), null);
+
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'panefleet-rollout-lineage-'));
+  const file = path.join(directory, 'rollout.jsonl');
+  try {
+    await writeFile(file, `${childMetadata}\n${'x'.repeat(300_000)}\n`);
+    assert.deepEqual(await readCodexRolloutLineage(file), {
+      rootInteractive: false,
+      subagent: true,
+      parented: true
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function response(timestamp, role, text, phase) {
+  return {
+    timestamp,
+    type: 'response_item',
+    payload: {
+      type: 'message',
+      role,
+      ...(phase ? { phase } : {}),
+      content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }]
+    }
+  };
+}
+
 test('parses the latest Codex status and usage metadata without transcript content', () => {
   const result = parseCodexTelemetryText([
     '{partial-json',
@@ -116,6 +176,31 @@ test('parses the latest Codex status and usage metadata without transcript conte
   assert.equal(result.account.primary.windowMinutes, 10080);
   assert.equal(result.account.primary.resetsAt, '2027-01-15T08:00:00.000Z');
   assert.deepEqual(result.account.credits, { hasCredits: true, unlimited: false, balance: '25' });
+  assert.equal(result.turnState, 'unknown');
+});
+
+test('tracks only privacy-safe Codex turn boundaries for crash recovery', () => {
+  const active = parseCodexTelemetryText(jsonl([
+    turn('2026-07-18T10:00:00.000Z'),
+    task('2026-07-18T10:00:01.000Z', 'task_started'),
+    token('2026-07-18T10:00:02.000Z')
+  ]));
+  assert.equal(active.turnState, 'active');
+
+  const idle = parseCodexTelemetryText(jsonl([
+    turn('2026-07-18T10:00:00.000Z'),
+    task('2026-07-18T10:00:01.000Z', 'task_started'),
+    task('2026-07-18T10:00:02.000Z', 'task_complete')
+  ]));
+  assert.equal(idle.turnState, 'idle');
+
+  const interrupted = parseCodexTelemetryText(jsonl([
+    turn('2026-07-18T10:00:00.000Z'),
+    task('2026-07-18T10:00:01.000Z', 'task_complete'),
+    task('2026-07-18T10:00:02.000Z', 'task_started')
+  ]));
+  assert.equal(interrupted.turnState, 'active');
+  assert.doesNotMatch(JSON.stringify(interrupted), /prompt|response|message/i);
 });
 
 test('handles missing, malformed, and bounded telemetry fields safely', () => {
@@ -180,6 +265,249 @@ test('token telemetry canonicalizes impossible subsets and ignores inconsistent 
   assert.equal(result.context.usedTokens, 5);
 });
 
+test('reads a marker-bound final answer forward from an exact persisted rollout offset', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'panefleet-delivery-result-'));
+  const file = path.join(directory, 'rollout.jsonl');
+  const marker = '[PaneFleet Dispatch attempt-12345678]';
+  const prefix = jsonl([
+    response('2026-07-18T09:59:00.000Z', 'user', 'unrelated earlier turn'),
+    response('2026-07-18T09:59:01.000Z', 'assistant', 'earlier answer', 'final_answer')
+  ]);
+  try {
+    await writeFile(file, prefix);
+    const startOffset = Buffer.byteLength(prefix);
+    await appendFile(file, jsonl([
+      response('2026-07-18T10:00:00.000Z', 'user', `Do the governed work\n${marker}`),
+      turn('2026-07-18T10:00:01.000Z', {
+        sandbox_policy: { type: 'workspace-write', network_access: false }
+      }),
+      response('2026-07-18T10:00:02.000Z', 'assistant', 'working', 'commentary'),
+      response('2026-07-18T10:00:03.000Z', 'assistant', 'STATUS: complete', 'final_answer')
+    ]));
+
+    const details = await stat(file);
+    const result = await readCodexDeliveryResult(file, {
+      confirmationMarker: marker,
+      submittedAt: '2026-07-18T09:59:59.000Z',
+      startOffset
+    });
+    assert.deepEqual(result, {
+      text: 'STATUS: complete',
+      at: '2026-07-18T10:00:03.000Z',
+      sandbox: 'workspace-write',
+      approvalPolicy: 'never',
+      networkAccess: false,
+      networkAccessObserved: true,
+      authority: {
+        promptAt: '2026-07-18T10:00:00.000Z',
+        contextAt: '2026-07-18T10:00:01.000Z',
+        sandboxObserved: true,
+        approvalPolicyObserved: true,
+        networkAccessObserved: true,
+        startOffset,
+        endOffset: details.size,
+        skippedPartialRecord: false
+      }
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('reads only the latest bounded final response from a rollout tail', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'panefleet-latest-response-'));
+  const file = path.join(directory, 'rollout.jsonl');
+  try {
+    await writeFile(file, `${'x'.repeat(1400)}\n${jsonl([
+      response('2026-07-18T10:00:00.000Z', 'assistant', 'older final', 'final_answer'),
+      response('2026-07-18T10:00:01.000Z', 'assistant', 'working detail', 'commentary'),
+      response('invalid', 'assistant', 'invalid timestamp', 'final_answer'),
+      response('2026-07-18T10:00:02.000Z', 'assistant', 'latest\u0000 final', 'final_answer')
+    ])}`);
+
+    assert.deepEqual(await readCodexLatestFinalResponse(file, { maximumBytes: 1024 }), {
+      text: 'latest final',
+      at: '2026-07-18T10:00:02.000Z',
+      truncated: false
+    });
+    assert.equal(await readCodexLatestFinalResponse('relative.jsonl'), null);
+    assert.equal(await readCodexLatestFinalResponse(directory), null);
+
+    await writeFile(file, jsonl([
+      response('2026-07-18T10:01:00.000Z', 'assistant', 'z'.repeat(1400), 'final_answer')
+    ]));
+    const truncated = await readCodexLatestFinalResponse(file, { maximumCharacters: 1024 });
+    assert.equal(truncated.truncated, true);
+    assert.equal(truncated.text.startsWith('z'.repeat(1024)), true);
+    assert.match(truncated.text, /\[Response truncated by PaneFleet\]$/);
+
+    await writeFile(file, jsonl([response('2026-07-18T10:02:00.000Z', 'assistant', 'not final', 'commentary')]));
+    assert.equal(await readCodexLatestFinalResponse(file), null);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('rejects a final answer after any superseding user turn or marker replay', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'panefleet-delivery-superseded-'));
+  const file = path.join(directory, 'rollout.jsonl');
+  const marker = '[PaneFleet Dispatch attempt-abcdefgh]';
+  try {
+    await writeFile(file, jsonl([
+      response('2026-07-18T10:00:00.000Z', 'user', marker),
+      turn('2026-07-18T10:00:01.000Z', { sandbox_policy: { type: 'workspace-write', network_access: false } }),
+      response('2026-07-18T10:00:02.000Z', 'assistant', 'first final', 'final_answer'),
+      response('2026-07-18T10:00:03.000Z', 'user', 'a later instruction'),
+      response('2026-07-18T10:00:04.000Z', 'assistant', 'superseded final', 'final_answer')
+    ]));
+    assert.equal(await readCodexDeliveryResult(file, {
+      confirmationMarker: marker,
+      submittedAt: '2026-07-18T09:59:59.000Z',
+      startOffset: 0
+    }), null);
+
+    await writeFile(file, jsonl([
+      response('2026-07-18T10:00:00.000Z', 'user', marker),
+      response('2026-07-18T10:00:01.000Z', 'user', `replayed ${marker}`),
+      turn('2026-07-18T10:00:02.000Z', { sandbox_policy: { type: 'workspace-write', network_access: false } }),
+      response('2026-07-18T10:00:03.000Z', 'assistant', 'ambiguous final', 'final_answer')
+    ]));
+    assert.equal(await readCodexDeliveryResult(file, {
+      confirmationMarker: marker,
+      submittedAt: '2026-07-18T09:59:59.000Z',
+      startOffset: 0
+    }), null);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('fails closed at timestamp and byte cutoffs and reports bounded read failures explicitly', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'panefleet-delivery-cutoff-'));
+  const file = path.join(directory, 'rollout.jsonl');
+  const marker = '[PaneFleet Dispatch attempt-cutoff88]';
+  const prompt = jsonl([response('2026-07-18T10:00:00.000Z', 'user', marker)]);
+  const rest = jsonl([
+    turn('2026-07-18T10:00:01.000Z', { sandbox_policy: { type: 'workspace-write', network_access: false } }),
+    response('2026-07-18T10:00:02.000Z', 'assistant', 'not authorized', 'final_answer')
+  ]);
+  try {
+    await writeFile(file, `${prompt}${rest}`);
+    assert.equal(await readCodexDeliveryResult(file, {
+      confirmationMarker: marker,
+      submittedAt: '2026-07-18T10:00:00.500Z',
+      startOffset: 0
+    }), null);
+    assert.equal(await readCodexDeliveryResult(file, {
+      confirmationMarker: marker,
+      submittedAt: '2026-07-18T09:59:59.000Z',
+      startOffset: Buffer.byteLength(prompt)
+    }), null);
+
+    await assert.rejects(
+      readCodexDeliveryResult(file, {
+        confirmationMarker: marker,
+        submittedAt: '2026-07-18T09:59:59.000Z',
+        startOffset: 0,
+        maximumBytes: 16
+      }),
+      (error) => error?.code === 'codex_delivery_result_window_exceeded'
+        && error.startOffset === 0
+        && error.endOffset === Buffer.byteLength(`${prompt}${rest}`)
+        && error.maximumBytes === 16
+    );
+    await assert.rejects(
+      readCodexDeliveryResult(file, {
+        confirmationMarker: marker,
+        submittedAt: '2026-07-18T09:59:59.000Z',
+        maximumBytes: 16
+      }),
+      { code: 'codex_delivery_result_window_exceeded' }
+    );
+    await assert.rejects(
+      readCodexDeliveryResult(file, {
+        confirmationMarker: marker,
+        submittedAt: '2026-07-18T09:59:59.000Z',
+        startOffset: Buffer.byteLength(`${prompt}${rest}`) + 1
+      }),
+      { code: 'codex_delivery_result_offset_past_end' }
+    );
+    await assert.rejects(
+      readCodexDeliveryResult(file, {
+        confirmationMarker: marker,
+        submittedAt: '2026-07-18T09:59:59.000Z',
+        startOffset: -1
+      }),
+      { code: 'codex_delivery_result_offset_invalid' }
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('discards a partial first JSONL record at the persisted byte boundary', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'panefleet-delivery-partial-'));
+  const file = path.join(directory, 'rollout.jsonl');
+  const marker = '[PaneFleet Dispatch attempt-partial8]';
+  const partialPrefix = '{"timestamp":"2026-07-18T09:59:00.000Z","type":"response_item","payload":';
+  try {
+    await writeFile(file, partialPrefix);
+    const startOffset = Buffer.byteLength(partialPrefix);
+    await appendFile(file, `${JSON.stringify({
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: `untrusted ${marker}` }]
+    })}}\n${jsonl([
+      response('2026-07-18T10:00:00.000Z', 'user', marker),
+      turn('2026-07-18T10:00:01.000Z', { sandbox_policy: { type: 'workspace-write', network_access: false } }),
+      response('2026-07-18T10:00:02.000Z', 'assistant', 'trusted final', 'final_answer')
+    ])}`);
+
+    const result = await readCodexDeliveryResult(file, {
+      confirmationMarker: marker,
+      submittedAt: '2026-07-18T09:59:59.000Z',
+      startOffset
+    });
+    assert.equal(result.text, 'trusted final');
+    assert.equal(result.authority.skippedPartialRecord, true);
+    assert.equal(result.authority.startOffset, startOffset);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('exposes absent network authority without treating omission as network denied', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'panefleet-delivery-authority-'));
+  const file = path.join(directory, 'rollout.jsonl');
+  const marker = '[PaneFleet Dispatch attempt-authority8]';
+  try {
+    await writeFile(file, jsonl([
+      response('2026-07-18T10:00:00.000Z', 'user', marker),
+      turn('2026-07-18T10:00:01.000Z', { sandbox_policy: { type: 'workspace-write' } }),
+      response('2026-07-18T10:00:02.000Z', 'assistant', 'final without network evidence', 'final_answer')
+    ]));
+    const result = await readCodexDeliveryResult(file, {
+      confirmationMarker: marker,
+      submittedAt: '2026-07-18T09:59:59.000Z',
+      startOffset: 0
+    });
+    assert.equal(result.networkAccess, null);
+    assert.equal(result.networkAccessObserved, false);
+    assert.equal(result.authority.networkAccessObserved, false);
+
+    const absent = parseCodexTelemetryText(jsonl([turn('2026-07-18T10:00:01.000Z')]));
+    const denied = parseCodexTelemetryText(jsonl([turn('2026-07-18T10:00:01.000Z', {
+      sandbox_policy: { type: 'workspace-write', network_access: false }
+    })]));
+    assert.equal(absent.networkAccess, null);
+    assert.equal(absent.networkAccessObserved, false);
+    assert.equal(denied.networkAccess, false);
+    assert.equal(denied.networkAccessObserved, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('reads only a bounded JSONL tail and caches an unchanged file', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'panefleet-telemetry-tail-'));
   const file = path.join(directory, 'rollout.jsonl');
@@ -200,6 +528,8 @@ test('maps an exact Codex pid to an open rollout under the allowed sessions root
   const sessionsRoot = path.join(directory, 'sessions');
   const procRoot = path.join(directory, 'proc');
   const rollout = path.join(sessionsRoot, '2026', '07', '18', 'rollout.jsonl');
+  const resumedRollout = path.join(sessionsRoot, '2026', '07', '19', 'resumed-rollout.jsonl');
+  const childRollout = path.join(sessionsRoot, '2026', '07', '20', 'child-rollout.jsonl');
   const unreadableRollout = path.join(sessionsRoot, '2026', '07', '18', 'unreadable.jsonl');
   const outside = path.join(directory, 'outside.jsonl');
   try {
@@ -208,26 +538,70 @@ test('maps an exact Codex pid to an open rollout under the allowed sessions root
     await mkdir(path.join(procRoot, '123', 'fd'), { recursive: true });
     await mkdir(path.join(procRoot, '456', 'fd'), { recursive: true });
     await mkdir(path.join(procRoot, '789', 'fd'), { recursive: true });
-    await writeFile(rollout, jsonl([turn('2026-07-18T12:00:00.000Z'), token('2026-07-18T12:01:00.000Z')]));
+    await mkdir(path.join(procRoot, '790', 'fd'), { recursive: true });
+    await writeFile(rollout, jsonl([
+      {
+        timestamp: '2026-07-18T11:59:59.000Z',
+        type: 'session_meta',
+        payload: { id: '11111111-2222-3333-4444-555555555555', source: 'cli' }
+      },
+      turn('2026-07-18T12:00:00.000Z'),
+      token('2026-07-18T12:01:00.000Z')
+    ]));
+    await mkdir(path.dirname(resumedRollout), { recursive: true });
+    await writeFile(resumedRollout, jsonl([
+      {
+        timestamp: '2026-07-19T11:59:59.000Z',
+        type: 'session_meta',
+        payload: { id: '66666666-7777-8888-9999-000000000000', source: 'cli' }
+      },
+      turn('2026-07-19T12:00:00.000Z', { model: 'gpt-resumed' }),
+      token('2026-07-19T12:01:00.000Z')
+    ]));
+    await mkdir(path.dirname(childRollout), { recursive: true });
+    await writeFile(childRollout, jsonl([
+      {
+        timestamp: '2026-07-20T11:59:59.000Z',
+        type: 'session_meta',
+        payload: {
+          id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+          source: { subagent: { role: 'worker' } },
+          parent_thread_id: '66666666-7777-8888-9999-000000000000'
+        }
+      },
+      turn('2026-07-20T12:00:00.000Z', { model: 'gpt-child' }),
+      token('2026-07-20T12:01:00.000Z')
+    ]));
+    await utimes(rollout, new Date('2026-07-18T12:02:00.000Z'), new Date('2026-07-18T12:02:00.000Z'));
+    await utimes(resumedRollout, new Date('2026-07-19T12:02:00.000Z'), new Date('2026-07-19T12:02:00.000Z'));
+    await utimes(childRollout, new Date('2026-07-20T12:02:00.000Z'), new Date('2026-07-20T12:02:00.000Z'));
     await writeFile(outside, jsonl([turn('2026-07-18T13:00:00.000Z')]));
     await symlink(path.join(directory, 'vanished.jsonl'), path.join(procRoot, '123', 'fd', '0'));
     await symlink(outside, path.join(procRoot, '123', 'fd', '1'));
     await symlink(rollout, path.join(procRoot, '123', 'fd', '2'));
+    await symlink(resumedRollout, path.join(procRoot, '123', 'fd', '3'));
+    await symlink(childRollout, path.join(procRoot, '123', 'fd', '4'));
     await symlink(outside, path.join(procRoot, '456', 'fd', '1'));
     await symlink(unreadableRollout, path.join(procRoot, '789', 'fd', '1'));
+    await symlink(childRollout, path.join(procRoot, '790', 'fd', '1'));
 
     assert.equal(await codexRolloutForPid(0, { sessionsRoot, procRoot }), null);
     assert.equal(await codexRolloutForPid(999, { sessionsRoot, procRoot }), null);
-    assert.equal(await codexRolloutForPid(123, { sessionsRoot, procRoot }), rollout);
+    assert.equal(await codexRolloutForPid(123, { sessionsRoot, procRoot }), resumedRollout);
     assert.equal(await codexRolloutForPid(456, { sessionsRoot, procRoot }), null);
+    assert.equal(await codexRolloutForPid(790, { sessionsRoot, procRoot }), childRollout);
 
     const telemetry = await readCodexTelemetryForPids([123, 123, -1, 'bad'], { sessionsRoot, procRoot });
-    assert.equal(telemetry.model, 'gpt-test');
+    assert.equal(telemetry.model, 'gpt-resumed');
+    assert.equal(telemetry.rolloutId, '66666666-7777-8888-9999-000000000000');
+    assert.equal(telemetry.candidateCount, 3);
+    assert.equal(telemetry.rootInteractive, true);
     assert.equal(telemetry.account.primary.usedPercent, 12);
     assert.match(telemetry.sourceId, /^[a-f0-9]{24}$/);
     assert.equal(await readCodexTelemetryForPids([456], { sessionsRoot, procRoot }), null);
     assert.equal(await readCodexTelemetryForPids([789], { sessionsRoot, procRoot }), null);
-    assert.equal((await readCodexTelemetryForPids([789, 123], { sessionsRoot, procRoot })).model, 'gpt-test');
+    assert.equal((await readCodexTelemetryForPids([790], { sessionsRoot, procRoot })).rootInteractive, false);
+    assert.equal((await readCodexTelemetryForPids([789, 123], { sessionsRoot, procRoot })).model, 'gpt-resumed');
     assert.equal(await readCodexTelemetryForPids(null, { sessionsRoot, procRoot }), null);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -513,6 +887,102 @@ test('replay resumes an incomplete JSONL record, counts a post-tracking first ev
     assert.equal(stats.tokens.totalTokens, 220);
     assert.equal(stats.ticketTokens.totalTokens, 0);
     assert.deepEqual(stats.tickets.map((ticket) => ticket.eventCount), [0, 0]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('usage replay handles large records with linear copying and exact byte cursors', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'panefleet-usage-large-'));
+  const rollout = path.join(directory, 'rollout.jsonl');
+  const event = token('2026-07-18T10:30:00.000Z');
+  // Large unrelated tool data, a real usage event spanning chunks, CRLF,
+  // multibyte text, malformed input, and an unfinished record in one stream.
+  const image = JSON.stringify({ type: 'response_item', payload: { image: 'x'.repeat(2 * 1024 * 1024) } });
+  const paddedEvent = { ...event, padding: 'é'.repeat(40 * 1024) };
+  const complete = `${image}\r\n${JSON.stringify(paddedEvent)}\r\n{bad json}\n\n`;
+  const pending = JSON.stringify(event);
+  try {
+    await writeFile(rollout, complete + pending.slice(0, -1));
+    const concat = Buffer.concat;
+    let copiedBytes = 0;
+    Buffer.concat = function (buffers, length) {
+      copiedBytes += length ?? buffers.reduce((sum, buffer) => sum + buffer.length, 0);
+      return concat(buffers, length);
+    };
+    let batch;
+    try {
+      batch = await readCodexUsageEventBatch(rollout);
+    } finally {
+      Buffer.concat = concat;
+    }
+    assert.equal(batch.events.length, 1);
+    assert.deepEqual(batch.events[0].sessionTokens, parseCodexTelemetryText(JSON.stringify(event)).sessionTokens);
+    assert.equal(batch.nextOffset, Buffer.byteLength(complete));
+    assert.equal(batch.completeThrough, false);
+    assert.ok(copiedBytes <= batch.fileSize * 2, 'stream must not repeatedly copy a growing image record');
+    await appendFile(rollout, '}\n');
+    const resumed = await readCodexUsageEventBatch(rollout, { startOffset: batch.nextOffset });
+    assert.equal(resumed.events.length, 1);
+    assert.equal(resumed.nextOffset, resumed.fileSize);
+    assert.equal(resumed.completeThrough, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('usage replay rebaselines a cursor past a truncated rollout without rereading retained events', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'panefleet-usage-truncated-'));
+  const rollout = path.join(directory, 'rollout.jsonl');
+  const sourceId = 'b'.repeat(24);
+  const usage = (inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens) => ({
+    input_tokens: inputTokens,
+    cached_input_tokens: cachedInputTokens,
+    output_tokens: outputTokens,
+    reasoning_output_tokens: reasoningOutputTokens,
+    total_tokens: inputTokens + outputTokens
+  });
+  const first = token('2026-07-18T10:00:00.000Z', {
+    info: {
+      total_token_usage: usage(100, 40, 10, 2),
+      last_token_usage: usage(100, 40, 10, 2),
+      model_context_window: 1000
+    }
+  });
+  const second = token('2026-07-18T11:00:00.000Z', {
+    info: {
+      total_token_usage: usage(200, 80, 20, 4),
+      last_token_usage: usage(100, 40, 10, 2),
+      model_context_window: 1000
+    }
+  });
+  const retained = jsonl([first]);
+  try {
+    await writeFile(rollout, jsonl([first, second]));
+    const initialBatch = await readCodexUsageEventBatch(rollout, { sourceId, session: 'codex-client' });
+    const initial = rebuildCodexUsageStoreFromEvents(
+      createCodexUsageStore('2026-07-18T09:00:00.000Z'),
+      [initialBatch],
+      [],
+      '2026-07-18T11:01:00.000Z'
+    );
+    const previousOffset = initial.cursors[sourceId].byteOffset;
+    const previousTokens = codexUsageStats(initial, '2026-07-18T11:01:00.000Z').tokens;
+
+    await writeFile(rollout, retained);
+    const resetBatch = await readCodexUsageEventBatch(rollout, {
+      sourceId,
+      session: 'codex-client',
+      startOffset: previousOffset
+    });
+    assert.equal(resetBatch.startOffset, previousOffset);
+    assert.equal(resetBatch.nextOffset, Buffer.byteLength(retained));
+    assert.equal(resetBatch.events.length, 0);
+    assert.equal(resetBatch.completeThrough, true);
+
+    const reset = reconcileCodexUsageEventBatches(initial, [resetBatch], [], '2026-07-18T11:02:00.000Z');
+    assert.equal(reset.cursors[sourceId].byteOffset, Buffer.byteLength(retained));
+    assert.deepEqual(codexUsageStats(reset, '2026-07-18T11:02:00.000Z').tokens, previousTokens);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

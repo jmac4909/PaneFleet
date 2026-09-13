@@ -3,10 +3,68 @@ const TERMINAL_LAYOUTS = new Set(['free', 'focus', 'split', 'grid']);
 const SESSION_FILTERS = new Set(['all', 'needs', 'active', 'idle']);
 const PROMPT_HISTORY_ORIGINS = new Set(['all', 'mine', 'automated']);
 const PROMPT_QUEUE_SECTIONS = new Set(['compose', 'ideas', 'active', 'schedules', 'history']);
+const DELIVERY_PLAN_PHASES = Object.freeze({
+  draft: { label: 'Draft', tone: 'neutral' },
+  planning: { label: 'Planning', tone: 'busy' },
+  needs_decision: { label: 'Needs decision', tone: 'warn' },
+  ready_for_approval: { label: 'Awaiting approval', tone: 'warn' },
+  approved: { label: 'Approved', tone: 'good' },
+  executing: { label: 'Executing', tone: 'busy' },
+  verifying: { label: 'Verifying', tone: 'busy' },
+  ready_to_release: { label: 'Ready to release', tone: 'warn' },
+  blocked: { label: 'Blocked', tone: 'bad' },
+  done: { label: 'Done', tone: 'good' },
+  canceled: { label: 'Canceled', tone: 'neutral' }
+});
+const DELIVERY_RUN_CONDITIONS = Object.freeze({
+  preparing: { label: 'Preparing', tone: 'busy' },
+  active: { label: 'Implementation active', tone: 'busy' },
+  awaiting_verification: { label: 'Awaiting QA', tone: 'warn' },
+  blocked: { label: 'Blocked', tone: 'bad' },
+  off_course: { label: 'Off course', tone: 'bad' },
+  reconcile_required: { label: 'Reconciliation required', tone: 'warn' },
+  aborted: { label: 'Aborted', tone: 'neutral' },
+  verified: { label: 'Verified locally', tone: 'good' }
+});
+const DELIVERY_RUN_LEVELS = Object.freeze({
+  planned: { label: 'Planned', tone: 'neutral' },
+  implemented_locally: { label: 'Implemented locally', tone: 'warn' },
+  verified_locally: { label: 'Operator-verified locally', tone: 'good' }
+});
+const DELIVERY_RUN_TASK_STATES = Object.freeze({
+  pending: { label: 'Pending', tone: 'neutral' },
+  mission_linked: { label: 'Mission linked', tone: 'busy' },
+  implementation_captured: { label: 'Awaiting QA', tone: 'warn' },
+  verified: { label: 'Verified', tone: 'good' },
+  failed: { label: 'Failed QA', tone: 'bad' },
+  off_course: { label: 'Off course', tone: 'bad' },
+  reconcile_required: { label: 'Reconcile', tone: 'warn' },
+  aborted: { label: 'Aborted', tone: 'neutral' }
+});
+const PLANNING_RUN_CONDITIONS = Object.freeze({
+  active: { label: 'Role review active', tone: 'busy' },
+  resource_wait: { label: 'Waiting for resources', tone: 'warn' },
+  needs_input: { label: 'Needs input', tone: 'warn' },
+  reconcile_required: { label: 'Reconciliation required', tone: 'bad' },
+  off_course: { label: 'Off course', tone: 'bad' },
+  failed: { label: 'Failed', tone: 'bad' },
+  canceled: { label: 'Canceled', tone: 'neutral' }
+});
+const PLANNING_ROLE_STATES = Object.freeze({
+  pending: { label: 'Pending', tone: 'neutral' },
+  spawn_claimed: { label: 'Starting worker', tone: 'busy' },
+  dispatch_claimed: { label: 'Preparing dispatch', tone: 'busy' },
+  dispatched: { label: 'Reviewing', tone: 'busy' },
+  completed: { label: 'Complete', tone: 'good' },
+  needs_input: { label: 'Needs input', tone: 'warn' },
+  failed: { label: 'Failed', tone: 'bad' },
+  reconcile_required: { label: 'Reconcile', tone: 'bad' }
+});
 const FORBIDDEN_SNAPSHOT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const VERIFIED_IDEA_CONTEXT_STATES = new Set(['captured', 'returned', 'operator_confirmed', 'operator_released']);
 const IDEA_GENERATION_CONTEXT_LIMIT = 12;
 const IDEA_GENERATION_PROMPT_LIMIT = 4000;
+export const PROMPT_INPUT_MAX_CHARS = 30000;
 
 export function dashboardThemePresentation(value) {
   const theme = value === 'night' ? 'night' : 'light';
@@ -231,7 +289,9 @@ export function agentDraftSignature(draft) {
     source.preset,
     source.model,
     source.reasoning,
-    source.prompt
+    source.safetyProfile,
+    source.prompt,
+    source.commonsRequestId
   ].map((value) => String(value ?? '')));
 }
 
@@ -263,7 +323,10 @@ export function dashboardShortcut(event, editable = false) {
   if (event.altKey && !primaryModifier) {
     if (key === '1') return 'agents';
     if (key === '2') return 'queue';
-    if (key === '3') return 'tools';
+    if (key === '3') return 'sdlc';
+    if (key === '4') return 'code-city';
+    if (key === '5') return 'commons';
+    if (key === '6') return 'tools';
     if (key === 'n') return 'new-agent';
     if (key === '0') return 'workspace-focus';
     if (key === '[') return 'terminal-previous';
@@ -290,6 +353,20 @@ export function workspaceFocusPresentation(focused) {
 
 export function workspaceFocusApplies(focused, activeView) {
   return Boolean(focused) && activeView === 'agents';
+}
+
+export function canonicalWorkspaceSelection(value, workspaces) {
+  const candidate = String(value || '').trim();
+  if (!candidate) return '';
+  if (candidate.startsWith('/')) return candidate;
+  const matches = [...new Set((Array.isArray(workspaces) ? workspaces : [])
+    .map((item) => ({ path: String(item?.path || '').trim(), label: String(item?.label || '').trim() }))
+    .filter((item) => item.path.startsWith('/') && (
+      item.label === candidate
+      || item.path.replace(/^\/home\/[^/]+(?=\/|$)/, '~') === candidate
+    ))
+    .map((item) => item.path))];
+  return matches.length === 1 ? matches[0] : candidate;
 }
 
 export function preferredScrollBehavior(reducedMotion) {
@@ -320,8 +397,259 @@ export function modalFocusIndex(event, currentIndex, count) {
 export function preferredDashboardView(hash, storedView) {
   const hashView = String(hash || '').replace(/^#/, '').toLowerCase();
   if (hashView === 'queue') return 'queue';
+  if (hashView === 'sdlc') return 'sdlc';
+  if (hashView === 'code-city' || hashView === 'city') return 'code-city';
+  if (hashView === 'commons' || hashView === 'agent-commons') return 'commons';
   if (hashView === 'terminals' || hashView === 'agents') return 'agents';
-  return storedView === 'queue' ? 'queue' : 'agents';
+  return ['queue', 'sdlc', 'code-city', 'commons'].includes(storedView) ? storedView : 'agents';
+}
+
+export function agentCommonsComposerPresentation(draft = {}) {
+  const categories = new Set(['update', 'question', 'claim', 'decision', 'wait', 'work_claim', 'help_request', 'lesson']);
+  const attentionModes = new Set(['board', 'ping', 'checkpoint', 'stop']);
+  const category = String(draft.category || 'update');
+  const attention = String(draft.attention || 'board');
+  const body = String(draft.body || '');
+  const evidence = String(draft.evidence || '');
+  const scope = String(draft.scope || 'global').trim();
+  const bodySafety = promptTextSafety(body);
+  const evidenceSafety = promptTextSafety(evidence);
+  const attentionHints = {
+    board: 'Visible in the Commons; no terminal input.',
+    ping: 'Light awareness request; no terminal input.',
+    checkpoint: 'Steering request for the next safe checkpoint; no automatic delivery.',
+    stop: 'Urgent stop request for operator review; never sends C-c by itself.'
+  };
+  return {
+    disabled: !body.trim()
+      || body.length > 6000
+      || evidence.length > 3000
+      || !scope
+      || scope.length > 512
+      || !categories.has(category)
+      || !attentionModes.has(attention)
+      || !bodySafety.safe
+      || !evidenceSafety.safe,
+    bodyCount: `${body.length}/6000`,
+    evidenceCount: `${evidence.length}/3000`,
+    showEvidence: ['claim', 'decision', 'help_request', 'lesson'].includes(category),
+    showIndependent: category === 'decision' && !draft.replyTo,
+    showSupersedes: category === 'lesson' && !draft.replyTo,
+    attentionHint: attentionHints[attention] || attentionHints.board,
+    safe: bodySafety.safe && evidenceSafety.safe
+  };
+}
+
+export function agentCommonsMessagePresentation(message = {}) {
+  const category = String(message.category || 'update');
+  const attention = String(message.attention || 'board');
+  const state = String(message.state || 'open');
+  const categoryLabels = {
+    update: 'Update',
+    question: 'Question',
+    claim: 'Claim',
+    decision: 'Decision',
+    wait: 'Waiting',
+    work_claim: 'Work claim',
+    help_request: 'Help request',
+    lesson: 'Lesson'
+  };
+  const attentionPresentation = {
+    board: { label: 'Board', tone: 'neutral' },
+    ping: { label: 'Ping', tone: 'busy' },
+    checkpoint: { label: 'Checkpoint nudge', tone: 'warn' },
+    stop: { label: 'Stop request', tone: 'bad' }
+  }[attention] || { label: 'Board', tone: 'neutral' };
+  const attentionClosed = new Set([
+    'resolved', 'withdrawn', 'verified', 'superseded', 'declined', 'satisfied',
+    'completed', 'released', 'supported', 'active', 'retired'
+  ]);
+  return {
+    categoryLabel: categoryLabels[category] || 'Update',
+    attentionLabel: attentionPresentation.label,
+    attentionTone: attentionPresentation.tone,
+    stateLabel: state.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()),
+    attentionOpen: ['ping', 'checkpoint', 'stop'].includes(attention) && !attentionClosed.has(state),
+    terminalMutation: false
+  };
+}
+
+export function agentCommonsVisibleThreadIds(messages = [], {
+  filter = 'all',
+  scope = 'all',
+  query = ''
+} = {}) {
+  const records = Array.isArray(messages) ? messages.filter((message) => message && typeof message === 'object') : [];
+  const roots = records.filter((message) => !message.parentId);
+  const byThread = new Map(roots.map((root) => [String(root.id || ''), [root]]));
+  for (const message of records) {
+    if (message.parentId && byThread.has(String(message.threadId || ''))) {
+      byThread.get(String(message.threadId)).push(message);
+    }
+  }
+  const needle = String(query || '').trim().toLowerCase();
+  const allowedFilters = new Set(['all', 'attention', 'coordination', 'lessons', 'decisions']);
+  const selectedFilter = allowedFilters.has(filter) ? filter : 'all';
+  return roots.filter((root) => {
+    const thread = byThread.get(String(root.id)) || [root];
+    if (scope !== 'all' && root.scope !== scope) return false;
+    if (selectedFilter === 'attention' && !thread.some((message) => ['ping', 'checkpoint', 'stop'].includes(message.attention))) return false;
+    if (selectedFilter === 'coordination' && !['wait', 'work_claim', 'help_request'].includes(root.category)) return false;
+    if (selectedFilter === 'lessons' && root.category !== 'lesson') return false;
+    if (selectedFilter === 'decisions' && root.category !== 'decision') return false;
+    if (needle && !thread.some((message) => [
+      message.body,
+      message.evidence,
+      message.scope,
+      message.author?.session,
+      message.author?.label,
+      Array.isArray(message.audience?.sessions) ? message.audience.sessions.join(' ') : ''
+    ].some((value) => String(value || '').toLowerCase().includes(needle)))) return false;
+    return true;
+  }).sort((left, right) => {
+    const leftThread = byThread.get(String(left.id)) || [left];
+    const rightThread = byThread.get(String(right.id)) || [right];
+    const leftAt = Math.max(...leftThread.map((message) => Date.parse(message.updatedAt) || 0));
+    const rightAt = Math.max(...rightThread.map((message) => Date.parse(message.updatedAt) || 0));
+    return rightAt - leftAt || String(left.id).localeCompare(String(right.id));
+  }).map((root) => String(root.id));
+}
+
+export function codeCityBuildingHeight(bytes) {
+  const size = Math.max(0, Number(bytes) || 0);
+  return Math.max(24, Math.min(118, Math.round(20 + Math.log2(size + 1) * 6)));
+}
+
+export function codeCityPayloadSafe(city) {
+  if (!city || typeof city !== 'object' || Array.isArray(city)) return false;
+  const roles = ['ui', 'backend', 'test', 'shared', 'config', 'docs', 'ops'];
+  const connectionKinds = ['api', 'import', 'test'];
+  const semanticRoles = ['entrypoint', 'interface', 'service', 'ingestion', 'analysis', 'decision', 'data', 'verification', 'operations', 'documentation', 'configuration', 'module'];
+  const sourceSignals = ['entrypoint', 'component', 'http-route', 'network', 'database', 'filesystem-read', 'filesystem-write', 'process', 'verification'];
+  const safeText = (value, maximum = 160) => (
+    typeof value === 'string' && value.length > 0 && value.length <= maximum && !/[\u0000-\u001F\u007F]/.test(value)
+  );
+  const districtIdentity = (value) => {
+    if (!safeText(value)) return null;
+    const match = /^(.*?) · block ([1-9]\d?) of ([1-9]\d?)$/.exec(value);
+    if (!match) return value.includes(' · block ') ? null : { base: value, block: 0, blocks: 0 };
+    const block = Number(match[2]);
+    const blocks = Number(match[3]);
+    if (!safeText(match[1]) || block > blocks || blocks > 7) return null;
+    return { base: match[1], block, blocks };
+  };
+  const expectedCityKeys = ['version', 'generatedAt', 'rootName', 'files', 'districts', 'connections', 'summary', 'privacy', 'digest'];
+  if (
+    Object.keys(city).sort().join('|') !== expectedCityKeys.sort().join('|') ||
+    city.version !== 3 || typeof city.generatedAt !== 'string' || Number.isNaN(Date.parse(city.generatedAt)) ||
+    !safeText(city.rootName) || !/^[a-f0-9]{64}$/.test(String(city.digest || '')) ||
+    Object.keys(city.privacy || {}).sort().join('|') !== ['absolutePathsIncluded', 'externalRequestsRequired', 'sourceAnalyzedLocally', 'sourceContentIncluded'].sort().join('|') ||
+    city.privacy?.sourceAnalyzedLocally !== true ||
+    city.privacy?.sourceContentIncluded !== false ||
+    city.privacy?.absolutePathsIncluded !== false ||
+    city.privacy?.externalRequestsRequired !== false ||
+    !Array.isArray(city.files) || !Array.isArray(city.districts) || !Array.isArray(city.connections) || city.files.length > 900 || city.districts.length > 320 || city.connections.length > 2400 ||
+    !city.summary || Object.keys(city.summary).sort().join('|') !== ['analysisTruncated', 'analyzedFileCount', 'connectionCount', 'directoriesVisited', 'districtCount', 'fileCount', 'flowCounts', 'roleCounts', 'semanticRoleCounts', 'signalCounts', 'skippedEntries', 'totalBytes', 'truncated'].sort().join('|') ||
+    !Number.isSafeInteger(city.summary.fileCount) || city.summary.fileCount !== city.files.length ||
+    !Number.isSafeInteger(city.summary.districtCount) || city.summary.districtCount !== city.districts.length ||
+    !Number.isSafeInteger(city.summary.totalBytes) || city.summary.totalBytes < 0 ||
+    !Number.isSafeInteger(city.summary.directoriesVisited) || city.summary.directoriesVisited < 1 || city.summary.directoriesVisited > 320 ||
+    !Number.isSafeInteger(city.summary.skippedEntries) || city.summary.skippedEntries < 0 ||
+    !Number.isSafeInteger(city.summary.analyzedFileCount) || city.summary.analyzedFileCount < 0 || city.summary.analyzedFileCount > city.files.length ||
+    !Number.isSafeInteger(city.summary.connectionCount) || city.summary.connectionCount !== city.connections.length ||
+    typeof city.summary.truncated !== 'boolean' || typeof city.summary.analysisTruncated !== 'boolean' ||
+    Object.keys(city.summary.roleCounts || {}).join('|') !== roles.join('|') ||
+    Object.keys(city.summary.flowCounts || {}).join('|') !== connectionKinds.join('|') ||
+    Object.keys(city.summary.semanticRoleCounts || {}).join('|') !== semanticRoles.join('|') ||
+    Object.keys(city.summary.signalCounts || {}).join('|') !== sourceSignals.join('|')
+  ) return false;
+  const fileIds = new Set();
+  const filePaths = new Set();
+  const filesSafe = city.files.every((file) => {
+    const relativePath = String(file?.path || '');
+    const segments = relativePath.split('/');
+    const identity = districtIdentity(file?.district);
+    const districtSegments = identity ? identity.base.split(' › ') : [];
+    const analysis = file?.analysis;
+    const safe = file && Object.keys(file).sort().join('|') === ['analysis', 'bytes', 'depth', 'district', 'extension', 'id', 'language', 'name', 'path', 'purpose', 'role'].sort().join('|')
+      && /^building-[a-f0-9]{16}$/.test(String(file.id || ''))
+      && !fileIds.has(file.id) && !filePaths.has(relativePath)
+      && Boolean(relativePath)
+      && !relativePath.startsWith('/') && !relativePath.includes('\\')
+      && segments.every((segment) => safeText(segment))
+      && !/[\u0000-\u001F\u007F]/.test(relativePath)
+      && safeText(file.name) && segments.at(-1) === file.name
+      && identity && (identity.base === 'Root'
+        ? segments.length === 1
+        : districtSegments.length >= 1 && districtSegments.length <= 3 && districtSegments.every((segment, index) => segment === segments[index]))
+      && safeText(file.extension, 20) && safeText(file.language, 40)
+      && roles.includes(file.role) && safeText(file.purpose)
+      && Number.isSafeInteger(file.bytes) && file.bytes >= 0 && file.bytes <= 16 * 1024 * 1024
+      && Number.isSafeInteger(file.depth) && file.depth === segments.length - 1 && file.depth <= 8
+      && analysis && Object.keys(analysis).sort().join('|') === ['branchCount', 'confidence', 'entrypoint', 'lineCount', 'semanticRole', 'signals', 'sourceTruncated', 'symbolCount'].sort().join('|')
+      && semanticRoles.includes(analysis.semanticRole) && ['high', 'medium'].includes(analysis.confidence)
+      && Number.isSafeInteger(analysis.lineCount) && analysis.lineCount >= 0 && analysis.lineCount <= 2_000_000
+      && Number.isSafeInteger(analysis.symbolCount) && analysis.symbolCount >= 0 && analysis.symbolCount <= 100_000
+      && Number.isSafeInteger(analysis.branchCount) && analysis.branchCount >= 0 && analysis.branchCount <= 100_000
+      && typeof analysis.sourceTruncated === 'boolean' && typeof analysis.entrypoint === 'boolean'
+      && Array.isArray(analysis.signals) && analysis.signals.length <= sourceSignals.length
+      && analysis.signals.every((signal) => sourceSignals.includes(signal))
+      && new Set(analysis.signals).size === analysis.signals.length
+      && analysis.signals.slice().sort().join('|') === analysis.signals.join('|')
+      && analysis.entrypoint === analysis.signals.includes('entrypoint');
+    if (safe) {
+      fileIds.add(file.id);
+      filePaths.add(relativePath);
+    }
+    return safe;
+  });
+  const districtIds = new Set();
+  const districtNames = new Set();
+  const districtsSafe = city.districts.every((district) => {
+    const matching = city.files.filter((file) => file.district === district?.name);
+    const identity = districtIdentity(district?.name);
+    const safe = district && Object.keys(district).sort().join('|') === ['fileCount', 'id', 'name', 'totalBytes'].sort().join('|')
+      && /^district-[a-f0-9]{16}$/.test(String(district.id || ''))
+      && !districtIds.has(district.id) && !districtNames.has(district.name)
+      && identity
+      && Number.isSafeInteger(district.fileCount) && district.fileCount > 0 && district.fileCount === matching.length
+      && (identity.block === 0 || district.fileCount <= 140)
+      && Number.isSafeInteger(district.totalBytes) && district.totalBytes >= 0
+      && district.totalBytes === matching.reduce((total, file) => total + file.bytes, 0);
+    if (safe) {
+      districtIds.add(district.id);
+      districtNames.add(district.name);
+    }
+    return safe;
+  });
+  const connectionKeys = new Set();
+  const connectionsSafe = city.connections.every((connection) => {
+    const key = `${connection?.fromId}:${connection?.toId}:${connection?.kind}`;
+    const safe = connection && Object.keys(connection).sort().join('|') === ['fromId', 'kind', 'toId', 'weight'].sort().join('|')
+      && fileIds.has(connection.fromId) && fileIds.has(connection.toId) && connection.fromId !== connection.toId
+      && connectionKinds.includes(connection.kind) && Number.isSafeInteger(connection.weight) && connection.weight >= 1 && connection.weight <= 99
+      && !connectionKeys.has(key);
+    if (safe) connectionKeys.add(key);
+    return safe;
+  });
+  const roleCountsSafe = roles.every((role) => (
+    Number.isSafeInteger(city.summary.roleCounts[role])
+    && city.summary.roleCounts[role] === city.files.filter((file) => file.role === role).length
+  ));
+  const flowCountsSafe = connectionKinds.every((kind) => (
+    Number.isSafeInteger(city.summary.flowCounts[kind])
+    && city.summary.flowCounts[kind] === city.connections.filter((connection) => connection.kind === kind).length
+  ));
+  const semanticRoleCountsSafe = semanticRoles.every((role) => (
+    Number.isSafeInteger(city.summary.semanticRoleCounts[role])
+    && city.summary.semanticRoleCounts[role] === city.files.filter((file) => file.analysis.semanticRole === role).length
+  ));
+  const signalCountsSafe = sourceSignals.every((signal) => (
+    Number.isSafeInteger(city.summary.signalCounts[signal])
+    && city.summary.signalCounts[signal] === city.files.filter((file) => file.analysis.signals.includes(signal)).length
+  ));
+  return filesSafe && districtsSafe && connectionsSafe && roleCountsSafe && flowCountsSafe && semanticRoleCountsSafe && signalCountsSafe
+    && city.summary.totalBytes === city.files.reduce((total, file) => total + file.bytes, 0);
 }
 
 export function dashboardDocumentTitle({
@@ -332,7 +660,7 @@ export function dashboardDocumentTitle({
   workingCount = 0,
   connection = 'live'
 } = {}) {
-  const section = drawer === 'tools' ? 'Tools' : view === 'queue' ? 'Queue' : 'Terminals';
+  const section = drawer === 'tools' ? 'Tools' : view === 'queue' ? 'Queue' : view === 'sdlc' ? 'SDLC' : view === 'code-city' ? 'Code City' : view === 'commons' ? 'Commons' : 'Terminals';
   if (connection === 'error') return `Offline · ${section} — PaneFleet`;
   if (connection === 'poll') return `Polling · ${section} — PaneFleet`;
   if (Number(decisionCount) > 0) return `Needs you: ${Math.floor(Number(decisionCount))} · ${section} — PaneFleet`;
@@ -347,7 +675,9 @@ export function dashboardSectionDecisionCount({
   attentionItems = [],
   missions = [],
   agents = [],
-  promptQueueNeedsReview = 0
+  promptQueueNeedsReview = 0,
+  deliveryPlanNeedsDecision = 0,
+  commonsAttention = 0
 } = {}) {
   const items = Array.isArray(attentionItems) ? attentionItems : [];
   if (drawer === 'tools') {
@@ -357,6 +687,9 @@ export function dashboardSectionDecisionCount({
     )).length;
   }
   if (view === 'queue') return Math.max(0, Math.floor(Number(promptQueueNeedsReview) || 0));
+  if (view === 'sdlc') return Math.max(0, Math.floor(Number(deliveryPlanNeedsDecision) || 0));
+  if (view === 'code-city') return 0;
+  if (view === 'commons') return Math.max(0, Math.floor(Number(commonsAttention) || 0));
 
   const liveSessions = new Set((Array.isArray(agents) ? agents : [])
     .map((agent) => String(agent?.session || ''))
@@ -574,17 +907,51 @@ export function terminalRefreshPresentation(paused, unavailable = false) {
       };
 }
 
-export function terminalAgentResumePresentation(item, agent) {
+export function agentRecoveryManualResumeAvailable(snapshot, session) {
+  const value = String(session || '');
+  if (
+    !genericAgentRecoverySessionEligible(value) ||
+    snapshot?.capabilities?.agentRecovery !== true ||
+    snapshot?.agentRecovery?.enabled !== true ||
+    !Array.isArray(snapshot?.agentRecovery?.slots)
+  ) return false;
+  return snapshot.agentRecovery.slots.some((slot) => (
+    slot?.session === value && slot?.manualResumeAvailable === true
+  ));
+}
+
+export function agentRecoveryResumeConfirmation(snapshot, session, displayName = '') {
+  const value = String(session || '');
+  if (!agentRecoveryManualResumeAvailable(snapshot, value)) return null;
+  const slot = snapshot.agentRecovery.slots.find((candidate) => candidate?.session === value);
+  const label = String(displayName || value || 'this terminal');
+  const observedAt = typeof slot?.lastObservedAt === 'string' && Number.isFinite(Date.parse(slot.lastObservedAt))
+    ? slot.lastObservedAt
+    : '';
+  return {
+    label: 'Resume saved chat',
+    question: `Resume the exact saved Codex chat for ${label}?${observedAt ? ` It was last observed at ${observedAt}.` : ''} PaneFleet will not choose a topic, create a new chat, or replay a prompt. Older terminal scrollback may reappear while Codex redraws.`
+  };
+}
+
+export function terminalAgentResumePresentation(item, agent, snapshot) {
+  const session = String(item?.session || agent?.session || '');
   if (
     item?.mode !== 'agent' ||
     agent?.canResume !== true ||
+    !agentRecoveryManualResumeAvailable(snapshot, session) ||
     (item?.paneId && item.paneId !== agent?.id)
   ) return null;
   return {
-    label: 'Restart Codex',
+    label: 'Resume saved chat',
     title: 'Codex exited; tmux is still running',
-    description: 'Restart Codex in this exact terminal and resume its last session.'
+    description: 'Resume the exact saved Codex chat in this terminal. PaneFleet does not select a topic or start a new chat.'
   };
+}
+
+export function genericAgentRecoverySessionEligible(session) {
+  const value = String(session || '');
+  return Boolean(value) && !/^codex-planning-/.test(value);
 }
 
 export function terminalCaptureFailureTransition(previousFailures, errorCode, baseDelayMs = 2500) {
@@ -1055,6 +1422,316 @@ export function promptQueueSectionTarget(section) {
   return PROMPT_QUEUE_SECTIONS.has(name) ? `#prompt-queue-${name}` : null;
 }
 
+export function deliveryPlanPhasePresentation(phase) {
+  return DELIVERY_PLAN_PHASES[String(phase || '').toLowerCase()]
+    || { label: 'Unknown phase', tone: 'bad' };
+}
+
+export function deliveryPlanSummaries(deliveryPlans) {
+  const seen = new Set();
+  const summaries = [];
+  for (const summary of [
+    ...(Array.isArray(deliveryPlans?.active) ? deliveryPlans.active : []),
+    ...(Array.isArray(deliveryPlans?.recent) ? deliveryPlans.recent : [])
+  ]) {
+    const id = String(summary?.id || '');
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    summaries.push(summary);
+  }
+  return summaries;
+}
+
+export function deliveryPlanOperationStorageKey(action, planId = 'new') {
+  const safeAction = String(action || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  const safePlanId = String(planId || 'new').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!safeAction || !safePlanId) return null;
+  return `host-control:delivery-plan-operation:v1:${safeAction}:${safePlanId}`;
+}
+
+export function deliveryRunOperationStorageKey(action, runId = 'new', stepId = '') {
+  const safeAction = String(action || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  const safeRunId = String(runId || 'new').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  const safeStepId = String(stepId || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!safeAction || !safeRunId) return null;
+  return `host-control:delivery-run-operation:v1:${safeAction}:${safeRunId}${safeStepId ? `:${safeStepId}` : ''}`;
+}
+
+export function deliveryRunConditionPresentation(condition) {
+  return DELIVERY_RUN_CONDITIONS[String(condition || '').toLowerCase()]
+    || { label: 'Unknown condition', tone: 'bad' };
+}
+
+export function deliveryRunLevelPresentation(level) {
+  return DELIVERY_RUN_LEVELS[String(level || '').toLowerCase()]
+    || { label: 'Unknown delivery level', tone: 'bad' };
+}
+
+export function deliveryRunTaskPresentation(state) {
+  return DELIVERY_RUN_TASK_STATES[String(state || '').toLowerCase()]
+    || { label: 'Unknown task state', tone: 'bad' };
+}
+
+export function deliveryRunStartRequest(summary, detail, operationId, planStoreRevision, runStoreRevision) {
+  const plan = detail?.plan;
+  const digest = String(detail?.digest || '');
+  if (
+    !summary || !plan || plan.phase !== 'approved'
+    || !/^plan-[a-z0-9][a-z0-9-]{7,63}$/.test(String(plan.id || ''))
+    || !/^[a-f0-9]{64}$/.test(digest)
+    || !String(operationId || '')
+    || !Number.isSafeInteger(plan.revision) || plan.revision < 1
+    || !Number.isSafeInteger(summary.revision) || summary.revision < 1
+    || !Number.isSafeInteger(planStoreRevision) || planStoreRevision < 0
+    || !Number.isSafeInteger(runStoreRevision) || runStoreRevision < 0
+  ) return null;
+  if (
+    String(summary.id || '') !== plan.id
+    || summary.revision !== plan.revision
+    || String(summary.digest || '') !== digest
+  ) return null;
+  return {
+    operationId: String(operationId),
+    expectedPlanStoreRevision: planStoreRevision,
+    expectedPlanRevision: Number(plan.revision),
+    expectedDigest: digest,
+    expectedRunStoreRevision: runStoreRevision,
+    confirmation: 'create-local-delivery-run'
+  };
+}
+
+export function planningRunConditionPresentation(condition) {
+  return PLANNING_RUN_CONDITIONS[String(condition || '').toLowerCase()]
+    || { label: 'Unknown planning state', tone: 'bad' };
+}
+
+export function planningRoleProgressPresentation(status) {
+  return PLANNING_ROLE_STATES[String(status || '').toLowerCase()]
+    || { label: 'Unknown role state', tone: 'bad' };
+}
+
+export function planningRunOperationStorageKey(action, runId = 'new') {
+  const safeAction = String(action || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  const safeRunId = String(runId || 'new').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!safeAction || !safeRunId) return null;
+  return `host-control:planning-run-operation:v1:${safeAction}:${safeRunId}`;
+}
+
+function planningRunExactPlan(summary, detail) {
+  const plan = detail?.plan;
+  const digest = String(detail?.digest || '');
+  return Boolean(
+    summary && plan
+    && /^plan-[a-z0-9][a-z0-9-]{7,63}$/.test(String(plan.id || ''))
+    && /^[a-f0-9]{64}$/.test(digest)
+    && String(summary.id || '') === plan.id
+    && Number.isSafeInteger(summary.revision) && summary.revision >= 1
+    && Number.isSafeInteger(plan.revision) && plan.revision >= 1
+    && summary.revision === plan.revision
+    && String(summary.digest || '') === digest
+    && Number.isSafeInteger(detail.planStoreRevision)
+    && detail.planStoreRevision >= 0
+    && Number.isSafeInteger(detail.planningRunStoreRevision)
+    && detail.planningRunStoreRevision >= 0
+  );
+}
+
+export function planningRunStartRequest(summary, detail, operationId) {
+  const plan = detail?.plan;
+  const classification = plan?.classification || {};
+  const authority = plan?.authority || {};
+  const mutationSurfaces = Array.isArray(classification.mutationSurfaces) ? classification.mutationSurfaces : [];
+  const elevatedAuthority = ['commit', 'push', 'deploy', 'network', 'serviceControl', 'destructive', 'externalMessages'];
+  if (
+    !planningRunExactPlan(summary, detail)
+    || plan.phase !== 'planning'
+    || classification.depth !== 'standard'
+    || !['change', 'build'].includes(classification.intent)
+    || classification.risk !== 'local_reversible'
+    || mutationSurfaces.length !== 1 || mutationSurfaces[0] !== 'workspace'
+    || authority.workspaceWrite !== true
+    || elevatedAuthority.some((name) => authority[name] !== false)
+    || !String(plan.workspace || '').startsWith('/')
+    || detail.planningRun
+    || !String(operationId || '')
+  ) return null;
+  return {
+    operationId: String(operationId),
+    expectedPlanStoreRevision: Number(detail.planStoreRevision),
+    expectedPlanRevision: Number(plan.revision),
+    expectedDigest: String(detail.digest),
+    expectedPlanningRunStoreRevision: Number(detail.planningRunStoreRevision),
+    confirmation: 'start-multi-role-planning'
+  };
+}
+
+function planningRunSafeToContinue(run) {
+  const condition = String(run?.condition || run?.status || '');
+  const actions = run?.actions;
+  return Boolean(
+    actions?.canContinue === true
+    && ['resource_retry', 'cleanup_only'].includes(actions.continueKind)
+    && !['off_course', 'failed', 'canceled'].includes(condition)
+    && !['applied', 'closed'].includes(run?.phase)
+    && run?.uncertain !== true
+    && run?.deliveryUncertain !== true
+  );
+}
+
+function planningRunIdValid(value) {
+  return /^planning-run-[a-z0-9][a-z0-9-]{7,63}$/.test(String(value || ''));
+}
+
+export function planningRunContinueRequest(run, operationId, storeRevision) {
+  if (
+    !planningRunSafeToContinue(run)
+    || !planningRunIdValid(run?.id)
+    || !Number.isSafeInteger(run?.revision) || run.revision < 1
+    || !Number.isSafeInteger(storeRevision) || storeRevision < 0
+    || !String(operationId || '')
+  ) return null;
+  return {
+    operationId: String(operationId),
+    expectedStoreRevision: storeRevision,
+    expectedRunRevision: run.revision,
+    confirmation: 'continue-multi-role-planning'
+  };
+}
+
+export function planningRunTerminateProvisionalWorkerRequest(run, operationId, storeRevision) {
+  if (
+    run?.actions?.canTerminateExactScope !== true
+    || !planningRunIdValid(run?.id)
+    || !Number.isSafeInteger(run?.revision) || run.revision < 1
+    || !Number.isSafeInteger(storeRevision) || storeRevision < 0
+    || !String(operationId || '')
+    || ['applied', 'closed'].includes(run?.phase)
+    || run?.condition === 'canceled'
+  ) return null;
+  return {
+    operationId: String(operationId),
+    expectedStoreRevision: storeRevision,
+    expectedRunRevision: run.revision,
+    confirmation: 'terminate-exact-planning-scope'
+  };
+}
+
+export function planningRunCancelRequest(run, operationId, storeRevision, reason) {
+  const normalizedReason = typeof reason === 'string' ? reason.trim() : '';
+  if (
+    run?.actions?.canCancel !== true
+    || !planningRunIdValid(run?.id)
+    || !Number.isSafeInteger(run?.revision) || run.revision < 1
+    || !Number.isSafeInteger(storeRevision) || storeRevision < 0
+    || !String(operationId || '')
+    || !normalizedReason || normalizedReason.length > 800
+    || /[\u0000-\u001f\u007f]/.test(normalizedReason)
+    || ['applied', 'closed'].includes(run?.phase)
+    || run?.condition === 'canceled'
+  ) return null;
+  return {
+    operationId: String(operationId),
+    expectedStoreRevision: storeRevision,
+    expectedRunRevision: run.revision,
+    confirmation: 'cancel-multi-role-planning',
+    reason: normalizedReason
+  };
+}
+
+export function planningRunApplyRequest(summary, detail, run, operationId) {
+  const plan = detail?.plan;
+  const condition = String(run?.condition || run?.status || '');
+  const candidateDigest = String(run?.candidateDigest || run?.candidate?.digest || '');
+  const applyAllowed = run?.actions?.canApply === true;
+  if (
+    !planningRunExactPlan(summary, detail)
+    || !planningRunIdValid(run?.id)
+    || !Number.isSafeInteger(run?.revision) || run.revision < 1
+    || run?.planId !== plan.id
+    || run?.planRevision !== plan.revision
+    || run?.planDigest !== detail.digest
+    || run?.phase !== 'review' || condition !== 'active'
+    || !applyAllowed
+    || run?.uncertain === true || run?.deliveryUncertain === true
+    || !/^[a-f0-9]{64}$/.test(candidateDigest)
+    || run?.candidate?.readiness?.ready !== true
+    || !String(operationId || '')
+  ) return null;
+  return {
+    operationId: String(operationId),
+    expectedStoreRevision: Number(detail.planningRunStoreRevision),
+    expectedRunRevision: Number(run.revision),
+    expectedPlanStoreRevision: Number(detail.planStoreRevision),
+    expectedPlanRevision: Number(plan.revision),
+    expectedPlanDigest: String(detail.digest),
+    expectedCandidateDigest: candidateDigest,
+    confirmation: 'apply-planning-candidate'
+  };
+}
+
+export function planningCandidateChanges(plan, candidate) {
+  const currentRoles = plan?.roles && typeof plan.roles === 'object' ? plan.roles : {};
+  const patch = candidate?.definitionPatch && typeof candidate.definitionPatch === 'object'
+    ? candidate.definitionPatch
+    : candidate || {};
+  const candidateRoles = patch?.roles && typeof patch.roles === 'object' ? patch.roles : {};
+  const roles = ['po', 'ba', 'qa', 'dev'].filter((role) => (
+    Object.hasOwn(candidateRoles, role)
+    && JSON.stringify(currentRoles[role] ?? null) !== JSON.stringify(candidateRoles[role] ?? null)
+  )).map((role) => ({ role, before: currentRoles[role] ?? null, after: candidateRoles[role] ?? null }));
+  const beforeQuestions = Array.isArray(plan?.unresolvedQuestions) ? plan.unresolvedQuestions : [];
+  const afterQuestions = Array.isArray(patch?.unresolvedQuestions) ? patch.unresolvedQuestions : [];
+  return {
+    roles,
+    unresolvedQuestions: !Object.hasOwn(patch, 'unresolvedQuestions')
+      || JSON.stringify(beforeQuestions) === JSON.stringify(afterQuestions)
+      ? null
+      : { before: beforeQuestions, after: afterQuestions }
+  };
+}
+
+export function deliveryPlanDefinitionPatch(plan) {
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return null;
+  return {
+    title: plan.title,
+    request: plan.request,
+    workspace: plan.workspace,
+    classification: plan.classification,
+    baseline: plan.baseline,
+    roles: plan.roles,
+    unresolvedQuestions: plan.unresolvedQuestions,
+    authority: plan.authority
+  };
+}
+
+export function deliveryPlanApprovalTransition(summary, detail, operationId, storeRevision) {
+  const plan = detail?.plan;
+  const digest = String(detail?.digest || '');
+  if (
+    !summary || !plan || plan.phase !== 'ready_for_approval' || detail?.readiness?.ready !== true
+    || !/^plan-[a-z0-9][a-z0-9-]{7,63}$/.test(String(plan.id || ''))
+    || !/^[a-f0-9]{64}$/.test(digest)
+    || !String(operationId || '')
+    || !Number.isSafeInteger(plan.revision) || plan.revision < 1
+    || !Number.isSafeInteger(summary.revision) || summary.revision < 1
+    || !Number.isSafeInteger(storeRevision)
+    || storeRevision < 0
+  ) return null;
+  if (
+    String(summary.id || '') !== plan.id
+    || summary.revision !== plan.revision
+    || String(summary.digest || '') !== digest
+  ) return null;
+  return {
+    operationId: String(operationId),
+    expectedStoreRevision: storeRevision,
+    expectedPlanRevision: plan.revision,
+    expectedDigest: digest,
+    to: 'approved',
+    conditions: { confirmation: 'approve-plan' }
+  };
+}
+
 function unsafePromptCodePoint(codePoint) {
   // Do not blanket-block joiners or variation selectors: ordinary multilingual
   // text and emoji sequences use them. The cases below are non-printing
@@ -1122,8 +1799,8 @@ export function promptQueueComposerPresentation(draft, targetsAvailable) {
     disabled: !hasTargets || !hasText || !textSafety.safe || (recurring && selectedCount !== 1),
     sendDisabled: !hasTargets || !hasText || !textSafety.safe || recurring,
     selectedCount,
-    count: `${text.length}/4000`,
-    full: text.length >= 4000,
+    count: `${text.length}/${PROMPT_INPUT_MAX_CHARS}`,
+    full: text.length >= PROMPT_INPUT_MAX_CHARS,
     hasDraft: Boolean(text || recurring),
     unsafeCharacterCount: textSafety.issueCount
   };
@@ -1188,7 +1865,7 @@ export function normalizedTicketRefinerState(value) {
   for (const [name, , limit] of TICKET_REFINER_FIELDS) {
     fields[name] = ticketRefinerFieldValue(source.fields, name, limit);
   }
-  const originalText = String(source.originalText || '').slice(0, 4000);
+  const originalText = String(source.originalText || '').slice(0, PROMPT_INPUT_MAX_CHARS);
   const usable = Boolean(originalText.trim() && targetBindings.length);
   return {
     open: usable && source.open === true,
@@ -1196,7 +1873,7 @@ export function normalizedTicketRefinerState(value) {
     originalText,
     targetBindings,
     fields,
-    preview: String(source.preview || '').slice(0, 4000),
+    preview: String(source.preview || '').slice(0, PROMPT_INPUT_MAX_CHARS),
     previewEdited: source.previewEdited === true
   };
 }
@@ -1219,8 +1896,8 @@ export function ticketRefinerPreview(value) {
   const generated = sections.length
     ? sections.map(([label, text]) => `${label}:\n${text}`).join('\n\n')
     : source.originalText;
-  const tooLong = generated.length > 4000;
-  const text = generated.slice(0, 4000);
+  const tooLong = generated.length > PROMPT_INPUT_MAX_CHARS;
+  const text = generated.slice(0, PROMPT_INPUT_MAX_CHARS);
   return {
     text,
     changed: text !== source.originalText,
@@ -1332,7 +2009,7 @@ export function normalizedPromptQueueDraft(value) {
   return {
     session: sessions[0] || legacySession,
     sessions,
-    text: String(source.text || '').slice(0, 4000),
+    text: String(source.text || '').slice(0, PROMPT_INPUT_MAX_CHARS),
     cron: String(source.cron || '').trim().slice(0, 80)
   };
 }

@@ -10,6 +10,7 @@ function kilobyteMetrics(value) {
 export function parseLinuxMemoryMetrics(value) {
   const metrics = kilobyteMetrics(value);
   return {
+    totalMem: metrics.get('MemTotal') ?? null,
     availableMem: metrics.get('MemAvailable') ?? null,
     swapTotal: metrics.get('SwapTotal') ?? null,
     swapFree: metrics.get('SwapFree') ?? null

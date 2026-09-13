@@ -3,6 +3,7 @@ set -euo pipefail
 
 UNIT="${ORCH_SYSTEMD_UNIT:-agent-orchestrator.service}"
 WORKLOAD_UNIT="${ORCH_WORKLOAD_SYSTEMD_UNIT:-panefleet-workloads.service}"
+MANAGED_SOCKET="${ORCH_MANAGED_TMUX_SOCKET:-host-control-managed}"
 HOST="${ORCH_HEALTH_HOST:-127.0.0.1}"
 PORT="${ORCH_PORT:-8787}"
 CURRENT_USER="$(id -un 2>/dev/null || true)"
@@ -10,6 +11,7 @@ PROC_ROOT="${ORCH_PROC_ROOT:-/proc}"
 
 [[ "$UNIT" =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}\.service$ ]] || { printf 'invalid ORCH_SYSTEMD_UNIT\n' >&2; exit 2; }
 [[ "$WORKLOAD_UNIT" =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}\.service$ ]] || { printf 'invalid ORCH_WORKLOAD_SYSTEMD_UNIT\n' >&2; exit 2; }
+[[ "$MANAGED_SOCKET" =~ ^[A-Za-z0-9_.-]{1,128}$ ]] || { printf 'invalid ORCH_MANAGED_TMUX_SOCKET\n' >&2; exit 2; }
 [[ "$HOST" =~ ^[A-Za-z0-9.:-]+$ ]] || { printf 'invalid ORCH_HEALTH_HOST\n' >&2; exit 2; }
 [[ "$PORT" =~ ^[0-9]+$ ]] && (( PORT >= 1 && PORT <= 65535 )) || { printf 'invalid ORCH_PORT\n' >&2; exit 2; }
 if [[ "$PROC_ROOT" != /proc ]]; then
@@ -41,12 +43,15 @@ listener_pid="$(printf '%s\n' "$listener" | sed -n 's/.*pid=\([0-9][0-9]*\),.*/\
 workload_tmux="absent"
 workload_cgroup="absent"
 workloads=0
-if command -v tmux >/dev/null && sessions="$(tmux list-sessions -F '#{session_name}' 2>/dev/null)"; then
+tmux_pid="$(tmux display-message -p '#{pid}' 2>/dev/null || true)"
+if command -v tmux >/dev/null && [[ "$tmux_pid" =~ ^[1-9][0-9]*$ ]]; then
   workload_tmux="present"
-  workloads="$(printf '%s\n' "$sessions" \
-    | awk 'NF && $0 != "agent-orchestrator" && $0 != "agent-orchestrator-watchdog"' \
-    | wc -l | tr -d ' ')"
-  tmux_pid="$(tmux display-message -p '#{pid}' 2>/dev/null || true)"
+  sessions="$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)"
+  if [[ -n "$sessions" ]]; then
+    workloads="$(printf '%s\n' "$sessions" \
+      | awk 'NF && $0 != "agent-orchestrator" && $0 != "agent-orchestrator-watchdog"' \
+      | wc -l | tr -d ' ')"
+  fi
   dashboard_cgroup="$(process_cgroup "$main_pid" 2>/dev/null || true)"
   tmux_cgroup="$(process_cgroup "$tmux_pid" 2>/dev/null || true)"
   workload_service_cgroup="$(systemctl --user show "$WORKLOAD_UNIT" -p ControlGroup --value 2>/dev/null || true)"
@@ -62,19 +67,39 @@ if command -v tmux >/dev/null && sessions="$(tmux list-sessions -F '#{session_na
     workload_cgroup="unknown"
   fi
 fi
+managed_tmux="absent"
+managed_cgroup="absent"
+managed_tmux_pid="$(tmux -L "$MANAGED_SOCKET" display-message -p '#{pid}' 2>/dev/null || true)"
+if [[ "$managed_tmux_pid" =~ ^[1-9][0-9]*$ ]]; then
+  managed_tmux="present"
+  dashboard_cgroup="$(process_cgroup "$main_pid" 2>/dev/null || true)"
+  managed_tmux_cgroup="$(process_cgroup "$managed_tmux_pid" 2>/dev/null || true)"
+  workload_service_cgroup="$(systemctl --user show "$WORKLOAD_UNIT" -p ControlGroup --value 2>/dev/null || true)"
+  if [[ -n "$dashboard_cgroup" && -n "$managed_tmux_cgroup" ]]; then
+    if [[ "$dashboard_cgroup" == "$managed_tmux_cgroup" ]]; then
+      managed_cgroup="shared"
+    elif [[ -n "$workload_service_cgroup" && "$managed_tmux_cgroup" == "$workload_service_cgroup" ]]; then
+      managed_cgroup="separate"
+    else
+      managed_cgroup="unmanaged"
+    fi
+  else
+    managed_cgroup="unknown"
+  fi
+fi
 legacy="no"
 if [[ "$workload_tmux" == present ]] && { tmux has-session -t '=agent-orchestrator' 2>/dev/null || tmux has-session -t '=agent-orchestrator-watchdog' 2>/dev/null; }; then
   legacy="yes"
 fi
 isolation="attention"
 cgroup_safe="no"
-if [[ "$workload_cgroup" == separate || "$workload_cgroup" == absent ]]; then
+if [[ "$workload_cgroup" == separate && "$managed_cgroup" == separate ]]; then
   cgroup_safe="yes"
 fi
 if [[ "$enabled" == enabled && "$active" == active && "$health" == ok && "$linger" == yes && "$main_pid" =~ ^[1-9][0-9]*$ && "$listener_pid" == "$main_pid" && "$legacy" == no && "$cgroup_safe" == yes ]]; then
   isolation="ok"
 fi
 
-printf 'isolation=%s unit=%s enabled=%s active=%s pid=%s listener_pid=%s health=%s linger=%s legacy_tmux=%s workload_tmux=%s workload_cgroup=%s workloads=%s\n' \
+printf 'isolation=%s unit=%s enabled=%s active=%s pid=%s listener_pid=%s health=%s linger=%s legacy_tmux=%s workload_tmux=%s workload_cgroup=%s workloads=%s managed_tmux=%s managed_cgroup=%s\n' \
   "$isolation" "$UNIT" "${enabled:-unknown}" "${active:-unknown}" "${main_pid:-0}" \
-  "${listener_pid:-0}" "$health" "${linger:-unknown}" "$legacy" "$workload_tmux" "$workload_cgroup" "$workloads"
+  "${listener_pid:-0}" "$health" "${linger:-unknown}" "$legacy" "$workload_tmux" "$workload_cgroup" "$workloads" "$managed_tmux" "$managed_cgroup"

@@ -1,0 +1,183 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #070b12;
+  color: #edf4ff;
+}
+
+* { box-sizing: border-box; }
+
+html,
+body { min-height: 100%; }
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(67, 198, 255, 0.15), transparent 34rem),
+    radial-gradient(circle at 92% 92%, rgba(132, 91, 255, 0.13), transparent 30rem),
+    #070b12;
+}
+
+button,
+input { font: inherit; }
+
+.login-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: max(24px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+}
+
+.login-card {
+  width: min(100%, 430px);
+  padding: clamp(25px, 7vw, 38px);
+  border: 1px solid rgba(143, 186, 224, 0.2);
+  border-radius: 24px;
+  background: linear-gradient(145deg, rgba(18, 26, 39, 0.97), rgba(10, 15, 24, 0.98));
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.52), inset 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.login-mark {
+  display: flex;
+  gap: 5px;
+  align-items: end;
+  height: 25px;
+  margin-bottom: 27px;
+}
+
+.login-mark span {
+  display: block;
+  width: 7px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #68d7ff, #5d77ff);
+  box-shadow: 0 0 18px rgba(83, 192, 255, 0.3);
+}
+
+.login-mark span:nth-child(1) { height: 12px; }
+.login-mark span:nth-child(2) { height: 25px; }
+.login-mark span:nth-child(3) { height: 18px; }
+
+.login-kicker {
+  margin: 0 0 8px;
+  color: #77d6ff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(30px, 9vw, 42px);
+  line-height: 1.04;
+  letter-spacing: -0.04em;
+}
+
+.login-intro {
+  margin: 13px 0 27px;
+  color: #9cabc0;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.login-error {
+  margin: -8px 0 20px;
+  padding: 11px 13px;
+  border: 1px solid rgba(255, 118, 128, 0.34);
+  border-radius: 12px;
+  background: rgba(116, 24, 36, 0.24);
+  color: #ffb4ba;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+form { display: grid; gap: 17px; }
+
+label:not(.remember-row) {
+  display: grid;
+  gap: 8px;
+  color: #c8d5e7;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+}
+
+input[type="text"],
+input[type="password"] {
+  width: 100%;
+  min-height: 50px;
+  padding: 12px 14px;
+  border: 1px solid rgba(139, 174, 211, 0.27);
+  border-radius: 13px;
+  outline: none;
+  background: rgba(4, 8, 15, 0.65);
+  color: #f5f9ff;
+  font-size: 16px;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+input[type="text"]:focus,
+input[type="password"]:focus {
+  border-color: #62cfff;
+  background: rgba(7, 13, 23, 0.88);
+  box-shadow: 0 0 0 4px rgba(56, 180, 240, 0.13);
+}
+
+.remember-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 34px;
+  color: #b4c2d4;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.remember-row input {
+  width: 19px;
+  height: 19px;
+  margin: 0;
+  accent-color: #54c7f6;
+}
+
+button {
+  min-height: 52px;
+  margin-top: 2px;
+  border: 0;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #55d1ff, #6977ff);
+  color: #06101c;
+  font-size: 14px;
+  font-weight: 850;
+  letter-spacing: -0.01em;
+  box-shadow: 0 13px 30px rgba(56, 128, 245, 0.24);
+}
+
+button:active { transform: translateY(1px); }
+
+button:focus-visible {
+  outline: 3px solid rgba(132, 217, 255, 0.75);
+  outline-offset: 3px;
+}
+
+.login-foot {
+  margin: 24px 0 0;
+  color: #718097;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+@media (max-height: 620px) and (orientation: landscape) {
+  .login-shell { place-items: start center; }
+  .login-card { padding-block: 22px; }
+  .login-mark { margin-bottom: 15px; }
+  .login-intro { margin-bottom: 18px; }
+  form { gap: 12px; }
+  .login-foot { margin-top: 16px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}

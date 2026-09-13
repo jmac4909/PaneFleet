@@ -8,8 +8,10 @@ NODE_BIN="${ORCH_NODE_BIN:-$(command -v node || true)}"
 BIND_HOST="${ORCH_BIND_HOST:-127.0.0.1}"
 HEALTH_HOST="${ORCH_HEALTH_HOST:-127.0.0.1}"
 PORT="${ORCH_PORT:-8787}"
+PLANNING_CODEX_MODE="${ORCH_PLANNING_CODEX_MODE:-required}"
 CURRENT_USER="$(id -un 2>/dev/null || true)"
 TEMPLATE="$ROOT/ops/agent-orchestrator.service.in"
+PLANNING_CODEX_RESOLVER="$ROOT/planning-codex-resolver.js"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 USER_UNIT_DIR="$CONFIG_HOME/systemd/user"
 UNIT_PATH="$USER_UNIT_DIR/$UNIT"
@@ -27,23 +29,61 @@ esac
 [[ "$HOME" == /* && -d "$HOME" && "$HOME" != *$'\n'* ]] || { printf 'invalid HOME\n' >&2; exit 2; }
 [[ "$CONFIG_HOME" == /* && "$CONFIG_HOME" != *$'\n'* ]] || { printf 'invalid XDG_CONFIG_HOME\n' >&2; exit 2; }
 [[ "$NODE_BIN" == /* && -x "$NODE_BIN" && "$NODE_BIN" != *$'\n'* ]] || { printf 'absolute executable ORCH_NODE_BIN required\n' >&2; exit 2; }
-node_major="$("$NODE_BIN" -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
-[[ "$node_major" =~ ^[0-9]+$ ]] && (( node_major >= 20 )) || { printf 'Node.js 20 or newer is required\n' >&2; exit 2; }
 [[ "$BIND_HOST" =~ ^[A-Za-z0-9.:-]+$ ]] || { printf 'invalid ORCH_BIND_HOST\n' >&2; exit 2; }
 [[ "$HEALTH_HOST" =~ ^[A-Za-z0-9.:-]+$ ]] || { printf 'invalid ORCH_HEALTH_HOST\n' >&2; exit 2; }
 [[ "$PORT" =~ ^[0-9]+$ ]] && (( PORT >= 1 && PORT <= 65535 )) || { printf 'invalid ORCH_PORT\n' >&2; exit 2; }
+[[ "$PLANNING_CODEX_MODE" == required || "$PLANNING_CODEX_MODE" == disabled ]] || { printf 'invalid ORCH_PLANNING_CODEX_MODE\n' >&2; exit 2; }
+[[ -x /usr/bin/env ]] || { printf '/usr/bin/env is required\n' >&2; exit 2; }
 [[ -f "$TEMPLATE" ]] || { printf 'missing unit template: %s\n' "$TEMPLATE" >&2; exit 2; }
+[[ -f "$PLANNING_CODEX_RESOLVER" ]] || { printf 'missing Planning Codex resolver: %s\n' "$PLANNING_CODEX_RESOLVER" >&2; exit 2; }
 command -v systemctl >/dev/null || { printf 'systemctl is required\n' >&2; exit 2; }
 command -v curl >/dev/null || { printf 'curl is required\n' >&2; exit 2; }
 command -v ss >/dev/null || { printf 'ss is required\n' >&2; exit 2; }
 
-escape_sed() { printf '%s' "$1" | sed 's/[&|]/\\&/g'; }
+node_major="$(/usr/bin/env -i HOME="$HOME" LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+  "$NODE_BIN" -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
+[[ "$node_major" =~ ^[0-9]+$ ]] && (( node_major >= 20 )) || { printf 'Node.js 20 or newer is required\n' >&2; exit 2; }
+
+planning_codex_executable=''
+planning_codex_version=''
+planning_codex_sha256=''
+if [[ "$PLANNING_CODEX_MODE" == required ]]; then
+  planning_codex_resolution="$(/usr/bin/env -i \
+    HOME="$HOME" \
+    LANG=C \
+    LC_ALL=C \
+    PATH=/usr/bin:/bin \
+    ORCH_PLANNING_CODEX_EXECUTABLE="${ORCH_PLANNING_CODEX_EXECUTABLE:-}" \
+    "$NODE_BIN" "$PLANNING_CODEX_RESOLVER")" || {
+    printf 'Planning Codex resolution failed; exact native Codex 0.147.0 is required\n' >&2
+    exit 2
+  }
+  [[ "$planning_codex_resolution" != *$'\n'* ]] || { printf 'Planning Codex resolver returned multiple records\n' >&2; exit 2; }
+  IFS=$'\t' read -r planning_codex_executable planning_codex_version planning_codex_sha256 planning_codex_extra \
+    <<< "$planning_codex_resolution"
+  [[ -z "${planning_codex_extra:-}" \
+    && "$planning_codex_executable" == /* \
+    && "$planning_codex_version" == 0.147.0 \
+    && "$planning_codex_sha256" =~ ^[a-f0-9]{64}$ ]] || {
+    printf 'Planning Codex resolver returned an invalid pin\n' >&2
+    exit 2
+  }
+fi
+
+escape_sed() { printf '%s' "$1" | sed 's|[\\&|]|\\&|g'; }
+escape_systemd_environment() {
+  printf '%s' "$1" | sed -e 's|\\|\\\\|g' -e 's|"|\\"|g' -e 's|%|%%|g'
+}
 root_sed="$(escape_sed "$ROOT")"
 node_sed="$(escape_sed "$NODE_BIN")"
 home_sed="$(escape_sed "$HOME")"
 node_dir_sed="$(escape_sed "$(dirname "$NODE_BIN")")"
 bind_host_sed="$(escape_sed "$BIND_HOST")"
 port_sed="$(escape_sed "$PORT")"
+planning_codex_mode_sed="$(escape_sed "$PLANNING_CODEX_MODE")"
+planning_codex_executable_sed="$(escape_sed "$(escape_systemd_environment "$planning_codex_executable")")"
+planning_codex_version_sed="$(escape_sed "$planning_codex_version")"
+planning_codex_sha256_sed="$(escape_sed "$planning_codex_sha256")"
 temporary="$(mktemp)"
 trap 'rm -f "$temporary"' EXIT
 sed \
@@ -53,6 +93,10 @@ sed \
   -e "s|@HOME@|$home_sed|g" \
   -e "s|@HOST@|$bind_host_sed|g" \
   -e "s|@PORT@|$port_sed|g" \
+  -e "s|@PLANNING_CODEX_MODE@|$planning_codex_mode_sed|g" \
+  -e "s|@PLANNING_CODEX_EXECUTABLE@|$planning_codex_executable_sed|g" \
+  -e "s|@PLANNING_CODEX_VERSION@|$planning_codex_version_sed|g" \
+  -e "s|@PLANNING_CODEX_SHA256@|$planning_codex_sha256_sed|g" \
   "$TEMPLATE" > "$temporary"
 
 mkdir -p "$USER_UNIT_DIR"

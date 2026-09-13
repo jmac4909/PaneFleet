@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { writeExecutable } from './helpers/executables.js';
@@ -96,9 +97,10 @@ exit 0
 printf 'tmux' >> "$ORCH_TEST_COMMAND_LOG"
 printf ' <%s>' "$@" >> "$ORCH_TEST_COMMAND_LOG"
 printf '\\n' >> "$ORCH_TEST_COMMAND_LOG"
+if [ "\${1:-}" = '-L' ]; then shift 2; fi
 if [ "\${ORCH_TEST_TMUX_ABSENT:-0}" = 1 ]; then
   case "$1" in
-    list-sessions|list-panes|has-session) exit 1 ;;
+    display-message|list-sessions|list-panes|has-session) exit 1 ;;
   esac
 fi
 case "$1" in
@@ -203,6 +205,7 @@ esac
       XDG_RUNTIME_DIR: runtimeDir,
       ORCH_ROOT: projectDir,
       ORCH_NODE_BIN: process.execPath,
+      ORCH_PLANNING_CODEX_MODE: 'disabled',
       ORCH_SYSTEMD_UNIT: 'agent-orchestrator-test.service',
       ORCH_HEALTH_HOST: '127.0.0.1',
       ORCH_PORT: '8787',
@@ -242,6 +245,7 @@ test('dashboard lifecycle sources contain no tmux server or session kill command
     'scripts/restart-dashboard.sh',
     'scripts/install-control-plane.sh',
     'scripts/isolate-workload-tmux.sh',
+    'scripts/run-isolated-agent.sh',
     'scripts/workload-tmux-anchor.sh',
     'ops/agent-orchestrator.service.in',
     'ops/panefleet-workloads.service.in'
@@ -255,6 +259,10 @@ test('dashboard lifecycle sources contain no tmux server or session kill command
 
   const unit = readFileSync(path.join(projectDir, 'ops/agent-orchestrator.service.in'), 'utf8');
   assert.match(unit, /^ExecStart=@NODE@ @ROOT@\/server\.js$/m);
+  assert.match(unit, /^Environment="ORCHESTRATOR_PLANNING_CODEX_MODE=@PLANNING_CODEX_MODE@"$/m);
+  assert.match(unit, /^Environment="ORCHESTRATOR_PLANNING_CODEX_EXECUTABLE=@PLANNING_CODEX_EXECUTABLE@"$/m);
+  assert.match(unit, /^Environment="ORCHESTRATOR_PLANNING_CODEX_VERSION=@PLANNING_CODEX_VERSION@"$/m);
+  assert.match(unit, /^Environment="ORCHESTRATOR_PLANNING_CODEX_SHA256=@PLANNING_CODEX_SHA256@"$/m);
   assert.match(unit, /^Restart=always$/m);
   assert.match(unit, /^KillMode=control-group$/m);
   for (const directive of [
@@ -278,16 +286,83 @@ test('dashboard lifecycle sources contain no tmux server or session kill command
   assert.match(workloadUnit, /^ExecStart=@ROOT@\/scripts\/workload-tmux-anchor\.sh$/m);
   assert.match(workloadUnit, /^KillMode=control-group$/m);
   assert.match(workloadUnit, /^OOMPolicy=continue$/m);
+  assert.match(workloadUnit, /^Restart=on-failure$/m);
+  assert.match(workloadUnit, /^RestartSec=2$/m);
 
   const anchor = readFileSync(path.join(projectDir, 'scripts/workload-tmux-anchor.sh'), 'utf8');
-  assert.match(anchor, /tmux start-server \\; set-option -g exit-empty off/);
-  assert.match(anchor, /exec sleep infinity/);
+  assert.match(anchor, /ensure_server ''/);
+  assert.match(anchor, /ensure_server "\$MANAGED_SOCKET"/);
+  assert.match(anchor, /while sleep "\$SUPERVISOR_SECONDS"/);
+  assert.match(anchor, /start-server \\; set-option -g exit-empty off/);
   assert.doesNotMatch(anchor, /\bnew-session\b/);
 
   const isolator = readFileSync(path.join(projectDir, 'scripts/isolate-workload-tmux.sh'), 'utf8');
   assert.match(isolator, /cgroup\.procs/);
   assert.match(isolator, /workload inventory changed during cgroup isolation/);
   assert.match(isolator, /dashboard cgroup changed unexpectedly/);
+  assert.match(isolator, /panefleet-planning-\[a-f0-9\]\{24\}\\\.scope/);
+  assert.doesNotMatch(isolator, /panefleet-planning-\[A-Za-z0-9_/);
+
+  const agentLauncher = readFileSync(path.join(projectDir, 'scripts/run-isolated-agent.sh'), 'utf8');
+  assert.match(agentLauncher, /systemd-run --user --scope --quiet --collect/);
+  assert.match(agentLauncher, /--property="MemoryHigh=\$MEMORY_HIGH"/);
+  assert.match(agentLauncher, /PANEFLEET_AGENT_MEMORY_HIGH/);
+  assert.match(agentLauncher, /--property="MemoryMax=\$MEMORY_MAX"/);
+  assert.match(agentLauncher, /--property="MemorySwapMax=\$MEMORY_SWAP_MAX"/);
+  assert.match(agentLauncher, /--property=TasksMax=256/);
+  assert.match(agentLauncher, /--property=ManagedOOMMemoryPressure=auto/);
+  assert.match(agentLauncher, /--property=ManagedOOMSwap=auto/);
+  assert.doesNotMatch(agentLauncher, /ManagedOOMMemoryPressureLimit/);
+  assert.match(agentLauncher, /planning sessions require the dedicated planning launcher/);
+  assert.match(agentLauncher, /write_state crashed "\$exit_code"/);
+});
+
+test('isolated agent launcher records normal and failed scope exits without interpreting the command', () => {
+  const fixture = lifecycleFixture();
+  const stateDir = path.join(fixture.directory, 'agent-runtime');
+  const env = { ...fixture.env, PANEFLEET_AGENT_STATE_DIR: stateDir };
+  const command = 'codex resume 11111111-2222-3333-4444-555555555555 --yolo';
+  const planning = spawnSync('/bin/bash', [
+    path.join(projectDir, 'scripts/run-isolated-agent.sh'),
+    'codex-planning-deadbeef',
+    command
+  ], {
+    cwd: projectDir,
+    env,
+    encoding: 'utf8',
+    timeout: LIFECYCLE_SCRIPT_TIMEOUT_MS
+  });
+  assert.equal(planning.status, 2);
+  assert.match(planning.stderr, /planning sessions require the dedicated planning launcher/);
+  assert.equal(existsSync(path.join(stateDir, 'codex-planning-deadbeef.state')), false);
+
+  const normal = spawnSync('/bin/bash', [path.join(projectDir, 'scripts/run-isolated-agent.sh'), 'codex-safe', command], {
+    cwd: projectDir,
+    env,
+    encoding: 'utf8',
+    timeout: LIFECYCLE_SCRIPT_TIMEOUT_MS
+  });
+  assert.equal(normal.status, 0, normal.stderr);
+  assert.match(readFileSync(path.join(stateDir, 'codex-safe.state'), 'utf8'), /state=exited\nexit_code=0/);
+  const normalLog = readCommandLog(fixture);
+  assert.match(normalLog, /systemd-run <--user> <--scope> <--quiet> <--collect>/);
+  assert.match(normalLog, /<--property=MemoryHigh=3G>/);
+  assert.match(normalLog, /<--property=MemoryMax=4G>/);
+  assert.match(normalLog, /<--property=MemorySwapMax=4G>/);
+  assert.match(normalLog, /<--property=TasksMax=256>/);
+  assert.match(normalLog, /<--property=ManagedOOMMemoryPressure=auto>/);
+  assert.match(normalLog, /<--property=ManagedOOMSwap=auto>/);
+  assert.match(normalLog, new RegExp(`<bash> <-lc> <${command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}>`));
+
+  fixture.env.ORCH_TEST_SYSTEMD_RUN_COLLISION = '1';
+  const failed = spawnSync('/bin/bash', [path.join(projectDir, 'scripts/run-isolated-agent.sh'), 'codex-safe', command], {
+    cwd: projectDir,
+    env: { ...fixture.env, PANEFLEET_AGENT_STATE_DIR: stateDir },
+    encoding: 'utf8',
+    timeout: LIFECYCLE_SCRIPT_TIMEOUT_MS
+  });
+  assert.equal(failed.status, 1);
+  assert.match(readFileSync(path.join(stateDir, 'codex-safe.state'), 'utf8'), /state=crashed\nexit_code=1/);
 });
 
 test('browser restart scheduling escapes the dashboard cgroup through one fixed user-systemd helper', () => {
@@ -342,10 +417,12 @@ test('control-plane status reports an absent workload tmux server without silent
   const result = runScript('scripts/control-plane-status.sh', [], fixture);
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /isolation=ok/);
+  assert.match(result.stdout, /isolation=attention/);
   assert.match(result.stdout, /workload_tmux=absent/);
   assert.match(result.stdout, /workload_cgroup=absent/);
   assert.match(result.stdout, /workloads=0/);
+  assert.match(result.stdout, /managed_tmux=absent/);
+  assert.match(result.stdout, /managed_cgroup=absent/);
 });
 
 test('control-plane status reports a separate workload cgroup', () => {
@@ -358,6 +435,8 @@ test('control-plane status reports a separate workload cgroup', () => {
   assert.match(result.stdout, /isolation=ok/);
   assert.match(result.stdout, /workload_tmux=present/);
   assert.match(result.stdout, /workload_cgroup=separate/);
+  assert.match(result.stdout, /managed_tmux=present/);
+  assert.match(result.stdout, /managed_cgroup=separate/);
 });
 
 test('lifecycle helpers reject unsafe systemd unit names before filesystem or host mutation', () => {
@@ -552,7 +631,84 @@ test('fresh install starts a loopback systemd unit without touching tmux', () =>
   const unit = readFileSync(installedUnit, 'utf8');
   assert.match(unit, /^Environment=HOST=127\.0\.0\.1$/m);
   assert.match(unit, /^Environment=PORT=8787$/m);
+  assert.match(unit, /^Environment="ORCHESTRATOR_PLANNING_CODEX_MODE=disabled"$/m);
+  assert.match(unit, /^Environment="ORCHESTRATOR_PLANNING_CODEX_EXECUTABLE="$/m);
+  assert.match(unit, /^Environment="ORCHESTRATOR_PLANNING_CODEX_VERSION="$/m);
+  assert.match(unit, /^Environment="ORCHESTRATOR_PLANNING_CODEX_SHA256="$/m);
   assert.doesNotMatch(unit, /@[A-Z_]+@/);
+});
+
+test('installer records the canonical native Planning Codex version and SHA-256 pin', () => {
+  const fixture = lifecycleFixture();
+  const source = path.join(fixture.directory, 'planning-codex.c');
+  const specialDirectory = path.join(fixture.directory, 'Planning % "quoted" back\\slash & pipe|');
+  mkdirSync(specialDirectory);
+  const executable = path.join(specialDirectory, 'planning codex');
+  writeFileSync(source, [
+    '#include <stdio.h>',
+    '#include <string.h>',
+    'int main(int argc, char **argv) {',
+    '  if (argc == 2 && strcmp(argv[1], "--version") == 0) { puts("codex-cli 0.147.0"); return 0; }',
+    '  return 97;',
+    '}',
+    ''
+  ].join('\n'));
+  const compiled = spawnSync('/usr/bin/cc', ['-O2', '-s', '-o', executable, source], { encoding: 'utf8' });
+  assert.equal(compiled.status, 0, compiled.stderr);
+  chmodSync(executable, 0o700);
+  fixture.env.ORCH_PLANNING_CODEX_MODE = 'required';
+  fixture.env.ORCH_PLANNING_CODEX_EXECUTABLE = executable;
+  const injectedMarker = path.join(fixture.directory, 'node-options-loaded');
+  const injectedModule = path.join(fixture.directory, 'node-options.cjs');
+  writeFileSync(injectedModule, `require('node:fs').writeFileSync(${JSON.stringify(injectedMarker)}, 'loaded');\n`);
+  fixture.env.NODE_OPTIONS = `--require=${injectedModule}`;
+  fixture.env.NODE_PATH = path.join(fixture.directory, 'untrusted-node-path');
+
+  const result = runScript('scripts/install-control-plane.sh', [], fixture);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const installedUnit = path.join(fixture.configDir, 'systemd', 'user', 'agent-orchestrator-test.service');
+  const unit = readFileSync(installedUnit, 'utf8');
+  const digest = createHash('sha256').update(readFileSync(executable)).digest('hex');
+  const escapedExecutable = executable
+    .replaceAll('\\', '\\\\')
+    .replaceAll('"', '\\"')
+    .replaceAll('%', '%%');
+  assert.match(unit, /^Environment="ORCHESTRATOR_PLANNING_CODEX_MODE=required"$/m);
+  assert.ok(unit.includes(`Environment="ORCHESTRATOR_PLANNING_CODEX_EXECUTABLE=${escapedExecutable}"`));
+  assert.match(unit, /^Environment="ORCHESTRATOR_PLANNING_CODEX_VERSION=0\.147\.0"$/m);
+  assert.ok(unit.includes(`Environment="ORCHESTRATOR_PLANNING_CODEX_SHA256=${digest}"`));
+  assert.equal(existsSync(injectedMarker), false, 'installer must not pass NODE_OPTIONS to Node');
+  assert.doesNotMatch(unit, /@[A-Z_]+@/);
+});
+
+test('required Planning resolution failure leaves an existing unit and workload inventory untouched', () => {
+  const fixture = lifecycleFixture();
+  fixture.env.ORCH_PLANNING_CODEX_MODE = 'required';
+  fixture.env.ORCH_PLANNING_CODEX_EXECUTABLE = 'relative/unverified-codex';
+  const unitDirectory = path.join(fixture.configDir, 'systemd', 'user');
+  const unitPath = path.join(unitDirectory, 'agent-orchestrator-test.service');
+  mkdirSync(unitDirectory, { recursive: true });
+  writeFileSync(unitPath, 'existing-unit-must-remain\n', { mode: 0o600 });
+  const before = readTmuxState(fixture);
+
+  const result = runScript('scripts/install-control-plane.sh', [], fixture);
+
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /Planning Codex resolution failed/);
+  assert.equal(readFileSync(unitPath, 'utf8'), 'existing-unit-must-remain\n');
+  assert.equal(readCommandLog(fixture), '');
+  assert.deepEqual(readTmuxState(fixture), before);
+});
+
+test('installer rejects an unknown Planning Codex mode before systemd or tmux mutation', () => {
+  const fixture = lifecycleFixture();
+  fixture.env.ORCH_PLANNING_CODEX_MODE = 'automatic';
+  const before = readTmuxState(fixture);
+  const result = runScript('scripts/install-control-plane.sh', [], fixture);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /invalid ORCH_PLANNING_CODEX_MODE/);
+  assert.equal(readCommandLog(fixture), '');
+  assert.deepEqual(readTmuxState(fixture), before);
 });
 
 test('install refuses an unsupported Node runtime before systemd or tmux mutation', () => {

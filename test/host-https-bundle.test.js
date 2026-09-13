@@ -15,6 +15,8 @@ test('Caddy template terminates only approved names onto loopback backends', asy
   assert.match(source, /dns route53/);
   assert.match(source, /hosted_zone_id \{\$ROUTE53_HOSTED_ZONE_ID\}/);
   assert.match(source, /\{\$PANEFLEET_HTTPS_HOST\}[\s\S]*reverse_proxy 127\.0\.0\.1:8787/);
+  assert.match(source, /\{\$PANEFLEET_HTTPS_HOST\}[\s\S]*header_up -Authorization/);
+  assert.doesNotMatch(source, /\bbasic_auth\b|\bbasicauth\b/);
   assert.match(source, /\{\$COMPANION_HTTPS_HOST\}[\s\S]*reverse_proxy 127\.0\.0\.1:8104/);
   assert.doesNotMatch(source, /reverse_proxy\s+(?:0\.0\.0\.0|\[?::\]?)/);
   assert.doesNotMatch(source, /^\s*log\s*(?:\{|$)/m);
@@ -38,6 +40,13 @@ test('Caddy overwrites the one trusted address and removes alternate forwarding 
   ]) {
     assert.match(source, new RegExp(`header_up -${header.replaceAll('-', '\\-')}`));
   }
+});
+
+test('PaneFleet device-auth override selects the persistent login boundary explicitly', async () => {
+  const source = await readFile(bundle('panefleet-device-auth.conf'), 'utf8');
+  assert.match(source, /^\[Service\]$/m);
+  assert.match(source, /^Environment=ORCHESTRATOR_ACCESS_MODE=device-session$/m);
+  assert.doesNotMatch(source, /PASSWORD|TOKEN|SECRET|KEY/);
 });
 
 test('Route 53 policy grants only exact-zone ACME TXT access', async () => {

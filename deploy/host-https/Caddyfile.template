@@ -42,8 +42,11 @@
 {$PANEFLEET_HTTPS_HOST} {
 	import route53_tls
 	import private_response_headers
+	# PaneFleet owns the normal form login and persistent device session.
+	# The edge must not add a browser-native Basic Auth challenge.
 	reverse_proxy 127.0.0.1:8787 {
 		import trusted_backend_headers
+		header_up -Authorization
 		stream_close_delay 5m
 	}
 }

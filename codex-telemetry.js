@@ -4,6 +4,10 @@ import { open, readdir, readlink, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 const DEFAULT_TAIL_BYTES = 4 * 1024 * 1024;
+const DEFAULT_METADATA_BYTES = 256 * 1024;
+const DELIVERY_RESULT_TAIL_BYTES = 8 * 1024 * 1024;
+const LATEST_RESPONSE_TAIL_BYTES = 2 * 1024 * 1024;
+const LATEST_RESPONSE_MAX_CHARACTERS = 96 * 1024;
 const USAGE_STORE_VERSION = 1;
 const USAGE_RETENTION_DAYS = 90;
 const USAGE_STATS_DAYS = 30;
@@ -174,25 +178,311 @@ function sandboxLabel(value) {
   return boundedText(value.type);
 }
 
+function responseMessageText(payload) {
+  if (!payload || payload.type !== 'message' || !Array.isArray(payload.content)) return '';
+  return payload.content
+    .map((item) => typeof item?.text === 'string' ? item.text : '')
+    .filter(Boolean)
+    .join('\n');
+}
+
+function codexResultReadError(code, message, details = {}) {
+  const error = new Error(message);
+  error.code = code;
+  Object.assign(error, details);
+  return error;
+}
+
+async function readFileRange(filePath, startOffset, maximumBytes, {
+  errorPrefix = 'codex_delivery_result',
+  resultLabel = 'Codex rollout result',
+  changingLabel = 'Codex rollout',
+  rangeLabel = 'result'
+} = {}) {
+  const handle = await open(filePath, 'r');
+  try {
+    const details = await handle.stat();
+    if (!details.isFile()) {
+      throw codexResultReadError(
+        `${errorPrefix}_not_file`,
+        `The ${resultLabel} source is not a regular file.`
+      );
+    }
+    if (startOffset > details.size) {
+      throw codexResultReadError(
+        `${errorPrefix}_offset_past_end`,
+        'The persisted Codex rollout offset is beyond the current file size.',
+        { startOffset, endOffset: details.size }
+      );
+    }
+    const length = details.size - startOffset;
+    if (length > maximumBytes) {
+      throw codexResultReadError(
+        `${errorPrefix}_window_exceeded`,
+        `The ${resultLabel} window exceeded the configured byte limit.`,
+        { startOffset, endOffset: details.size, maximumBytes }
+      );
+    }
+
+    let startsAtRecordBoundary = startOffset === 0;
+    if (startOffset > 0) {
+      const preceding = Buffer.alloc(1);
+      const precedingRead = await handle.read(preceding, 0, 1, startOffset - 1);
+      if (precedingRead.bytesRead !== 1) {
+        throw codexResultReadError(
+          `${errorPrefix}_read_incomplete`,
+          `The ${changingLabel} changed while its ${rangeLabel} boundary was being read.`,
+          { startOffset, endOffset: details.size, maximumBytes }
+        );
+      }
+      startsAtRecordBoundary = preceding[0] === 0x0a;
+    }
+
+    const buffer = Buffer.alloc(length);
+    let bytesRead = 0;
+    while (bytesRead < length) {
+      const read = await handle.read(buffer, bytesRead, length - bytesRead, startOffset + bytesRead);
+      if (!read.bytesRead) break;
+      bytesRead += read.bytesRead;
+    }
+    if (bytesRead !== length) {
+      throw codexResultReadError(
+        `${errorPrefix}_read_incomplete`,
+        `The ${changingLabel} changed while its ${rangeLabel} window was being read.`,
+        { startOffset, endOffset: details.size, maximumBytes }
+      );
+    }
+
+    const firstCompleteRecordOffset = startsAtRecordBoundary ? 0 : buffer.indexOf(0x0a) + 1;
+    return {
+      text: firstCompleteRecordOffset > 0
+        ? buffer.subarray(firstCompleteRecordOffset).toString('utf8')
+        : startsAtRecordBoundary
+          ? buffer.toString('utf8')
+          : '',
+      startOffset,
+      endOffset: details.size,
+      skippedPartialRecord: !startsAtRecordBoundary
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function readCodexFinalAnswer(filePath, {
+  confirmationMarker,
+  confirmationMarkerPattern,
+  submittedAt,
+  startOffset,
+  maximumBytes = DELIVERY_RESULT_TAIL_BYTES,
+  maximumWindowBytes = DELIVERY_RESULT_TAIL_BYTES,
+  errorPrefix = 'codex_final_answer',
+  resultLabel = 'Codex rollout final answer',
+  changingLabel = 'Codex rollout',
+  rangeLabel = 'final-answer',
+  requireSingleFinalAnswer = false
+} = {}) {
+  if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) return null;
+  const marker = String(confirmationMarker || '');
+  const notBefore = Date.parse(String(submittedAt || ''));
+  const markerPattern = confirmationMarkerPattern instanceof RegExp
+    && !confirmationMarkerPattern.global
+    && !confirmationMarkerPattern.sticky
+    && confirmationMarkerPattern.source.startsWith('^')
+    && confirmationMarkerPattern.source.endsWith('$')
+    ? confirmationMarkerPattern
+    : null;
+  if (!markerPattern || !markerPattern.test(marker) || !Number.isFinite(notBefore)) return null;
+  const normalizedErrorPrefix = /^[a-z][a-z0-9_]{0,63}$/.test(errorPrefix)
+    ? errorPrefix
+    : 'codex_final_answer';
+  const normalizedResultLabel = boundedText(resultLabel, 80) || 'Codex rollout final answer';
+  const normalizedChangingLabel = boundedText(changingLabel, 80) || 'Codex rollout';
+  const normalizedRangeLabel = boundedText(rangeLabel, 80) || 'final-answer';
+  const hasPersistedOffset = startOffset !== undefined && startOffset !== null;
+  if (hasPersistedOffset && (!Number.isSafeInteger(startOffset) || startOffset < 0)) {
+    throw codexResultReadError(
+      `${normalizedErrorPrefix}_offset_invalid`,
+      'The persisted Codex rollout offset must be a non-negative safe integer.'
+    );
+  }
+  const maximumWindow = Math.max(1, Math.min(
+    DELIVERY_RESULT_TAIL_BYTES,
+    Math.floor(Number(maximumWindowBytes) || DELIVERY_RESULT_TAIL_BYTES)
+  ));
+  const boundedMaximum = Math.max(1, Math.min(
+    maximumWindow,
+    Math.floor(Number(maximumBytes) || maximumWindow)
+  ));
+  // A legacy caller without an offset may only scan a bounded whole file. It
+  // must never fall back to a tail because that could omit the marker-bearing
+  // user turn while still accepting a later assistant result.
+  const range = await readFileRange(filePath, hasPersistedOffset ? startOffset : 0, boundedMaximum, {
+    errorPrefix: normalizedErrorPrefix,
+    resultLabel: normalizedResultLabel,
+    changingLabel: normalizedChangingLabel,
+    rangeLabel: normalizedRangeLabel
+  });
+  let matchedPrompt = false;
+  let superseded = false;
+  let latestContext = null;
+  let final = null;
+  let finalAnswerCount = 0;
+  let promptAt = '';
+  for (const line of range.text.split('\n')) {
+    if (!line.trim()) continue;
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    const eventAt = Date.parse(String(event?.timestamp || ''));
+    if (!Number.isFinite(eventAt) || eventAt < notBefore) continue;
+    if (event?.type === 'turn_context' && event.payload && typeof event.payload === 'object') {
+      if (matchedPrompt && !superseded) latestContext = { payload: event.payload, at: new Date(eventAt).toISOString() };
+      continue;
+    }
+    if (event?.type !== 'response_item') continue;
+    const payload = event.payload;
+    const message = responseMessageText(payload);
+    if (!message) continue;
+    if (payload.role === 'user') {
+      if (!matchedPrompt && message.includes(marker)) {
+        matchedPrompt = true;
+        superseded = false;
+        promptAt = new Date(eventAt).toISOString();
+        latestContext = null;
+        final = null;
+      } else if (matchedPrompt) {
+        superseded = true;
+        final = null;
+      }
+      continue;
+    }
+    if (
+      matchedPrompt
+      && !superseded
+      && payload.role === 'assistant'
+      && payload.phase === 'final_answer'
+    ) {
+      finalAnswerCount += 1;
+      const authority = latestContext?.payload || {};
+      const sandboxPolicy = authority.sandbox_policy;
+      const sandbox = sandboxLabel(sandboxPolicy);
+      const approvalPolicy = boundedText(authority.approval_policy);
+      const networkAccessObserved = typeof sandboxPolicy?.network_access === 'boolean';
+      final = {
+        text: message,
+        at: new Date(eventAt).toISOString(),
+        sandbox,
+        approvalPolicy,
+        networkAccess: networkAccessObserved ? sandboxPolicy.network_access : null,
+        networkAccessObserved,
+        authority: {
+          promptAt,
+          contextAt: latestContext?.at || null,
+          sandboxObserved: Boolean(sandbox),
+          approvalPolicyObserved: Boolean(approvalPolicy),
+          networkAccessObserved,
+          startOffset: range.startOffset,
+          endOffset: range.endOffset,
+          skippedPartialRecord: range.skippedPartialRecord
+        }
+      };
+    }
+  }
+  if (requireSingleFinalAnswer && finalAnswerCount !== 1) return null;
+  return matchedPrompt && !superseded ? final : null;
+}
+
+export async function readCodexDeliveryResult(filePath, options = {}) {
+  return readCodexFinalAnswer(filePath, {
+    ...options,
+    confirmationMarkerPattern: /^\[PaneFleet Dispatch attempt-[a-z0-9-]{8,64}\]$/,
+    maximumWindowBytes: DELIVERY_RESULT_TAIL_BYTES,
+    errorPrefix: 'codex_delivery_result',
+    resultLabel: 'Codex rollout result',
+    changingLabel: 'Codex rollout',
+    rangeLabel: 'result',
+    requireSingleFinalAnswer: false
+  });
+}
+
+export async function readCodexLatestFinalResponse(filePath, {
+  maximumBytes = LATEST_RESPONSE_TAIL_BYTES,
+  maximumCharacters = LATEST_RESPONSE_MAX_CHARACTERS
+} = {}) {
+  if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) return null;
+  const boundedMaximumBytes = Math.max(1024, Math.min(
+    LATEST_RESPONSE_TAIL_BYTES,
+    Math.floor(Number(maximumBytes) || LATEST_RESPONSE_TAIL_BYTES)
+  ));
+  const boundedMaximumCharacters = Math.max(1024, Math.min(
+    LATEST_RESPONSE_MAX_CHARACTERS,
+    Math.floor(Number(maximumCharacters) || LATEST_RESPONSE_MAX_CHARACTERS)
+  ));
+  const details = await stat(filePath);
+  if (!details.isFile()) return null;
+  const startOffset = Math.max(0, details.size - boundedMaximumBytes);
+  const range = await readFileRange(filePath, startOffset, boundedMaximumBytes, {
+    errorPrefix: 'codex_latest_response',
+    resultLabel: 'latest Codex response',
+    changingLabel: 'Codex rollout',
+    rangeLabel: 'latest-response'
+  });
+  let latest = null;
+  for (const line of range.text.split('\n')) {
+    if (!line.trim()) continue;
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (
+      event?.type !== 'response_item'
+      || event.payload?.role !== 'assistant'
+      || event.payload?.phase !== 'final_answer'
+    ) continue;
+    const text = responseMessageText(event.payload)
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
+    const at = isoTimestamp(event.timestamp);
+    if (!text || !at) continue;
+    const truncated = text.length > boundedMaximumCharacters;
+    latest = {
+      text: truncated
+        ? `${text.slice(0, boundedMaximumCharacters)}\n\n[Response truncated by PaneFleet]`
+        : text,
+      at,
+      truncated
+    };
+  }
+  return latest;
+}
+
 export function parseCodexTelemetryText(text) {
+  let sessionMeta = null;
   let turnContext = null;
   let tokenEvent = null;
+  let turnState = 'unknown';
   for (const line of String(text || '').split('\n')) {
     if (!line.trim()) continue;
     try {
       const event = JSON.parse(line);
+      if (event?.type === 'session_meta' && event.payload && typeof event.payload === 'object') {
+        sessionMeta = event;
+      }
       if (event?.type === 'turn_context' && event.payload && typeof event.payload === 'object') {
         turnContext = event;
       }
       if (event?.type === 'event_msg' && event.payload?.type === 'token_count') {
         tokenEvent = event;
       }
+      if (event?.type === 'event_msg' && event.payload?.type === 'task_started') {
+        turnState = 'active';
+      }
+      if (event?.type === 'event_msg' && event.payload?.type === 'task_complete') {
+        turnState = 'idle';
+      }
     } catch {
       // A tail read can begin midway through a JSONL record. Complete later
       // records remain usable, so malformed fragments are deliberately skipped.
     }
   }
-  if (!turnContext && !tokenEvent) return null;
+  if (!sessionMeta && !turnContext && !tokenEvent) return null;
 
   const total = normalizedTokenUsage(tokenEvent?.payload?.info?.total_token_usage);
   const last = normalizedTokenUsage(tokenEvent?.payload?.info?.last_token_usage);
@@ -212,7 +502,10 @@ export function parseCodexTelemetryText(text) {
       }
     : null;
   const turn = turnContext?.payload || {};
-  const observedAt = tokenEvent?.timestamp || turnContext?.timestamp || null;
+  const sandboxPolicy = turn.sandbox_policy && typeof turn.sandbox_policy === 'object' && !Array.isArray(turn.sandbox_policy)
+    ? turn.sandbox_policy
+    : null;
+  const observedAt = tokenEvent?.timestamp || turnContext?.timestamp || sessionMeta?.timestamp || null;
   return {
     source: 'codex-session-log',
     observedAt: Number.isFinite(Date.parse(observedAt || '')) ? new Date(observedAt).toISOString() : null,
@@ -220,6 +513,10 @@ export function parseCodexTelemetryText(text) {
     effort: boundedText(turn.effort || turn.collaboration_mode?.settings?.reasoning_effort),
     approvalPolicy: boundedText(turn.approval_policy),
     sandbox: sandboxLabel(turn.sandbox_policy),
+    networkAccess: typeof sandboxPolicy?.network_access === 'boolean' ? sandboxPolicy.network_access : null,
+    networkAccessObserved: typeof sandboxPolicy?.network_access === 'boolean',
+    rolloutId: boundedText(sessionMeta?.payload?.id, 80),
+    turnState,
     context,
     sessionTokens: total,
     lastTurnTokens: last,
@@ -227,33 +524,93 @@ export function parseCodexTelemetryText(text) {
   };
 }
 
+export function parseCodexRolloutLineageText(text) {
+  for (const line of String(text || '').split('\n')) {
+    if (!line.includes('"session_meta"')) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (event?.type !== 'session_meta' || !event.payload || typeof event.payload !== 'object' || Array.isArray(event.payload)) {
+      continue;
+    }
+    const payload = event.payload;
+    const source = payload.source;
+    const subagentSource = Boolean(
+      source && typeof source === 'object' && !Array.isArray(source) && Object.hasOwn(source, 'subagent')
+    ) || (typeof source === 'string' && /sub[-_ ]?agent/i.test(source));
+    const parented = [
+      payload.parent_thread_id,
+      payload.parentThreadId,
+      payload.forked_from_id,
+      payload.forkedFromId
+    ].some((value) => typeof value === 'string' && value.length > 0);
+    return {
+      rootInteractive: !subagentSource && !parented,
+      subagent: subagentSource,
+      parented
+    };
+  }
+  return null;
+}
+
 function isInsideRoot(candidate, root) {
   const relative = path.relative(root, candidate);
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-export async function codexRolloutForPid(pid, { sessionsRoot, procRoot = '/proc' } = {}) {
+async function codexRolloutCandidatesForPid(pid, { sessionsRoot, procRoot = '/proc' } = {}) {
   const numericPid = Number(pid);
-  if (!Number.isInteger(numericPid) || numericPid < 1 || !sessionsRoot) return null;
+  if (!Number.isInteger(numericPid) || numericPid < 1 || !sessionsRoot) return [];
   let canonicalRoot;
   let descriptors;
   try {
     canonicalRoot = await realpath(sessionsRoot);
     descriptors = await readdir(path.join(procRoot, String(numericPid), 'fd'));
   } catch {
-    return null;
+    return [];
   }
+  const candidates = new Map();
   for (const descriptor of descriptors) {
     try {
       const descriptorPath = path.join(procRoot, String(numericPid), 'fd', descriptor);
       const target = await readlink(descriptorPath);
       const candidate = await realpath(path.isAbsolute(target) ? target : path.resolve(path.dirname(descriptorPath), target));
-      if (candidate.endsWith('.jsonl') && isInsideRoot(candidate, canonicalRoot)) return candidate;
+      if (!candidate.endsWith('.jsonl') || !isInsideRoot(candidate, canonicalRoot)) continue;
+      const details = await stat(candidate);
+      if (!details.isFile()) continue;
+      const previous = candidates.get(candidate);
+      if (!previous || details.mtimeMs > previous.modifiedAtMs) {
+        candidates.set(candidate, {
+          path: candidate,
+          modifiedAtMs: details.mtimeMs,
+          descriptor: Number.isInteger(Number(descriptor)) ? Number(descriptor) : -1
+        });
+      }
     } catch {
       // Process descriptors can disappear while they are being inspected.
     }
   }
-  return null;
+  return [...candidates.values()].sort((left, right) => (
+    right.modifiedAtMs - left.modifiedAtMs
+    || right.descriptor - left.descriptor
+    || left.path.localeCompare(right.path)
+  ));
+}
+
+export async function codexRolloutForPid(pid, options = {}) {
+  const candidates = await codexRolloutCandidatesForPid(pid, options);
+  if (!candidates.length) return null;
+  const inspected = await Promise.all(candidates.map(async (candidate) => {
+    try {
+      return { candidate, lineage: await readCodexRolloutLineage(candidate.path, options) };
+    } catch {
+      return { candidate, lineage: null };
+    }
+  }));
+  return (inspected.find(({ lineage }) => lineage?.rootInteractive === true) || inspected[0])?.candidate.path || null;
 }
 
 export async function readCodexTelemetryFile(filePath, { maximumBytes = DEFAULT_TAIL_BYTES } = {}) {
@@ -283,31 +640,64 @@ export async function readCodexTelemetryFile(filePath, { maximumBytes = DEFAULT_
   return value;
 }
 
+export async function readCodexRolloutLineage(filePath, { maximumBytes = DEFAULT_METADATA_BYTES } = {}) {
+  const details = await stat(filePath);
+  const boundedMaximum = Math.max(1024, Math.min(DEFAULT_METADATA_BYTES, Math.floor(finiteNonNegative(maximumBytes) || DEFAULT_METADATA_BYTES)));
+  const length = Math.min(details.size, boundedMaximum);
+  const buffer = Buffer.alloc(length);
+  const handle = await open(filePath, 'r');
+  try {
+    await handle.read(buffer, 0, length, 0);
+  } finally {
+    await handle.close();
+  }
+  return parseCodexRolloutLineageText(buffer.toString('utf8'));
+}
+
 export async function readCodexTelemetryForPids(pids, options = {}) {
   const uniquePids = [...new Set((Array.isArray(pids) ? pids : []).map(Number).filter((pid) => Number.isInteger(pid) && pid > 0))];
-  const candidates = [];
+  const candidates = new Map();
   for (const pid of uniquePids) {
-    const rollout = await codexRolloutForPid(pid, options);
-    if (!rollout || candidates.includes(rollout)) continue;
-    candidates.push(rollout);
+    for (const candidate of await codexRolloutCandidatesForPid(pid, options)) {
+      const existing = candidates.get(candidate.path) || { sourcePids: [], modifiedAtMs: 0 };
+      existing.sourcePids.push(pid);
+      existing.modifiedAtMs = Math.max(existing.modifiedAtMs, candidate.modifiedAtMs);
+      candidates.set(candidate.path, existing);
+    }
   }
-  const results = await Promise.all(candidates.map(async (candidate) => {
+  const results = await Promise.all([...candidates.entries()].map(async ([candidate, observation]) => {
     try {
-      const telemetry = await readCodexTelemetryFile(candidate, options);
+      const [telemetry, lineage] = await Promise.all([
+        readCodexTelemetryFile(candidate, options),
+        readCodexRolloutLineage(candidate, options)
+      ]);
       return telemetry
         ? {
-            ...telemetry,
-            sourceId: codexUsageSourceId(candidate),
-            rolloutPath: candidate
+            modifiedAtMs: observation.modifiedAtMs,
+            telemetry: {
+              ...telemetry,
+              rootInteractive: lineage?.rootInteractive === true,
+              rolloutId: telemetry.rolloutId || path.basename(candidate).match(/([0-9a-f]{8}-[0-9a-f-]{27,})\.jsonl$/i)?.[1] || '',
+              sourceId: codexUsageSourceId(candidate),
+              rolloutPath: candidate,
+              sourcePids: [...new Set(observation.sourcePids)].sort((left, right) => left - right),
+              candidateCount: candidates.size
+            }
           }
         : null;
     } catch {
       return null;
     }
   }));
-  return results
-    .filter(Boolean)
-    .sort((left, right) => Date.parse(right.observedAt || '') - Date.parse(left.observedAt || ''))[0] || null;
+  const readable = results.filter(Boolean);
+  const preferred = readable.some((result) => result.telemetry.rootInteractive === true)
+    ? readable.filter((result) => result.telemetry.rootInteractive === true)
+    : readable;
+  return preferred
+    .sort((left, right) => (
+      right.modifiedAtMs - left.modifiedAtMs
+      || Date.parse(right.telemetry.observedAt || '') - Date.parse(left.telemetry.observedAt || '')
+    ))[0]?.telemetry || null;
 }
 
 export function codexUsageSourceId(filePath) {
@@ -364,7 +754,7 @@ function tokenEventFromLine(line) {
   if (!line.includes('"token_count"')) return null;
   let event;
   try {
-    event = JSON.parse(line);
+    event = JSON.parse(line.toString('utf8'));
   } catch {
     return null;
   }
@@ -387,32 +777,46 @@ export async function readCodexUsageEventBatch(filePath, {
 } = {}) {
   const canonical = await realpath(filePath);
   const details = await stat(canonical);
-  const boundedStart = Number.isSafeInteger(startOffset) && startOffset >= 0 && startOffset <= details.size
-    ? startOffset
-    : 0;
+  const requestedStart = Number.isSafeInteger(startOffset) && startOffset >= 0 ? startOffset : 0;
+  const cursorPastEnd = requestedStart > details.size;
+  const boundedStart = cursorPastEnd ? details.size : requestedStart;
   const events = [];
-  let remainder = Buffer.alloc(0);
+  let fragments = [];
+  let fragmentBytes = 0;
   let nextOffset = boundedStart;
   if (details.size > boundedStart) {
     const stream = createReadStream(canonical, { start: boundedStart, end: details.size - 1 });
     for await (const chunk of stream) {
-      const buffer = remainder.length ? Buffer.concat([remainder, chunk]) : chunk;
       let lineStart = 0;
-      for (let index = buffer.indexOf(0x0a, lineStart); index >= 0; index = buffer.indexOf(0x0a, lineStart)) {
-        let line = buffer.subarray(lineStart, index);
-        if (line.length && line[line.length - 1] === 0x0d) line = line.subarray(0, line.length - 1);
-        const parsed = tokenEventFromLine(line.toString('utf8'));
+      for (let index = chunk.indexOf(0x0a, lineStart); index >= 0; index = chunk.indexOf(0x0a, lineStart)) {
+        const lastFragment = chunk.subarray(lineStart, index);
+        const lineBytes = fragmentBytes + lastFragment.length;
+        // Image/tool records can span hundreds of chunks. Join once at the
+        // newline, not once per chunk (quadratic copying of the growing line).
+        const line = fragments.length
+          ? Buffer.concat([...fragments, lastFragment], lineBytes)
+          : lastFragment;
+        const parsed = tokenEventFromLine(line);
         if (parsed) events.push(parsed);
-        nextOffset += index - lineStart + 1;
+        nextOffset += lineBytes + 1;
+        fragments = [];
+        fragmentBytes = 0;
         lineStart = index + 1;
       }
-      remainder = buffer.subarray(lineStart);
+      if (lineStart < chunk.length) {
+        const fragment = chunk.subarray(lineStart);
+        fragments.push(fragment);
+        fragmentBytes += fragment.length;
+      }
     }
   }
   return {
     sourceId,
     session,
-    startOffset: boundedStart,
+    // Preserve the requested cursor when the rollout shrank so reconciliation
+    // can safely advance the existing cursor to the new EOF without replaying
+    // the retained prefix and double-counting its usage events.
+    startOffset: cursorPastEnd ? requestedStart : boundedStart,
     fileSize: details.size,
     nextOffset,
     completeThrough: details.size === nextOffset,

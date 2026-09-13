@@ -49,8 +49,10 @@ case "$1" in
       printf '%s|%s|0|0|0|1|%s|/dev/pts/77|%s|%s|%s|%s|%s|Codex Worker\\n' \
         'codex-worker' "\${MISSION_SESSION_CREATED:-1700000000}" "$global_pane_pid" "$global_tmux_pane_id" "$pane_dead" "$pane_dead_status" "$pane_command" "$MISSION_FAKE_WORKSPACE"
       if [ -f "$MISSION_SCOUT_STATE_PATH" ]; then
-        printf '%s|%s|0|0|0|1|4300|/dev/pts/79|%%79|0||node|%s|Idea Scout\\n' \
-          'codex-worker-idea-scout' '1700000100' "$MISSION_FAKE_WORKSPACE"
+        scout_command='node'
+        if [ -f "$MISSION_SCOUT_NO_CODEX_PATH" ]; then scout_command='bash'; fi
+        printf '%s|%s|0|0|0|1|4300|/dev/pts/79|%%79|0||%s|%s|Idea Scout\\n' \
+          'codex-worker-idea-scout' '1700000100' "$scout_command" "$MISSION_FAKE_WORKSPACE"
       fi
       if [ -n "$MISSION_EXTRA_WORKSPACE" ]; then
         printf '%s|%s|0|0|0|1|4200|/dev/pts/78|%%78|0||node|%s|Other Codex Worker\\n' \
@@ -78,8 +80,10 @@ case "$1" in
         'codex-worker' "\${MISSION_SESSION_CREATED:-1700000000}" "$pane_command" "$MISSION_FAKE_WORKSPACE" "$tmux_pane_id" "$pane_pid" "$pane_dead" "$pane_dead_status"
       printf '%s\\n' 'tmux:list-exact' >> "$ORCH_TOOL_LOG"
     elif [ "$2" = "-t" ] && [ "$3" = "=codex-worker-idea-scout" ] && [ -f "$MISSION_SCOUT_STATE_PATH" ]; then
+      scout_command='node'
+      if [ -f "$MISSION_SCOUT_NO_CODEX_PATH" ]; then scout_command='bash'; fi
       printf '%s|%s|0|0|1|%s|%s|%s|%s|0|\\n' \
-        'codex-worker-idea-scout' '1700000100' 'node' "$MISSION_FAKE_WORKSPACE" '%79' '4300'
+        'codex-worker-idea-scout' '1700000100' "$scout_command" "$MISSION_FAKE_WORKSPACE" '%79' '4300'
       printf '%s\\n' 'tmux:list-exact-scout' >> "$ORCH_TOOL_LOG"
     else
       printf '%s\\n' 'tmux:unexpected-list' >> "$ORCH_TOOL_LOG"
@@ -566,6 +570,19 @@ case "$1" in
       if [ "$PROMPT_QUEUE_BREAK_PERSIST_AFTER_ENTER" = "1" ]; then
         /usr/bin/chmod 500 "$(/usr/bin/dirname "$PROMPT_QUEUE_PATH")"
       fi
+      if [ "$PROMPT_QUEUE_BREAK_ANSWER_LINK" = "1" ]; then
+        answer_enter_count=0
+        if [ -f "$MISSION_TMUX_STATE_PATH.answer-enter-count" ]; then
+          IFS= read -r answer_enter_count < "$MISSION_TMUX_STATE_PATH.answer-enter-count"
+        fi
+        answer_enter_count=$((answer_enter_count + 1))
+        printf '%s\\n' "$answer_enter_count" > "$MISSION_TMUX_STATE_PATH.answer-enter-count"
+        if [ "$answer_enter_count" -eq 2 ]; then
+          /usr/bin/chmod 500 "$(/usr/bin/dirname "$PROMPT_QUEUE_PATH")"
+        fi
+      fi
+    elif [ "$4" = "Down" ] && [ "$#" -eq 4 ]; then
+      printf '%s\\n' 'tmux:send-picker:Down' >> "$ORCH_TOOL_LOG"
     else
       printf '%s\\n' 'tmux:unexpected-send' >> "$ORCH_TOOL_LOG"
       exit 97
@@ -576,20 +593,40 @@ case "$1" in
     if [ "$2" = "-t" ] && [ "$3" = "=codex-worker-idea-scout" ] && [ -f "$MISSION_SCOUT_STATE_PATH" ]; then exit 0; fi
     exit 1
     ;;
-  new-session)
-    printf 'tmux:new-session:%s\\n' "$*" >> "$ORCH_TOOL_LOG"
-    if [ "$2" != "-d" ] || [ "$3" != "-s" ] || [ "$4" != "codex-worker-idea-scout" ] || [ "$5" != "-c" ] || [ "$6" != "$MISSION_FAKE_WORKSPACE" ]; then exit 97; fi
+	  new-session)
+	    printf 'tmux:new-session:%s\\n' "$*" >> "$ORCH_TOOL_LOG"
+	    if [ -f "$MISSION_SCOUT_FAIL_START_PATH" ]; then
+	      printf '%s\\n' 'synthetic idea scout start failure' >&2
+	      exit 96
+	    fi
+	    if [ "$2" != "-d" ] || [ "$3" != "-s" ] || [ "$4" != "codex-worker-idea-scout" ] || [ "$5" != "-c" ] || [ "$6" != "$MISSION_FAKE_WORKSPACE" ]; then exit 97; fi
     case "$7" in
       *'--sandbox read-only --ask-for-approval never'*) ;;
       *) printf '%s\\n' 'tmux:scout-not-read-only' >> "$ORCH_TOOL_LOG"; exit 97 ;;
     esac
     : > "$MISSION_SCOUT_STATE_PATH"
     ;;
+  list-sessions)
+    if [ "$2" != "-F" ] || [ "$3" != '#{session_name}' ]; then
+      printf '%s\n' 'tmux:unexpected-list-sessions' >> "$ORCH_TOOL_LOG"
+      exit 97
+    fi
+    printf '%s\n' 'tmux:list-sessions' >> "$ORCH_TOOL_LOG"
+    ;;
   *)
     printf 'tmux:unexpected:%s\\n' "$1" >> "$ORCH_TOOL_LOG"
     exit 97
     ;;
 esac
+`);
+
+  installExecutable(fixture.binDir, 'systemctl', `#!/bin/sh
+if [ "$1" = "--user" ] && [ "$2" = "list-units" ]; then
+  printf '%s\n' 'systemctl:planning-scopes' >> "$ORCH_TOOL_LOG"
+  exit 0
+fi
+printf 'systemctl:unexpected:%s\n' "$*" >> "$ORCH_TOOL_LOG"
+exit 97
 `);
 
   installExecutable(fixture.binDir, 'ps', `#!/bin/sh
@@ -601,7 +638,7 @@ if [ "$2" = "pid,ppid,tty,stat,pcpu,pmem,rss,cmd" ]; then
   if [ "$MISSION_NO_CODEX_PROCESS" != "1" ] && [ "$state" != "dead" ]; then
     printf '%s\\n' '4101 4100 pts/77 S+ 0.0 0.2 2000 node codex'
     printf '%s\\n' '4201 4200 pts/78 S+ 0.0 0.2 2000 node codex'
-    if [ -f "$MISSION_SCOUT_STATE_PATH" ]; then
+    if [ -f "$MISSION_SCOUT_STATE_PATH" ] && [ ! -f "$MISSION_SCOUT_NO_CODEX_PATH" ]; then
       printf '%s\\n' '4301 4300 pts/79 S+ 0.0 0.2 2000 node codex --sandbox read-only --ask-for-approval never'
     fi
   fi
@@ -659,6 +696,7 @@ function createFixture() {
   const publicDir = path.join(fixtureDir, 'public');
   const binDir = path.join(fixtureDir, 'blocked-bin');
   const toolLogPath = path.join(fixtureDir, 'external-tools.log');
+  const meminfoPath = path.join(fixtureDir, 'meminfo');
 
   for (const directory of [
     codexHome,
@@ -674,6 +712,13 @@ function createFixture() {
   writeFileSync(path.join(publicDir, 'index.html'), '<!doctype html><title>Mission Queue Test</title>\n');
   writeFileSync(path.join(fixtureDir, 'package.json'), '{"type":"module"}\n');
   writeFileSync(path.join(codexHome, 'models_cache.json'), '{"models":[]}\n');
+  writeFileSync(meminfoPath, [
+    'MemTotal:        2048000 kB',
+    'MemAvailable:    1024000 kB',
+    'SwapTotal:       1048576 kB',
+    'SwapFree:        1048576 kB',
+    ''
+  ].join('\n'));
 
   // Queue CRUD must remain pure filesystem work. Any accidental host inspection
   // is contained, logged, and fails the test.
@@ -689,6 +734,7 @@ function createFixture() {
     extraWorkspaceRoot,
     binDir,
     toolLogPath,
+    meminfoPath,
     queuePath: path.join(fixtureDir, 'data', 'mission-queue.json'),
     promptQueuePath: path.join(fixtureDir, 'data', 'prompt-queue.json'),
     tmuxInputPath: path.join(fixtureDir, 'tmux-input'),
@@ -714,6 +760,7 @@ async function startServer(fixture, envOverrides = {}) {
       ORCHESTRATOR_PROJECTS_ROOT: fixture.projectsRoot,
       ORCHESTRATOR_AGENT_WORKSPACES_ROOT: fixture.agentWorkspacesRoot,
       ORCHESTRATOR_EXTRA_WORKSPACE_ROOTS: fixture.extraWorkspaceRoot,
+      ORCHESTRATOR_MEMINFO_PATH: fixture.meminfoPath,
       MISSION_FAKE_WORKSPACE: fixture.alphaWorkspace,
       MISSION_QUEUE_PATH: fixture.queuePath,
       PROMPT_QUEUE_PATH: fixture.promptQueuePath,
@@ -723,6 +770,8 @@ async function startServer(fixture, envOverrides = {}) {
       MISSION_TMUX_RENDER_COUNT_PATH: path.join(fixture.fixtureDir, 'tmux-render-count'),
       MISSION_TMUX_CONFIRM_COUNT_PATH: path.join(fixture.fixtureDir, 'tmux-confirm-count'),
       MISSION_SCOUT_STATE_PATH: path.join(fixture.fixtureDir, 'idea-scout-state'),
+      MISSION_SCOUT_FAIL_START_PATH: path.join(fixture.fixtureDir, 'idea-scout-fail-start'),
+      MISSION_SCOUT_NO_CODEX_PATH: path.join(fixture.fixtureDir, 'idea-scout-no-codex'),
       MISSION_LITERAL_CONFIRM_MS: '400',
       MISSION_SUBMIT_CONFIRM_MS: '500',
       MISSION_CONFIRM_SAMPLE_MS: '20',
@@ -748,11 +797,11 @@ async function startServer(fixture, envOverrides = {}) {
   const cookie = (index.headers.get('set-cookie') || '').split(';', 1)[0];
   assert.match(cookie, /^host_control_session=/);
 
-  const request = (pathname, body) => rawRequest(pathname, {
+  const request = (pathname, body, timeoutMs = 3000) => rawRequest(pathname, {
     method: 'POST',
     headers: { cookie, 'content-type': 'application/json' },
     body: JSON.stringify(body)
-  });
+  }, timeoutMs);
 
   return {
     child,
@@ -931,6 +980,174 @@ test('a ready mission persists across restart without automatic dispatch', async
       'mission.backlog'
     ]);
     assert.equal(toolLog(fixture), '');
+  } finally {
+    if (server) await server.stop();
+    rmSync(fixture.fixtureDir, { recursive: true, force: true });
+  }
+});
+
+test('Mission dispatch preflight rejects stale state and unsafe worker targets without terminal input', async (t) => {
+  await t.test('request and durable-state guards run before pane inspection', async () => {
+    const fixture = createFixture();
+    installDispatchTools(fixture);
+    let server;
+    try {
+      server = await startServer(fixture);
+      await assertRequestError(await server.request('/api/missions/mission-missing-12345678/dispatch', {
+        expectedRevision: 1,
+        session: 'codex-worker'
+      }), 404, 'mission_not_found');
+
+      const backlog = (await responseJson(await server.request('/api/missions/create', missionBody(
+        fixture.alphaWorkspace,
+        { title: 'Keep this mission held', status: 'backlog' }
+      )))).job;
+      await assertRequestError(await server.request(`/api/missions/${backlog.id}/dispatch`, {
+        expectedRevision: backlog.revision,
+        session: 'codex-worker'
+      }), 409, 'mission_not_ready');
+
+      const ready = (await responseJson(await server.request('/api/missions/create', missionBody(
+        fixture.alphaWorkspace,
+        { title: 'Exercise dispatch preflight guards' }
+      )))).job;
+      await assertRequestError(await server.request(`/api/missions/${ready.id}/dispatch`, {
+        expectedRevision: ready.revision + 1,
+        session: 'codex-worker'
+      }), 409, 'mission_revision_conflict');
+      await assertRequestError(await server.request(`/api/missions/${ready.id}/dispatch`, {
+        expectedRevision: ready.revision,
+        session: 'codex-planning-private-worker'
+      }), 409, 'planning_run_worker_control_managed');
+      await assertRequestError(await server.request(`/api/missions/${ready.id}/dispatch`, {
+        expectedRevision: ready.revision,
+        session: 'worker-without-codex-prefix'
+      }), 400, 'valid_worker_session_required');
+      await assertRequestError(await server.request(`/api/missions/${ready.id}/dispatch`, {
+        expectedRevision: ready.revision,
+        session: 'codex-worker',
+        sessionCreatedAt: 'not-a-timestamp'
+      }), 400, 'mission_worker_identity_invalid');
+      await assertRequestError(await server.request(`/api/missions/${ready.id}/dispatch`, {
+        expectedRevision: ready.revision,
+        session: 'codex-missing'
+      }), 409, 'mission_worker_not_promptable');
+      await assertRequestError(await server.request(`/api/missions/${ready.id}/dispatch`, {
+        expectedRevision: ready.revision,
+        session: 'codex-worker',
+        sessionCreatedAt: '2023-11-14T22:13:20.000Z',
+        paneId: 'codex-worker:0.0',
+        tmuxPaneId: '%77',
+        panePid: 9999
+      }), 409, 'mission_worker_missing_or_replaced');
+
+      assert.equal(readQueue(fixture).jobs.every((job) => ['ready', 'backlog'].includes(job.status)), true);
+      assert.equal(toolLog(fixture).split('\n').some((line) => line.startsWith('tmux:send-')), false);
+    } finally {
+      if (server) await server.stop();
+      rmSync(fixture.fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  for (const testCase of [
+    {
+      name: 'worker is not idle',
+      env: {
+        MISSION_CAPTURE_OUTPUT: [
+          'OpenAI Codex',
+          'Do you want to run this command?',
+          'Press enter to confirm'
+        ].join('\n')
+      },
+      error: 'mission_worker_not_idle'
+    },
+    {
+      name: 'worker workspace does not match the Mission',
+      workerWorkspace: 'beta',
+      error: 'mission_worker_workspace_mismatch'
+    }
+  ]) {
+    await t.test(testCase.name, async () => {
+      const fixture = createFixture();
+      installDispatchTools(fixture);
+      let server;
+      try {
+        const environment = { ...(testCase.env || {}) };
+        if (testCase.workerWorkspace === 'beta') environment.MISSION_FAKE_WORKSPACE = fixture.betaWorkspace;
+        server = await startServer(fixture, environment);
+        const created = (await responseJson(await server.request('/api/missions/create', missionBody(fixture.alphaWorkspace)))).job;
+        const before = readFileSync(fixture.queuePath, 'utf8');
+        await assertRequestError(await server.request(`/api/missions/${created.id}/dispatch`, {
+          expectedRevision: created.revision,
+          session: 'codex-worker'
+        }), 409, testCase.error);
+        assert.equal(readFileSync(fixture.queuePath, 'utf8'), before);
+        assert.equal(toolLog(fixture).split('\n').some((line) => line.startsWith('tmux:send-')), false);
+      } finally {
+        if (server) await server.stop();
+        rmSync(fixture.fixtureDir, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test('Mission creation and transition guard matrix rejects internal bindings and preserves fallback outcomes', async () => {
+  const fixture = createFixture();
+  let server;
+  try {
+    server = await startServer(fixture);
+    const before = toolLog(fixture);
+
+    await assertRequestError(await server.request('/api/missions/create', missionBody(
+      fixture.alphaWorkspace,
+      { deliveryBinding: { runId: 'run-not-public' } }
+    )), 400, 'mission_delivery_binding_internal_only');
+    await assertRequestError(await server.request('/api/missions/create', missionBody(
+      fixture.alphaWorkspace,
+      { priority: 'immediate' }
+    )), 400, 'invalid_mission_priority');
+
+    const heldBody = missionBody(fixture.alphaWorkspace, {
+      title: 'Exercise lifecycle guard fallbacks',
+      status: 'backlog',
+      priority: undefined
+    });
+    const createdResponse = await server.request('/api/missions/create', heldBody);
+    assert.equal(createdResponse.status, 200);
+    const created = (await responseJson(createdResponse)).job;
+    assert.equal(created.status, 'backlog');
+    assert.equal(created.priority, 'normal');
+
+    await assertRequestError(await server.request('/api/missions/mission-missing-87654321/transition', {
+      expectedRevision: 1,
+      to: 'ready'
+    }), 404, 'mission_not_found');
+    await assertRequestError(await server.request('/api/missions/mission-missing-87654321/move', {
+      expectedRevision: 1,
+      direction: 'up'
+    }), 404, 'mission_not_found');
+    await assertRequestError(await server.request(`/api/missions/${created.id}/transition`, {
+      expectedRevision: created.revision
+    }), 409, 'invalid_mission_transition');
+    await assertRequestError(await server.request(`/api/missions/${created.id}/move`, {
+      expectedRevision: created.revision,
+      direction: 'sideways'
+    }), 400, 'invalid_move_direction');
+    await assertRequestError(await server.request(`/api/missions/${created.id}/move`, {
+      expectedRevision: created.revision,
+      direction: 'up'
+    }), 409, 'mission_move_boundary');
+
+    const canceledResponse = await server.request(`/api/missions/${created.id}/transition`, {
+      expectedRevision: created.revision,
+      to: 'canceled'
+    });
+    assert.equal(canceledResponse.status, 200);
+    const canceled = (await responseJson(canceledResponse)).job;
+    assert.equal(canceled.status, 'canceled');
+    assert.equal(canceled.blocker, 'Canceled by operator.');
+    assert.equal(canceled.outcomes.at(-1)?.note, 'Canceled by operator.');
+    assert.equal(toolLog(fixture), before);
   } finally {
     if (server) await server.stop();
     rmSync(fixture.fixtureDir, { recursive: true, force: true });
@@ -1121,7 +1338,11 @@ test('dispatch claims durably, then sends literal text and Enter to one idle exi
     ]);
 
     const operations = toolLog(fixture).trim().split('\n');
-    assert.equal(operations.some((operation) => operation.includes('unexpected')), false);
+    assert.equal(
+      operations.some((operation) => operation.includes('unexpected')),
+      false,
+      `unexpected fixture operation:\n${operations.filter((operation) => operation.includes('unexpected')).join('\n')}`
+    );
     assert.equal(operations.includes('aws'), false);
     assert.equal(operations.includes('curl'), false);
     const literalOperations = operations.filter((operation) => operation.startsWith('tmux:send-literal:'));
@@ -1144,6 +1365,24 @@ test('dispatch claims durably, then sends literal text and Enter to one idle exi
     assert.equal((await responseJson(unlinkedInput)).error, 'mission_context_required');
     assert.equal(toolLog(fixture), beforeUnlinkedInput);
 
+    const unlinkedPicker = await server.request('/api/agent/ui-key', {
+      session: 'codex-worker',
+      key: 'down'
+    });
+    assert.equal(unlinkedPicker.status, 409);
+    assert.equal((await responseJson(unlinkedPicker)).error, 'mission_context_required');
+    assert.equal(toolLog(fixture), beforeUnlinkedInput);
+
+    const mismatchedIdentity = await server.request('/api/agent/send', {
+      ...promptQueueBody('This identity must not inherit the active Mission.', {
+        sessionCreatedAt: '2023-11-14T22:13:21.000Z'
+      }),
+      missionId: created.id
+    });
+    assert.equal(mismatchedIdentity.status, 409);
+    assert.equal((await responseJson(mismatchedIdentity)).error, 'mission_worker_identity_mismatch');
+    assert.equal(toolLog(fixture), beforeUnlinkedInput);
+
     const linkedInput = await server.request('/api/agent/send', {
       session: 'codex-worker',
       text: 'Continue this mission with the requested validation.',
@@ -1152,8 +1391,52 @@ test('dispatch claims durably, then sends literal text and Enter to one idle exi
     assert.equal(linkedInput.status, 200);
     assert.equal((await responseJson(linkedInput)).missionId, created.id);
 
-    const unconfirmedRelease = await server.request(`/api/missions/${created.id}/transition`, {
+    const linkedPicker = await server.request('/api/agent/ui-key', {
+      session: 'codex-worker',
+      key: 'down',
+      missionId: created.id
+    });
+    assert.equal(linkedPicker.status, 200);
+    assert.deepEqual(await responseJson(linkedPicker), {
+      ok: true,
+      session: 'codex-worker',
+      key: 'down'
+    });
+
+    const notQueuedMove = await server.request(`/api/missions/${created.id}/move`, {
       expectedRevision: dispatched.job.revision,
+      direction: 'up'
+    });
+    assert.equal(notQueuedMove.status, 409);
+    assert.equal((await responseJson(notQueuedMove)).error, 'mission_not_queued');
+
+    const pausedResponse = await server.request(`/api/missions/${created.id}/transition`, {
+      expectedRevision: dispatched.job.revision,
+      to: 'needs_you'
+    });
+    assert.equal(pausedResponse.status, 200);
+    const paused = (await responseJson(pausedResponse)).job;
+    assert.equal(paused.status, 'needs_you');
+    assert.equal(paused.blocker, 'Operator review requested.');
+
+    const resumedResponse = await server.request(`/api/missions/${created.id}/transition`, {
+      expectedRevision: paused.revision,
+      to: 'running'
+    });
+    assert.equal(resumedResponse.status, 200);
+    const resumed = (await responseJson(resumedResponse)).job;
+    assert.equal(resumed.status, 'running');
+    assert.equal(resumed.blocker, '');
+    const activeRevision = resumed.revision;
+
+    const missingTransition = await server.request(`/api/missions/${created.id}/transition`, {
+      expectedRevision: activeRevision
+    });
+    assert.equal(missingTransition.status, 409);
+    assert.equal((await responseJson(missingTransition)).error, 'invalid_mission_transition');
+
+    const unconfirmedRelease = await server.request(`/api/missions/${created.id}/transition`, {
+      expectedRevision: activeRevision,
       to: 'canceled',
       note: 'Canceled by operator.'
     });
@@ -1161,9 +1444,8 @@ test('dispatch claims durably, then sends literal text and Enter to one idle exi
     assert.equal((await responseJson(unconfirmedRelease)).error, 'mission_lock_release_confirmation_required');
 
     const confirmedRelease = await server.request(`/api/missions/${created.id}/transition`, {
-      expectedRevision: dispatched.job.revision,
+      expectedRevision: activeRevision,
       to: 'canceled',
-      note: 'Canceled by operator.',
       confirm: 'inspected-release'
     });
     assert.equal(confirmedRelease.status, 200);
@@ -1217,6 +1499,21 @@ test('a post-Enter persistence failure is never retried and restart reconciles w
     assert.equal(claimed.activeAttempt.submittedAt, null);
 
     chmodSync(path.dirname(fixture.queuePath), 0o700);
+    await assertRequestError(await server.request(`/api/missions/${created.id}/transition`, {
+      expectedRevision: claimed.revision,
+      to: 'reconcile_required'
+    }), 400, 'dispatch_inspection_required');
+    const inspectedResponse = await server.request(`/api/missions/${created.id}/transition`, {
+      expectedRevision: claimed.revision,
+      to: 'reconcile_required',
+      confirm: 'inspect-dispatch'
+    });
+    const inspected = await responseJson(inspectedResponse);
+    assert.equal(inspectedResponse.status, 200, JSON.stringify(inspected));
+    assert.equal(inspected.job.status, 'reconcile_required');
+    assert.equal(inspected.job.activeAttempt.status, 'outcome_unknown');
+    assert.match(inspected.job.blocker, /Dispatch outcome needs inspection/i);
+    assert.equal(toolLog(fixture).trim().split('\n').filter((operation) => operation === 'tmux:send-enter:C-m').length, 1);
     await server.stop();
     server = null;
     writeFileSync(fixture.toolLogPath, '');
@@ -1226,7 +1523,19 @@ test('a post-Enter persistence failure is never retried and restart reconciles w
     const reconciled = snapshot.missions.jobs.find((job) => job.id === created.id);
     assert.equal(reconciled.status, 'reconcile_required');
     assert.equal(reconciled.activeAttempt.status, 'outcome_unknown');
-    assert.match(reconciled.blocker, /will not resend/i);
+    assert.match(reconciled.blocker, /needs inspection/i);
+    assert.equal(toolLog(fixture).split('\n').some((operation) => operation.startsWith('tmux:send-')), false);
+
+    await assertRequestError(await server.request('/api/agent/send', {
+      session: 'codex-worker',
+      text: 'Do not type while dispatch reconciliation is unresolved.',
+      missionId: created.id
+    }), 409, 'mission_dispatch_needs_reconciliation');
+    await assertRequestError(await server.request('/api/agent/ui-key', {
+      session: 'codex-worker',
+      key: 'down',
+      missionId: created.id
+    }), 409, 'mission_dispatch_needs_reconciliation');
     assert.equal(toolLog(fixture).split('\n').some((operation) => operation.startsWith('tmux:send-')), false);
 
     const durable = readQueue(fixture).jobs[0];
@@ -1307,6 +1616,34 @@ test('prompt input APIs reject hidden Unicode controls before queueing, scheduli
     assert.deepEqual(durable.items, []);
     assert.deepEqual(durable.schedules, []);
     assert.equal(toolLog(fixture).split('\n').some((operation) => operation.startsWith('tmux:send-')), false);
+  } finally {
+    if (server) await server.stop();
+    rmSync(fixture.fixtureDir, { recursive: true, force: true });
+  }
+});
+
+test('maximum direct terminal prompts stay chunked, exact-pane-bound, and reject overflow before input', async () => {
+  const fixture = createFixture();
+  installDispatchTools(fixture);
+  let server;
+  try {
+    server = await startServer(fixture, { MISSION_MAX_LITERAL_CHUNK: '384' });
+    const prompt = 'D'.repeat(30000);
+    const response = await server.request('/api/agent/send', promptQueueBody(prompt), 15000);
+    assert.equal(response.status, 200, JSON.stringify(await responseJson(response.clone())));
+
+    const operations = toolLog(fixture).trim().split('\n');
+    const literals = operations.filter((operation) => operation.startsWith('tmux:send-literal:'));
+    assert.ok(literals.length > 1);
+    assert.equal(literals.every((operation) => Number(operation.split(':').at(-1)) <= 384), true);
+    assert.equal(operations.filter((operation) => operation === 'tmux:send-enter:C-m').length, 1);
+    assert.ok(operations.indexOf('tmux:send-enter:C-m') > operations.lastIndexOf(literals.at(-1)));
+
+    const beforeOverflow = toolLog(fixture);
+    const overflow = await server.request('/api/agent/send', promptQueueBody('D'.repeat(30001)));
+    assert.equal(overflow.status, 400);
+    assert.equal((await responseJson(overflow)).error, 'text_too_long');
+    assert.equal(toolLog(fixture), beforeOverflow);
   } finally {
     if (server) await server.stop();
     rmSync(fixture.fixtureDir, { recursive: true, force: true });
@@ -1501,10 +1838,50 @@ test('idea scout is exact-source-bound, resource-gated, read-only, and reused wi
   writeFileSync(path.join(fixture.fixtureDir, 'tmux-state'), 'idle\n');
   let server;
   try {
-    server = await startServer(fixture);
+    server = await startServer(fixture, { INITIAL_PROMPT_READY_MS: '100' });
     const missingIdentity = await server.request('/api/idea-scout', { session: 'codex-worker' });
     assert.equal(missingIdentity.status, 400);
     assert.equal((await responseJson(missingIdentity)).error, 'idea_queue_exact_target_required');
+
+    writeFileSync(fixture.meminfoPath, [
+      'MemTotal:        2048000 kB',
+      'MemAvailable:     512000 kB',
+      'SwapTotal:       1048576 kB',
+      'SwapFree:        1048576 kB',
+      ''
+    ].join('\n'));
+    const gatedResponse = await server.request('/api/idea-scout', promptQueueBody('', { text: undefined }));
+    const gated = await responseJson(gatedResponse);
+    assert.equal(gatedResponse.status, 503, JSON.stringify(gated));
+    assert.equal(gated.error, 'idea_scout_memory_gate');
+    assert.equal(toolLog(fixture).split('\n').filter((line) => line.startsWith('tmux:new-session:')).length, 0);
+    writeFileSync(fixture.meminfoPath, [
+      'MemTotal:        2048000 kB',
+      'MemAvailable:    1024000 kB',
+      'SwapTotal:       1048576 kB',
+      'SwapFree:        1048576 kB',
+      ''
+    ].join('\n'));
+
+    writeFileSync(path.join(fixture.fixtureDir, 'idea-scout-fail-start'), 'fail-start\n');
+    const failedStartResponse = await server.request('/api/idea-scout', promptQueueBody('', { text: undefined }));
+    const failedStart = await responseJson(failedStartResponse);
+    assert.equal(failedStartResponse.status, 500, JSON.stringify(failedStart));
+    assert.equal(failedStart.error, 'idea_scout_start_failed');
+    rmSync(path.join(fixture.fixtureDir, 'idea-scout-fail-start'), { force: true });
+
+    writeFileSync(path.join(fixture.fixtureDir, 'idea-scout-no-codex'), 'no-codex\n');
+    const notPromptableResponse = await server.request(
+      '/api/idea-scout',
+      promptQueueBody('', { text: undefined })
+    );
+    const notPromptable = await responseJson(notPromptableResponse);
+    assert.equal(notPromptableResponse.status, 409, JSON.stringify(notPromptable));
+    assert.equal(notPromptable.error, 'idea_scout_not_promptable');
+    assert.equal(notPromptable.session, 'codex-worker-idea-scout');
+    assert.equal(readPromptQueue(fixture).items.length, 0);
+    rmSync(path.join(fixture.fixtureDir, 'idea-scout-no-codex'), { force: true });
+    rmSync(path.join(fixture.fixtureDir, 'idea-scout-state'), { force: true });
 
     const firstResponse = await server.request('/api/idea-scout', promptQueueBody(
       'Generate bounded follow-up ideas without using the owner terminal.'
@@ -1522,7 +1899,7 @@ test('idea scout is exact-source-bound, resource-gated, read-only, and reused wi
     })), [{ session: 'codex-worker-idea-scout', ideaOwnerSession: 'codex-worker' }]);
 
     const operations = toolLog(fixture).trim().split('\n');
-    assert.equal(operations.filter((line) => line.startsWith('tmux:new-session:')).length, 1);
+    assert.equal(operations.filter((line) => line.startsWith('tmux:new-session:')).length, 3);
     assert.match(operations.find((line) => line.startsWith('tmux:new-session:')) || '', /--sandbox read-only --ask-for-approval never/);
     assert.equal(operations.some((line) => line.startsWith('tmux:send-')), false);
 
@@ -1541,7 +1918,7 @@ test('idea scout is exact-source-bound, resource-gated, read-only, and reused wi
     assert.equal(reusedResponse.status, 200, JSON.stringify(reused));
     assert.equal(reused.created, false);
     assert.equal(readPromptQueue(fixture).items.length, 1);
-    assert.equal(toolLog(fixture).split('\n').filter((line) => line.startsWith('tmux:new-session:')).length, 1);
+    assert.equal(toolLog(fixture).split('\n').filter((line) => line.startsWith('tmux:new-session:')).length, 3);
   } finally {
     if (server) await server.stop();
     rmSync(fixture.fixtureDir, { recursive: true, force: true });
@@ -1658,6 +2035,33 @@ test('idea queue gates implementation, round-trips agent refinement, and capture
     assert.equal(refinement.item.ideaPurpose, 'refinement');
     assert.match(refinement.item.text, /do not implement it/i);
     assert.equal(toolLog(fixture).includes('tmux:send-enter:'), false);
+
+    const cancelIdeaResponse = await server.request('/api/ideas', {
+      title: 'Keep canceled refinement work reviewable',
+      details: 'A queued refinement can be withdrawn before dispatch without losing the idea.'
+    });
+    const cancelIdea = await responseJson(cancelIdeaResponse);
+    assert.equal(cancelIdeaResponse.status, 200);
+    const cancelRefinementResponse = await server.request(`/api/ideas/${cancelIdea.idea.id}/refine`, {
+      ...promptQueueBody('', { text: undefined }),
+      expectedRevision: cancelIdea.idea.revision,
+      confirm: 'refine-idea',
+      instructions: 'Clarify the cancellation recovery behavior.'
+    });
+    const cancelRefinement = await responseJson(cancelRefinementResponse);
+    assert.equal(cancelRefinementResponse.status, 200);
+    const canceledRefinementResponse = await server.request(`/api/prompt-queue/${cancelRefinement.item.id}/cancel`, {
+      expectedRevision: cancelRefinement.item.revision,
+      confirm: 'leave-queue'
+    });
+    assert.equal(canceledRefinementResponse.status, 200);
+    const afterCancel = readPromptQueue(fixture);
+    assert.equal(afterCancel.items.find((item) => item.id === cancelRefinement.item.id).status, 'canceled');
+    assert.equal(afterCancel.ideas.find((idea) => idea.id === cancelIdea.idea.id).status, 'proposed');
+    assert.match(
+      readFileSync(path.join(fixture.fixtureDir, 'data', 'actions.jsonl'), 'utf8'),
+      /"action":"idea_queue\.refinement_canceled"/
+    );
 
     writeFileSync(path.join(fixture.fixtureDir, 'tmux-state'), 'idle\n');
     await server.get('/api/snapshot');
@@ -2541,6 +2945,65 @@ test('a same-name replacement cannot inherit a delivered prompt but supports one
   }
 });
 
+test('replacement requeue atomically transfers a linked Idea refinement to the exact new pane', async () => {
+  const fixture = createFixture();
+  installDispatchTools(fixture);
+  let server;
+  try {
+    server = await startServer(fixture);
+    const createdIdea = await responseJson(await server.request('/api/ideas', {
+      title: 'Preserve refinement ownership during exact-pane recovery',
+      details: 'Keep the owning Idea linked when an operator requeues work to a reviewed replacement.'
+    }));
+    const refinement = await responseJson(await server.request(`/api/ideas/${createdIdea.idea.id}/refine`, {
+      ...promptQueueBody('', { text: undefined }),
+      expectedRevision: createdIdea.idea.revision,
+      confirm: 'refine-idea',
+      instructions: 'Clarify the exact replacement recovery without implementing it.'
+    }));
+
+    await server.get('/api/snapshot');
+    await delay(30);
+    const delivered = await responseJson(await server.get('/api/snapshot'));
+    assert.equal(delivered.promptQueue.items.find((item) => item.id === refinement.item.id).status, 'sent');
+    assert.equal(toolLog(fixture).split('\n').filter((line) => line === 'tmux:send-enter:C-m').length, 1);
+
+    await server.stop();
+    server = null;
+    server = await startServer(fixture, { MISSION_SESSION_CREATED: '1700000001' });
+    const replaced = await responseJson(await server.get('/api/snapshot'));
+    const reviewed = replaced.promptQueue.items.find((item) => item.id === refinement.item.id);
+    const replacement = replaced.agents.find((agent) => agent.session === 'codex-worker');
+    assert.equal(reviewed.deliveryStage, 'completion_target_replaced');
+
+    const recoveryResponse = await server.request(`/api/prompt-queue/${reviewed.id}/requeue-on-replacement`, {
+      expectedRevision: reviewed.revision,
+      confirm: 'requeue-on-replacement',
+      session: replacement.session,
+      sessionCreatedAt: replacement.sessionCreatedAt,
+      paneId: replacement.id,
+      tmuxPaneId: replacement.tmuxPaneId,
+      panePid: replacement.panePid
+    });
+    const recovery = await responseJson(recoveryResponse);
+    assert.equal(recoveryResponse.status, 200, JSON.stringify(recovery));
+    assert.notEqual(recovery.item.id, reviewed.id);
+    assert.equal(recovery.item.ideaId, createdIdea.idea.id);
+    assert.equal(recovery.item.ideaPurpose, 'refinement');
+    assert.equal(toolLog(fixture).split('\n').filter((line) => line === 'tmux:send-enter:C-m').length, 1);
+
+    const durable = readPromptQueue(fixture);
+    const durableIdea = durable.ideas.find((idea) => idea.id === createdIdea.idea.id);
+    assert.equal(durableIdea.status, 'refining');
+    assert.equal(durableIdea.refinementPromptId, recovery.item.id);
+    assert.equal(durable.items.find((item) => item.id === reviewed.id).summaryState, 'operator_released');
+    assert.equal(durable.items.find((item) => item.id === recovery.item.id).status, 'queued');
+  } finally {
+    if (server) await server.stop();
+    rmSync(fixture.fixtureDir, { recursive: true, force: true });
+  }
+});
+
 test('prompt queue fails closed before typing when exact-pane exit preservation cannot be armed', async () => {
   const fixture = createFixture();
   installDispatchTools(fixture);
@@ -2684,6 +3147,16 @@ test('an operator can keep a pre-Enter ticket waiting for manual submit without 
     assert.equal(waiting.item.deliveryStage, 'waiting_for_manual_submit');
     assert.equal(waiting.item.sentAt, null);
     assert.match(waiting.item.blocker, /will not retype the prompt or press Enter/i);
+
+    const repeatedWait = await server.request(`/api/prompt-queue/${created.item.id}/wait-for-manual-submit`, {
+      expectedRevision: waiting.item.revision,
+      confirm: 'wait-for-manual-submit'
+    });
+    const repeatedWaitBody = await responseJson(repeatedWait);
+    assert.equal(repeatedWait.status, 409, JSON.stringify(repeatedWaitBody));
+    assert.equal(repeatedWaitBody.error, 'prompt_queue_item_not_manual_submit_waitable');
+    assert.equal(repeatedWaitBody.status, 'needs_review');
+    assert.equal(repeatedWaitBody.stage, 'waiting_for_manual_submit');
 
     const inputCounts = () => ({
       literal: toolLog(fixture).split('\n').filter((line) => line.startsWith('tmux:send-literal:')).length,
@@ -2928,7 +3401,146 @@ test('an operator can import a completed manual idea result from the exact cance
   }
 });
 
-test('a replacement pane cannot dismiss the original pre-Enter literal review', async () => {
+test('manual Idea recovery reports a full durable queue without truncating or sending terminal input', async () => {
+  const fixture = createFixture();
+  installDispatchTools(fixture);
+  writeFileSync(path.join(fixture.fixtureDir, 'tmux-state'), 'idle\n');
+  let server;
+  try {
+    server = await startServer(fixture, {
+      MISSION_TMUX_FAILURE: 'literal',
+      PROMPT_QUEUE_MONITOR_MS: '20'
+    });
+    const created = await responseJson(await server.request(
+      '/api/prompt-queue',
+      promptQueueBody([
+        'Generate useful follow-up ideas for Documentation Worker.',
+        'Return only [PANEFLEET IDEA] TITLE: Short ticket title DETAILS: Intended outcome, bounded scope, source evidence, and suggested verification [/PANEFLEET IDEA] blocks.'
+      ].join(' '))
+    ));
+    const reviewed = await waitForCondition(() => {
+      const item = readPromptQueue(fixture).items.find((candidate) => candidate.id === created.item.id);
+      return item?.status === 'needs_review' ? item : null;
+    }, { intervalMs: 20, timeoutMs: 3000, label: 'capacity manual idea literal review' });
+    const dismissed = await responseJson(await server.request(`/api/prompt-queue/${created.item.id}/dismiss-review`, {
+      expectedRevision: reviewed.revision,
+      confirm: 'dismiss-literal-after-review'
+    }));
+    await server.stop();
+    server = null;
+
+    const store = readPromptQueue(fixture);
+    const timestamp = dismissed.item.updatedAt;
+    store.ideas = Array.from({ length: 200 }, (_, index) => ({
+      id: `idea-capacity-${String(index).padStart(8, '0')}`,
+      revision: 1,
+      status: 'proposed',
+      title: `Existing bounded idea ${index}`,
+      details: `Existing queue capacity fixture ${index}.`,
+      source: 'operator',
+      sourceSession: '',
+      sourcePromptId: null,
+      workSession: '',
+      refinementPromptId: null,
+      refinementResult: '',
+      refinedAt: null,
+      approvedPromptId: null,
+      resolvedAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    }));
+    store.revision += 1;
+    writeFileSync(path.join(fixture.fixtureDir, 'data', 'prompt-queue.json'), `${JSON.stringify(store, null, 2)}\n`);
+    writeFileSync(path.join(fixture.fixtureDir, 'tmux-state'), 'manual-idea-complete\n');
+    server = await startServer(fixture);
+    const inputBefore = toolLog(fixture).split('\n').filter((line) => (
+      line.startsWith('tmux:send-literal:') || line === 'tmux:send-enter:C-m'
+    )).length;
+
+    const response = await server.request(`/api/prompt-queue/${created.item.id}/import-visible-ideas`, {
+      expectedRevision: dismissed.item.revision,
+      confirm: 'import-visible-ideas-after-review'
+    });
+    const imported = await responseJson(response);
+    assert.equal(response.status, 200, JSON.stringify(imported));
+    assert.deepEqual({ found: imported.found, added: imported.added, skippedForCapacity: imported.skippedForCapacity }, {
+      found: 1,
+      added: 0,
+      skippedForCapacity: 1
+    });
+    assert.equal(readPromptQueue(fixture).ideas.length, 200);
+    assert.equal(toolLog(fixture).split('\n').filter((line) => (
+      line.startsWith('tmux:send-literal:') || line === 'tmux:send-enter:C-m'
+    )).length, inputBefore);
+    assert.match(imported.item.blocker, /Idea Queue was full/i);
+  } finally {
+    if (server) await server.stop();
+    rmSync(fixture.fixtureDir, { recursive: true, force: true });
+  }
+});
+
+test('agent proposal completion reports a full durable Idea Queue without dropping its evidence', async () => {
+  const fixture = createFixture();
+  installDispatchTools(fixture);
+  writeFileSync(path.join(fixture.fixtureDir, 'tmux-state'), 'idle\n');
+  let server;
+  try {
+    server = await startServer(fixture);
+    const created = await responseJson(await server.request(
+      '/api/prompt-queue',
+      promptQueueBody('Propose one useful follow-up idea using the PaneFleet idea marker.')
+    ));
+    await server.get('/api/snapshot');
+    await delay(30);
+    await server.get('/api/snapshot');
+    assert.equal(readPromptQueue(fixture).items.find((item) => item.id === created.item.id).status, 'sent');
+    await server.stop();
+    server = null;
+
+    const store = readPromptQueue(fixture);
+    const timestamp = store.items.find((item) => item.id === created.item.id).updatedAt;
+    store.ideas = Array.from({ length: 200 }, (_, index) => ({
+      id: `idea-agent-capacity-${String(index).padStart(8, '0')}`,
+      revision: 1,
+      status: 'proposed',
+      title: `Existing agent-capacity idea ${index}`,
+      details: `Existing agent proposal capacity fixture ${index}.`,
+      source: 'operator',
+      sourceSession: '',
+      sourcePromptId: null,
+      workSession: '',
+      refinementPromptId: null,
+      refinementResult: '',
+      refinedAt: null,
+      approvedPromptId: null,
+      resolvedAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    }));
+    store.revision += 1;
+    writeFileSync(fixture.promptQueuePath, `${JSON.stringify(store, null, 2)}\n`);
+    writeFileSync(path.join(fixture.fixtureDir, 'tmux-state'), 'agent-idea-complete\n');
+    server = await startServer(fixture);
+    await server.get('/api/snapshot');
+    await delay(30);
+    await server.get('/api/snapshot');
+    const completed = await waitForCondition(() => {
+      const item = readPromptQueue(fixture).items.find((candidate) => candidate.id === created.item.id);
+      return ['returned', 'captured'].includes(item?.summaryState) ? item : null;
+    }, { intervalMs: 20, timeoutMs: 3000, label: 'capacity proposal completion' });
+    assert.equal(completed.ideaProposalCount, 1);
+    assert.equal(readPromptQueue(fixture).ideas.length, 200);
+    const audit = readFileSync(path.join(fixture.fixtureDir, 'data', 'actions.jsonl'), 'utf8');
+    assert.match(audit, /"action":"idea_queue\.agent_proposal_skipped"/);
+    assert.match(audit, /reason=idea_queue_full; skipped=1; no_input=true/);
+    assert.equal(toolLog(fixture).split('\n').filter((line) => line === 'tmux:send-enter:C-m').length, 1);
+  } finally {
+    if (server) await server.stop();
+    rmSync(fixture.fixtureDir, { recursive: true, force: true });
+  }
+});
+
+test('a replacement pane cannot dismiss the original pre-Enter literal review but explicit review cancellation sends no input', async () => {
   const fixture = createFixture();
   installDispatchTools(fixture);
   writeFileSync(path.join(fixture.fixtureDir, 'tmux-state'), 'idle\n');
@@ -2961,6 +3573,25 @@ test('a replacement pane cannot dismiss the original pre-Enter literal review', 
     }), 409, 'prompt_queue_target_missing_or_replaced');
     assert.equal(readPromptQueue(fixture).items.find((item) => item.id === created.item.id).status, 'needs_review');
     assert.equal(toolLog(fixture).split('\n').filter((line) => line.startsWith('tmux:send-literal:') || line === 'tmux:send-enter:C-m').length, sendsBefore);
+
+    await assertRequestError(await server.request(`/api/prompt-queue/${created.item.id}/cancel-review`, {
+      expectedRevision: stale.revision,
+      confirm: 'cancel'
+    }), 400, 'prompt_queue_review_cancel_confirmation_required');
+    const canceledResponse = await server.request(`/api/prompt-queue/${created.item.id}/cancel-review`, {
+      expectedRevision: stale.revision,
+      confirm: 'cancel-after-review'
+    });
+    const canceled = await responseJson(canceledResponse);
+    assert.equal(canceledResponse.status, 200, JSON.stringify(canceled));
+    assert.equal(canceled.item.status, 'canceled');
+    assert.equal(canceled.item.deliveryStage, 'review_canceled');
+    assert.equal(canceled.item.sentAt, null);
+    assert.match(canceled.item.blocker, /sent no input and will not retry/i);
+    assert.equal(toolLog(fixture).split('\n').filter((line) => line.startsWith('tmux:send-literal:') || line === 'tmux:send-enter:C-m').length, sendsBefore);
+    const audit = readFileSync(path.join(fixture.fixtureDir, 'data', 'actions.jsonl'), 'utf8');
+    assert.match(audit, /"action":"prompt_queue\.review_canceled"/);
+    assert.match(audit, /operator_confirmed=true; no_input=true; no_retry=true/);
   } finally {
     if (server) await server.stop();
     rmSync(fixture.fixtureDir, { recursive: true, force: true });
@@ -3060,17 +3691,17 @@ test('recurring prompt schedules reserve room for compact queue transport marker
   let server;
   try {
     server = await startServer(fixture);
-    const acceptedText = 'R'.repeat(3744);
+    const acceptedText = 'R'.repeat(30000);
     const accepted = await server.request('/api/prompt-schedules', promptQueueBody(acceptedText, {
       cron: '17 * * * *'
     }));
     assert.equal(accepted.status, 200, JSON.stringify(await responseJson(accepted.clone())));
 
-    const rejected = await server.request('/api/prompt-schedules', promptQueueBody('R'.repeat(3750), {
+    const rejected = await server.request('/api/prompt-schedules', promptQueueBody('R'.repeat(30001), {
       cron: '18 * * * *'
     }));
     assert.equal(rejected.status, 400);
-    assert.equal((await responseJson(rejected)).error, 'prompt_schedule_text_too_long');
+    assert.equal((await responseJson(rejected)).error, 'prompt_schedule_text_required_too_long');
     assert.equal(readPromptQueue(fixture).schedules.length, 1);
     assert.equal(readPromptQueue(fixture).schedules[0].text, acceptedText);
     assert.equal(toolLog(fixture).split('\n').some((line) => line.startsWith('tmux:send-')), false);
@@ -3080,7 +3711,7 @@ test('recurring prompt schedules reserve room for compact queue transport marker
   }
 });
 
-test('legacy oversized queued prompts cancel before input and do not permanently block the line', async () => {
+test('maximum-size queued prompts fit their transport markers and preserve FIFO order', async () => {
   const fixture = createFixture();
   installDispatchTools(fixture);
   writeFileSync(path.join(fixture.fixtureDir, 'tmux-state'), 'idle\n');
@@ -3113,7 +3744,7 @@ test('legacy oversized queued prompts cancel before input and do not permanently
     version: 1,
     revision: 1,
     items: [
-      queued('prompt-oversized-12345678', 'L'.repeat(3900), 1),
+      queued('prompt-maximum-12345678', 'L'.repeat(30000), 1),
       queued('prompt-followup-12345678', 'Run the next bounded queue check.', 2)
     ],
     schedules: []
@@ -3122,23 +3753,19 @@ test('legacy oversized queued prompts cancel before input and do not permanently
   let server;
   try {
     server = await startServer(fixture, { PROMPT_QUEUE_MONITOR_MS: '3600000' });
-    const rejected = await responseJson(await server.get('/api/snapshot'));
-    const oversized = rejected.promptQueue.items.find((item) => item.id === 'prompt-oversized-12345678');
-    assert.equal(oversized.status, 'canceled');
-    assert.equal(oversized.deliveryStage, 'dispatch_envelope_too_long');
-    assert.match(oversized.blocker, /no terminal input|before dispatch|exceeds/i);
-    assert.equal(toolLog(fixture).split('\n').filter((line) => line === 'tmux:send-enter:C-m').length, 0);
-
-    await server.get('/api/snapshot');
-    await delay(30);
-    const advanced = await responseJson(await server.get('/api/snapshot'));
-    const followup = advanced.promptQueue.items.find((item) => item.id === 'prompt-followup-12345678');
-    assert.equal(followup.status, 'sent');
+    const maximum = await waitForCondition(async () => {
+      await server.get('/api/snapshot', { timeoutMs: 15000 });
+      const item = readPromptQueue(fixture).items.find((candidate) => candidate.id === 'prompt-maximum-12345678');
+      return item?.status === 'sent' ? item : null;
+    }, { intervalMs: 50, timeoutMs: 15000, label: 'maximum prompt acceptance' });
+    const followup = readPromptQueue(fixture).items.find((item) => item.id === 'prompt-followup-12345678');
+    assert.equal(maximum.status, 'sent');
+    assert.equal(maximum.deliveryStage, 'accepted');
+    assert.equal(followup.status, 'queued');
     assert.equal(toolLog(fixture).split('\n').filter((line) => line === 'tmux:send-enter:C-m').length, 1);
 
     const audit = readFileSync(path.join(fixture.fixtureDir, 'data', 'actions.jsonl'), 'utf8');
-    assert.match(audit, /"action":"prompt_queue\.preflight_rejected"/);
-    assert.match(audit, /reason=dispatch_envelope_too_long/);
+    assert.match(audit, /"action":"prompt_queue\.sent"/);
     assert.doesNotMatch(audit, /L{20}/);
   } finally {
     if (server) await server.stop();
@@ -3311,32 +3938,33 @@ test('due schedules enqueue once, coalesce while pending, and skip a replaced ex
   }
 });
 
-test('legacy oversized recurring schedules skip an occurrence without blocking the terminal queue', async () => {
+test('maximum-size recurring schedules enqueue without overflowing transport markers', async () => {
   const fixture = createFixture();
   installDispatchTools(fixture);
-  writeFileSync(path.join(fixture.fixtureDir, 'tmux-state'), 'idle\n');
+  writeFileSync(path.join(fixture.fixtureDir, 'tmux-state'), 'background-working\n');
   mkdirSync(path.dirname(fixture.promptQueuePath), { recursive: true });
   writeFileSync(fixture.promptQueuePath, JSON.stringify({
     version: 1,
     revision: 1,
     items: [],
-    schedules: [recurringPromptSchedule({ text: 'S'.repeat(3900) })]
+    schedules: [recurringPromptSchedule({ text: 'S'.repeat(30000) })]
   }), { mode: 0o600 });
 
   let server;
   try {
     server = await startServer(fixture, { PROMPT_QUEUE_MONITOR_MS: '3600000' });
     const snapshot = await responseJson(await server.get('/api/snapshot'));
-    assert.equal(snapshot.promptQueue.items.length, 0);
-    assert.equal(snapshot.promptQueue.schedules[0].lastOutcome, 'skipped_text_too_long');
+    assert.equal(snapshot.promptQueue.items.length, 1);
+    assert.equal(snapshot.promptQueue.items[0].status, 'queued');
+    assert.equal(snapshot.promptQueue.schedules[0].lastOutcome, 'queued');
     assert.equal(snapshot.promptQueue.schedules[0].occurrenceCount, 1);
-    assert.equal(snapshot.promptQueue.schedules[0].runCount, 0);
-    assert.equal(snapshot.promptQueue.schedules[0].skippedCount, 1);
+    assert.equal(snapshot.promptQueue.schedules[0].runCount, 1);
+    assert.equal(snapshot.promptQueue.schedules[0].skippedCount, 0);
     assert.equal(toolLog(fixture).split('\n').some((line) => line.startsWith('tmux:send-')), false);
 
     const audit = readFileSync(path.join(fixture.fixtureDir, 'data', 'actions.jsonl'), 'utf8');
-    assert.match(audit, /"action":"prompt_schedule\.skipped"/);
-    assert.match(audit, /outcome=skipped_text_too_long/);
+    assert.match(audit, /"action":"prompt_schedule\.queued"/);
+    assert.match(audit, /outcome=queued/);
     assert.doesNotMatch(audit, /S{20}/);
   } finally {
     if (server) await server.stop();
@@ -4634,6 +5262,68 @@ test('an explicitly linked answer continues the accepted queue turn through one 
   }
 });
 
+test('a submitted answer whose durable queue link fails is never resent or reported as linked', async () => {
+  const fixture = createFixture();
+  fixture.promptQueuePath = path.join(fixture.fixtureDir, 'prompt-state', 'prompt-queue.json');
+  mkdirSync(path.dirname(fixture.promptQueuePath), { recursive: true });
+  installDispatchTools(fixture);
+  let server;
+  try {
+    server = await startServer(fixture, { PROMPT_QUEUE_BREAK_ANSWER_LINK: '1' });
+    const first = await responseJson(await server.request(
+      '/api/prompt-queue',
+      promptQueueBody('Ask for one operator answer before the durable link fails.')
+    ));
+    await server.get('/api/snapshot');
+    await delay(30);
+    await server.get('/api/snapshot');
+    writeFileSync(path.join(fixture.fixtureDir, 'tmux-state'), 'waiting\n');
+    copyFileSync(fixture.tmuxInputPath, fixture.tmuxOriginalInputPath);
+
+    const blocked = await server.request('/api/agent/send', {
+      session: 'codex-worker',
+      text: 'Yes, continue.',
+      sessionCreatedAt: '2023-11-14T22:13:20.000Z',
+      paneId: 'codex-worker:0.0',
+      tmuxPaneId: '%77',
+      panePid: 4100
+    });
+    const conflict = await responseJson(blocked);
+    assert.equal(blocked.status, 409);
+    assert.equal(conflict.queueConflict.itemId, first.item.id);
+
+    const answeredResponse = await server.request('/api/agent/send', {
+      session: 'codex-worker',
+      text: 'Yes, continue.',
+      sessionCreatedAt: '2023-11-14T22:13:20.000Z',
+      paneId: 'codex-worker:0.0',
+      tmuxPaneId: '%77',
+      panePid: 4100,
+      queueConflict: {
+        ...conflict.queueConflict,
+        resolution: 'answer-current-turn'
+      }
+    });
+    const answered = await responseJson(answeredResponse);
+    assert.equal(answeredResponse.status, 200);
+    assert.equal(answered.submitted, true);
+    assert.deepEqual(answered.queueContinuation, {
+      requested: true,
+      ok: false,
+      error: 'prompt_queue_answer_link_failed'
+    });
+    assert.equal(toolLog(fixture).split('\n').filter((line) => line === 'tmux:send-enter:C-m').length, 2);
+    const audit = readFileSync(path.join(fixture.fixtureDir, 'data', 'actions.jsonl'), 'utf8');
+    assert.match(audit, /"action":"prompt_queue\.answer_link_failed"/);
+    assert.match(audit, /input_submitted=true; no_retry=true; no_resend=true/);
+    assert.doesNotMatch(audit, /Yes, continue/);
+  } finally {
+    if (server) await server.stop();
+    if (existsSync(path.dirname(fixture.promptQueuePath))) chmodSync(path.dirname(fixture.promptQueuePath), 0o700);
+    rmSync(fixture.fixtureDir, { recursive: true, force: true });
+  }
+});
+
 test('reviewed newer activity can resume exact-ticket monitoring without resend or later-turn attribution', async () => {
   const fixture = createFixture();
   installDispatchTools(fixture);
@@ -5101,6 +5791,85 @@ test('a later stable acceptance witness recovers review without another Enter', 
     const audit = readFileSync(path.join(fixture.fixtureDir, 'data', 'actions.jsonl'), 'utf8');
     assert.match(audit, /"action":"prompt_queue\.acceptance_recovered"/);
     assert.match(audit, /no_retry=true; no_input=true/);
+  } finally {
+    if (server) await server.stop();
+    rmSync(fixture.fixtureDir, { recursive: true, force: true });
+  }
+});
+
+test('queue review actions reject stale state and replaced targets without input or durable changes', async () => {
+  const fixture = createFixture();
+  installDispatchTools(fixture);
+  const timestamp = new Date().toISOString();
+  const reviewItem = (suffix, position, overrides = {}) => ({
+    id: `prompt-review-guard-${suffix}`,
+    revision: 3,
+    position,
+    status: 'needs_review',
+    ...promptQueueBody('Synthetic review guard evidence.'),
+    attemptId: `queue-attempt-review-guard-${suffix}`,
+    blocker: 'Synthetic unresolved review.',
+    deliveryStage: 'completion_target_replaced',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    claimedAt: timestamp,
+    sentAt: timestamp,
+    completedAt: null,
+    summaryState: 'unavailable',
+    completionSummary: '',
+    completionSnapshot: '',
+    ...overrides
+  });
+  const replacement = reviewItem('replacement', 1);
+  const manual = reviewItem('manual', 2, { deliveryStage: 'literal_confirmation', sentAt: null, panePid: 4999 });
+  const superseded = reviewItem('superseded', 3, { deliveryStage: 'completion_superseded', panePid: 4999 });
+  const release = reviewItem('release', 4, { deliveryStage: 'completion_timeout', panePid: 4999 });
+  const canceled = reviewItem('canceled', 5, { status: 'canceled', deliveryStage: 'review_canceled', completedAt: timestamp });
+  mkdirSync(path.dirname(fixture.promptQueuePath), { recursive: true });
+  writeFileSync(fixture.promptQueuePath, JSON.stringify({ version: 1, revision: 1, items: [replacement, manual, superseded, release, canceled] }));
+  let server;
+  try {
+    server = await startServer(fixture, { PROMPT_QUEUE_MONITOR_MS: '3600000' });
+    await server.get('/api/prompt-queue');
+    const original = readFileSync(fixture.promptQueuePath, 'utf8');
+    const reviewActions = [
+      'cancel', 'dismiss-review', 'cancel-review', 'import-visible-ideas',
+      'wait-for-manual-submit', 'retarget', 'requeue-on-replacement', 'release', 'continue-monitoring'
+    ];
+    for (const action of reviewActions) {
+      await assertRequestError(await server.request(`/api/prompt-queue/${replacement.id}/${action}`, {
+        expectedRevision: replacement.revision - 1,
+        confirm: 'not-an-approval'
+      }), 409, 'prompt_queue_revision_conflict');
+      await assertRequestError(await server.request(`/api/prompt-queue/prompt-missing-review-guard/${action}`, {
+        expectedRevision: replacement.revision,
+        confirm: 'not-an-approval'
+      }), 404, 'prompt_queue_item_not_found');
+      assert.equal(readFileSync(fixture.promptQueuePath, 'utf8'), original, action);
+    }
+    const failures = [
+      [canceled, 'cancel-review', { confirm: 'cancel-after-review' }, 409, 'prompt_queue_item_not_review_cancelable'],
+      [replacement, 'retarget', { confirm: 'retarget-queued-prompt' }, 409, 'prompt_queue_item_not_retargetable'],
+      [replacement, 'cancel', { confirm: 'leave-queue' }, 409, 'prompt_queue_item_not_cancelable'],
+      [replacement, 'continue-monitoring', { confirm: 'continue-monitoring' }, 409, 'prompt_queue_item_not_monitorable'],
+      [replacement, 'release', { confirm: 'release-after-review' }, 409, 'prompt_queue_item_not_confirmable'],
+      [replacement, 'requeue-on-replacement', { confirm: 'requeue-on-replacement', session: 'codex-other' }, 409, 'prompt_queue_replacement_session_mismatch'],
+      [replacement, 'requeue-on-replacement', { confirm: 'requeue-on-replacement', session: 'codex-worker' }, 400, 'prompt_queue_exact_target_required'],
+      [replacement, 'requeue-on-replacement', { ...promptQueueBody(''), confirm: 'requeue-on-replacement' }, 409, 'prompt_queue_replacement_target_unchanged'],
+      [replacement, 'requeue-on-replacement', { ...promptQueueBody(''), panePid: 4999, confirm: 'requeue-on-replacement' }, 409, 'prompt_queue_target_missing_or_replaced'],
+      [manual, 'wait-for-manual-submit', { confirm: 'wait-for-manual-submit' }, 409, 'prompt_queue_target_missing_or_replaced'],
+      [manual, 'dismiss-review', { confirm: 'dismiss-literal-after-review' }, 409, 'prompt_queue_target_missing_or_replaced'],
+      [superseded, 'continue-monitoring', { confirm: 'continue-monitoring' }, 409, 'prompt_queue_target_missing_or_replaced'],
+      [release, 'release', { confirm: 'release-after-review' }, 409, 'prompt_queue_target_missing_or_replaced']
+    ];
+    for (const [item, action, body, status, error] of failures) {
+      await assertRequestError(await server.request(`/api/prompt-queue/${item.id}/${action}`, {
+        ...body, expectedRevision: item.revision
+      }), status, error);
+      assert.equal(readFileSync(fixture.promptQueuePath, 'utf8'), original, `${action}: ${error}`);
+    }
+    assert.equal(toolLog(fixture).split('\n').some((line) => line.startsWith('tmux:send-')), false);
+    assert.equal(existsSync(fixture.tmuxInputPath), false);
   } finally {
     if (server) await server.stop();
     rmSync(fixture.fixtureDir, { recursive: true, force: true });
@@ -5920,7 +6689,11 @@ test('Mission Supervisor requires stable report samples and moves completion onl
     assert.match(event.detail, /^source=supervisor; supervisor=verification_ready$/);
     const sendCountAfter = toolLog(fixture).split('\n').filter((line) => /^tmux:send-(?:literal|enter):/.test(line)).length;
     assert.equal(sendCountAfter, sendCountBefore);
-    assert.equal(toolLog(fixture).includes('tmux:unexpected:'), false);
+    assert.equal(
+      toolLog(fixture).includes('tmux:unexpected:'),
+      false,
+      `unexpected tmux operation:\n${toolLog(fixture).split('\n').filter((line) => line.includes('unexpected')).join('\n')}`
+    );
     assert.equal(toolLog(fixture).split('\n').some((line) => ['aws', 'curl'].includes(line)), false);
   } finally {
     if (server) await server.stop();
@@ -5939,7 +6712,9 @@ test('Mission Supervisor routes stable waiting, error, stale, and identity failu
           'STATUS: waiting for approval',
           'RESULT: implementation is paused',
           'EVIDENCE: the approval boundary was reached',
-          'NEXT ACTION: needs input from the operator'
+          'NEXT ACTION: needs input from the operator',
+          '› ',
+          'gpt-test-alpha ultra · 95% left'
         ].join('\n');
       }
     },
@@ -5952,7 +6727,9 @@ test('Mission Supervisor routes stable waiting, error, stale, and identity failu
           'STATUS: failed',
           'RESULT: focused validation failed',
           'EVIDENCE: the test command returned an error',
-          'NEXT ACTION: inspect the failure'
+          'NEXT ACTION: inspect the failure',
+          '› ',
+          'gpt-test-alpha ultra · 95% left'
         ].join('\n');
       }
     },
@@ -5973,6 +6750,16 @@ test('Mission Supervisor routes stable waiting, error, stale, and identity failu
       name: 'replaced intrinsic pane',
       reason: 'replaced',
       submitBehavior: 'replacement'
+    },
+    {
+      name: 'dead assigned pane',
+      reason: 'error',
+      tmuxState: 'dead'
+    },
+    {
+      name: 'assigned pane without Codex',
+      reason: 'error',
+      env: { MISSION_PANE_COMMAND: 'bash', MISSION_NO_CODEX_PROCESS: '1' }
     },
     {
       name: 'missing assigned coordinate',
@@ -6010,12 +6797,16 @@ test('Mission Supervisor routes stable waiting, error, stale, and identity failu
           testCase.mutateQueue(queue);
           writeFileSync(fixture.queuePath, `${JSON.stringify(queue, null, 2)}\n`, { mode: 0o600 });
         }
+        if (testCase.tmuxState) {
+          writeFileSync(path.join(fixture.fixtureDir, 'tmux-state'), `${testCase.tmuxState}\n`);
+        }
         server = await startServer(fixture, {
           MISSION_SUPERVISOR_MIN_DELAY_MS: '20',
           MISSION_SUPERVISOR_IDLE_STALE_MS: testCase.idleStaleMs || '120000',
           MISSION_CAPTURE_OUTPUT: testCase.output ? testCase.output(prompt) : '',
           MISSION_SESSION_CREATED: testCase.sessionCreated || '1700000000',
-          MISSION_SUBMIT_BEHAVIOR: testCase.submitBehavior || ''
+          MISSION_SUBMIT_BEHAVIOR: testCase.submitBehavior || '',
+          ...(testCase.env || {})
         });
 
         const firstSnapshot = await responseJson(await server.get('/api/snapshot'));
@@ -6046,7 +6837,11 @@ test('Mission Supervisor routes stable waiting, error, stale, and identity failu
         assert.equal(notification?.kind, expectedNotificationKind);
         const sendCountAfter = toolLog(fixture).split('\n').filter((line) => /^tmux:send-(?:literal|enter):/.test(line)).length;
         assert.equal(sendCountAfter, sendCountBefore);
-        assert.equal(toolLog(fixture).includes('tmux:unexpected:'), false);
+        assert.equal(
+          toolLog(fixture).includes('tmux:unexpected:'),
+          false,
+          `unexpected tmux operation:\n${toolLog(fixture).split('\n').filter((line) => line.includes('unexpected')).join('\n')}`
+        );
         assert.equal(toolLog(fixture).split('\n').some((line) => ['aws', 'curl'].includes(line)), false);
       } finally {
         if (server) await server.stop();
@@ -6373,6 +7168,13 @@ test('a recycled tmux session name cannot inherit an active mission', async () =
     });
     assert.equal(linkedInput.status, 409);
     assert.equal((await responseJson(linkedInput)).error, 'agent_session_replaced');
+    const picker = await server.request('/api/agent/ui-key', {
+      session: 'codex-worker',
+      key: 'down',
+      missionId: created.id
+    });
+    assert.equal(picker.status, 409);
+    assert.equal((await responseJson(picker)).error, 'agent_session_replaced');
     const literalCountAfterRestart = toolLog(fixture).split('\n').filter((line) => line.startsWith('tmux:send-literal:')).length;
     assert.equal(literalCountAfterRestart, literalCountBeforeRestart);
   } finally {

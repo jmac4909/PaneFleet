@@ -24,6 +24,10 @@ const zoomSafeEditorSelectors = Object.freeze([
   '.mission-create-form select',
   '.mission-create-form textarea',
   '.mission-worker-field select',
+  '.delivery-plan-create-form textarea',
+  '.delivery-plan-edit-form textarea',
+  '.delivery-run-verification-form :is(select, textarea)',
+  '.code-city-picker select',
   '.project-desk :is(input, textarea, select)',
   '.terminal-mobile-select',
   '.terminal-find-input',
@@ -34,6 +38,7 @@ const touchSizedEditorSelectors = Object.freeze([
   '.create-agent-form input',
   '.create-agent-form select',
   '.project-desk :is(input, select)',
+  '.code-city-picker select',
   '.prompt-history-search-form input',
   '.idea-queue-form input'
 ]);
@@ -44,6 +49,18 @@ const componentSpecificTouchSelectors = Object.freeze([
   '.prompt-queue-draft-actions .action-button',
   '.prompt-history-search-form .action-button'
 ]);
+
+test('device login stays iPhone zoom-safe, touch-sized, and short-landscape scrollable', async () => {
+  const styles = await uiSource('login.css');
+  assert.match(styles, /\.login-shell\s*\{[\s\S]*min-height: 100dvh;/);
+  assert.match(styles, /env\(safe-area-inset-top\)/);
+  assert.match(styles, /env\(safe-area-inset-right\)/);
+  assert.match(styles, /env\(safe-area-inset-bottom\)/);
+  assert.match(styles, /env\(safe-area-inset-left\)/);
+  assert.match(styles, /input\[type="text"\],[\s\S]*input\[type="password"\][\s\S]*min-height: 50px;[\s\S]*font-size: 16px;/);
+  assert.match(styles, /button\s*\{[\s\S]*min-height: 52px;/);
+  assert.match(styles, /@media \(max-height: 620px\) and \(orientation: landscape\)[\s\S]*place-items: start center;/);
+});
 
 test('CSS cascade checks resolve matching media rules in source order', () => {
   const styles = `
@@ -148,7 +165,7 @@ test('the winning phone cascade keeps navigation fixed, sessions vertical, and t
   assert.notEqual(effectiveCssDeclarations(styles, '.shortcut-help-button', desktop).display, 'none');
 });
 
-test('the 320px bottom bar matches its three destinations and preserves touch-sized navigation', async () => {
+test('the 320px bottom bar matches its six destinations and preserves touch-sized navigation', async () => {
   const [styles, index] = await Promise.all([uiSource('styles.css'), uiSource('index.html')]);
   const compactPhone = { width: 320, pointer: 'coarse' };
   const declarations = (selector) => effectiveCssDeclarations(styles, selector, compactPhone);
@@ -158,7 +175,7 @@ test('the 320px bottom bar matches its three destinations and preserves touch-si
   const destinationCount = [...navSource.matchAll(/<button\b/g)].length;
 
   assert.ok(navStart >= 0 && navEnd > navStart);
-  assert.equal(destinationCount, 3);
+  assert.equal(destinationCount, 6);
   assert.equal(
     declarations('.sidebar .tabs')['grid-template-columns'],
     `repeat(${destinationCount}, minmax(0, 1fr))`
@@ -214,6 +231,7 @@ test('square controls preserve 44px touch targets in portrait and landscape phon
     '.terminal-control',
     '.terminal-command-bar button',
     '.terminal-picker-bar button',
+    '.terminal-signal-bar button',
     '.notice-dismiss',
     '.drawer-close',
     '.session-pin'
@@ -385,6 +403,79 @@ test('phone search and form controls retain touch-sized heights in both orientat
       assert.ok(Number.parseFloat(value) >= 44, `${selector} is below 44px in ${label}`);
     }
   }
+});
+
+test('Delivery Run QA remains single-column, touch-sized, and zoom-safe on phones', async () => {
+  const styles = await uiSource('styles.css');
+  const phoneLayouts = [
+    { label: 'portrait', viewport: { width: 390, height: 844, pointer: 'coarse' } },
+    { label: 'short landscape', viewport: { width: 844, height: 390, pointer: 'coarse' } }
+  ];
+
+  for (const { label, viewport } of phoneLayouts) {
+    assert.equal(
+      effectiveCssDeclarations(styles, '.delivery-run-criteria fieldset', viewport)['grid-template-columns'],
+      'minmax(0, 1fr)',
+      `${label} QA criteria are not single-column`
+    );
+    for (const selector of [
+      '.delivery-run-verification-form :is(select, textarea)',
+      '.delivery-run-verification-actions button',
+      '.delivery-run-task-actions button',
+      '.delivery-run-reconcile button'
+    ]) {
+      assert.equal(effectiveCssDeclarations(styles, selector, viewport)['min-height'], '44px', `${selector} is not touch-sized in ${label}`);
+    }
+    assert.equal(
+      effectiveCssDeclarations(styles, '.delivery-run-verification-form :is(select, textarea)', viewport)['font-size'],
+      '16px',
+      `${label} QA controls can trigger focus zoom`
+    );
+  }
+});
+
+test('Planning Run review stays single-column, readable, and touch-sized on phones', async () => {
+  const [styles, app] = await Promise.all([uiSource('styles.css'), uiSource('app.js')]);
+  const phoneLayouts = [
+    { label: 'portrait', viewport: { width: 390, height: 844, pointer: 'coarse' } },
+    { label: 'short landscape', viewport: { width: 844, height: 390, pointer: 'coarse' } }
+  ];
+
+  for (const { label, viewport } of phoneLayouts) {
+    for (const selector of [
+      '.planning-run-empty',
+      '.planning-role-grid',
+      '.planning-candidate-columns',
+      '.planning-run-findings'
+    ]) {
+      assert.equal(
+        effectiveCssDeclarations(styles, selector, viewport)['grid-template-columns'],
+        'minmax(0, 1fr)',
+        `${selector} is not single-column in ${label}`
+      );
+    }
+    assert.equal(effectiveCssDeclarations(styles, '.planning-run-head', viewport).display, 'grid', `${label} planning header is not stacked`);
+    assert.equal(
+      effectiveCssDeclarations(styles, '.planning-worker-identity', viewport)['grid-template-columns'],
+      'minmax(0, 1fr)',
+      `${label} worker identity is not single-column`
+    );
+    assert.equal(effectiveCssDeclarations(styles, '.planning-worker-identity', viewport)['overflow-wrap'], 'anywhere');
+    assert.equal(effectiveCssDeclarations(styles, '.planning-candidate-change pre', viewport)['overflow-x'], 'auto');
+    assert.equal(effectiveCssDeclarations(styles, '.planning-run-actions > .planning-run-recovery-note', viewport)['font-size'], '10px');
+    assert.equal(effectiveCssDeclarations(styles, '.planning-run-terminate', viewport)['flex-direction'], 'column');
+    assert.equal(effectiveCssDeclarations(styles, '.aap-conversation > header', viewport).display, 'grid');
+    assert.equal(effectiveCssDeclarations(styles, '.aap-chat-message', viewport).width, '100%');
+    assert.equal(effectiveCssDeclarations(styles, '.aap-workshop-message-form textarea', viewport)['font-size'], '16px');
+    for (const selector of ['.planning-run-actions button', '.planning-run-terminate button', '.planning-run-empty button', '.aap-workshop-message-form button']) {
+      assert.equal(effectiveCssDeclarations(styles, selector, viewport)['min-height'], '44px', `${selector} is not touch-sized in ${label}`);
+      assert.equal(effectiveCssDeclarations(styles, selector, viewport)['touch-action'], 'manipulation', `${selector} blocks normal touch behavior in ${label}`);
+    }
+  }
+  assert.match(app, /class="action-button danger" data-action="planning-run-cancel"/);
+  assert.match(app, /class="planning-run-terminate"[\s\S]*data-action="planning-run-terminate-provisional-worker"/);
+  assert.doesNotMatch(app, /data-action="planning-run-continue"[^>]*>Terminate stuck planning worker/);
+  assert.match(app, /data-planning-continue-kind="\$\{escapeHtml\(continueKind\)\}"/);
 });
 
 test('New Agent uses safe-area sheet controls in portrait and short landscape phone layouts', async () => {
@@ -784,6 +875,94 @@ test('Queue section navigation matches its five destinations and stays touchable
     { minHeight: landscapeButton['min-height'], touchAction: landscapeButton['touch-action'] },
     { minHeight: '44px', touchAction: 'manipulation' }
   );
+});
+
+test('SDLC role workflow becomes a readable single-column planning session on phones', async () => {
+  const styles = await uiSource('styles.css');
+  const desktopWorkshop = effectiveCssDeclarations(styles, '.aap-workshop-loop', { width: 1280, pointer: 'fine' });
+  const landscapeWorkshop = effectiveCssDeclarations(styles, '.aap-workshop-loop', { width: 844, height: 390, pointer: 'coarse' });
+  const portraitView = effectiveCssDeclarations(styles, '#sdlc-view.active.sdlc-workspace-view', { width: 390, height: 844, pointer: 'coarse' });
+  const portraitStage = effectiveCssDeclarations(styles, '.sdlc-stage-track', { width: 390, height: 844, pointer: 'coarse' });
+  const portraitWorkshop = effectiveCssDeclarations(styles, '.aap-workshop-loop', { width: 390, height: 844, pointer: 'coarse' });
+  const portraitCenter = effectiveCssDeclarations(styles, '.aap-workshop-center', { width: 390, height: 844, pointer: 'coarse' });
+
+  assert.equal(desktopWorkshop['grid-template-columns'], 'minmax(0, 1fr) minmax(220px, 0.82fr) minmax(0, 1fr)');
+  assert.equal(landscapeWorkshop['grid-template-columns'], 'minmax(0, 1fr)');
+  assert.deepEqual(
+    { height: portraitView.height, maxWidth: portraitView['max-width'], overflowX: portraitView['overflow-x'], overflowY: portraitView['overflow-y'] },
+    { height: 'auto', maxWidth: '100%', overflowX: 'clip', overflowY: 'visible' }
+  );
+  assert.equal(portraitStage['grid-template-columns'], 'minmax(0, 1fr)');
+  assert.equal(portraitWorkshop['grid-template-columns'], 'minmax(0, 1fr)');
+  assert.equal(portraitWorkshop['grid-template-areas'], '"center" "role1" "role2" "role3" "role4" "cycle"');
+  assert.equal(portraitCenter['border-radius'], '16px');
+  assert.equal(effectiveCssDeclarations(styles, '.delivery-plan-guided-create-form .aap-conversation-prompt textarea', { width: 390, height: 844, pointer: 'coarse' })['font-size'], '16px');
+  for (const viewport of [
+    { width: 320, height: 568, pointer: 'coarse' },
+    { width: 390, height: 844, pointer: 'coarse' },
+    { width: 844, height: 390, pointer: 'coarse' }
+  ]) {
+    const view = effectiveCssDeclarations(styles, '#sdlc-view.active.sdlc-workspace-view', viewport);
+    const consoleLayout = effectiveCssDeclarations(styles, '.sdlc-console', viewport);
+    const form = effectiveCssDeclarations(styles, '.delivery-plan-guided-create-form', viewport);
+    assert.equal(view.height, 'auto');
+    assert.equal(view['max-width'], '100%');
+    assert.equal(view['overflow-y'], 'visible');
+    assert.equal(consoleLayout.width, '100%');
+    assert.equal(consoleLayout['max-width'], '100%');
+    assert.equal(consoleLayout.overflow, 'clip');
+    assert.equal(form.width, '100%');
+    assert.equal(form['max-width'], '100%');
+    assert.equal(effectiveCssDeclarations(styles, '.delivery-plan-counts', viewport).display, 'none');
+    assert.equal(effectiveCssDeclarations(styles, '.delivery-plan-guided-actions button', viewport).width, '100%');
+  }
+  for (const selector of ['.sdlc-next-action button', '.delivery-plan-guided-create-form input', '.delivery-plan-guided-create-form select', '.delivery-plan-guided-create-form textarea', '.delivery-plan-guided-create-form button']) {
+    assert.equal(effectiveCssDeclarations(styles, selector, { width: 390, height: 844, pointer: 'coarse' })['min-height'], '44px', `${selector} is not touch sized`);
+  }
+});
+
+test('Code City remains selectable, readable, and touch-sized in both phone orientations', async () => {
+  const styles = await uiSource('styles.css');
+  for (const viewport of [
+    { width: 390, height: 844, pointer: 'coarse' },
+    { width: 844, height: 390, pointer: 'coarse' }
+  ]) {
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-picker', viewport)['grid-template-columns'], 'minmax(0, 1fr)');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-picker select', viewport)['font-size'], '16px');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-picker select', viewport)['min-height'], '44px');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-zoom button', viewport)['min-height'], '44px');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-zoom .code-city-fit', viewport)['min-width'], '48px');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-building', viewport)['touch-action'], 'manipulation');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-scene', viewport)['min-width'], '0');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-stage', viewport)['max-height'], '62dvh');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-stage', viewport)['touch-action'], 'none');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-content', viewport)['grid-template-columns'], 'minmax(0, 1fr)');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-detail', viewport)['max-height'], '58dvh');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-detail', viewport).overflow, 'auto');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-analysis-grid', viewport).display, 'flex');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-analysis-grid', viewport)['overflow-x'], 'auto');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-analysis-grid button', viewport)['min-height'], '44px');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-mode-tabs', viewport).display, 'flex');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-mode-tabs', viewport)['overflow-x'], 'auto');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-mode-tabs button', viewport)['min-height'], '48px');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-filter-bar', viewport)['grid-template-columns'], 'minmax(0, 1fr) minmax(0, 1fr)');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-filter-bar input', viewport)['min-height'], '44px');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-neighbor-toggle', viewport)['min-height'], '44px');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-mode-insight > div', viewport).display, 'flex');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-mode-insight button', viewport)['min-height'], '44px');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-file-flows li button', viewport)['min-height'], '44px');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-pathway-direction details button', viewport)['min-height'], '44px');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-atlas-grid', viewport)['grid-template-columns'], 'minmax(0, 1fr)');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-atlas-summary', viewport)['grid-template-columns'], 'repeat(2, minmax(0, 1fr))');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-street-directory', viewport)['grid-template-columns'], 'minmax(0, 1fr)');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-street-directory button', viewport)['min-height'], '44px');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-module-directory', viewport)['grid-template-columns'], 'minmax(0, 1fr)');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-module-directory button', viewport)['min-height'], '44px');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-worksite > header', viewport)['flex-direction'], 'column');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-worksite > header > button', viewport)['min-height'], '44px');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-builder-roster', viewport)['grid-template-columns'], 'minmax(0, 1fr)');
+    assert.equal(effectiveCssDeclarations(styles, '.code-city-worksite > footer', viewport)['grid-template-columns'], 'minmax(0, 1fr)');
+  }
 });
 
 test('critical operational labels remain readable in both phone orientations', async () => {

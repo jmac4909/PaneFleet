@@ -26,26 +26,63 @@ async function syncParentDirectory(filePath) {
   }
 }
 
-export async function writeJsonAtomic(filePath, value, { spaces = 0, trailingNewline = true } = {}) {
-  if (!path.isAbsolute(filePath)) throw new TypeError('filePath must be absolute');
-  if (!Number.isInteger(spaces) || spaces < 0 || spaces > 8) throw new TypeError('spaces must be an integer from 0 to 8');
-  if (typeof trailingNewline !== 'boolean') throw new TypeError('trailingNewline must be boolean');
-  const serialized = JSON.stringify(value, null, spaces);
-  if (serialized === undefined) throw new TypeError('value must be JSON serializable');
-  const contents = trailingNewline ? `${serialized}\n` : serialized;
-  const temporaryPath = `${filePath}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
-  let handle = null;
-  try {
-    handle = await open(temporaryPath, 'wx', 0o600);
-    await handle.writeFile(contents, 'utf8');
-    await handle.sync();
-    await handle.close();
-    handle = null;
-    await rename(temporaryPath, filePath);
-    await syncParentDirectory(filePath);
-  } catch (error) {
-    if (handle) await handle.close().catch(() => {});
-    await unlink(temporaryPath).catch(() => {});
-    throw error;
-  }
+function postRenameWriteError(cause) {
+  const error = new Error(
+    'atomic JSON replacement committed but parent-directory sync failed',
+    { cause }
+  );
+  error.name = 'AtomicJsonPostRenameError';
+  error.code = 'durable_json_post_rename_sync_failed';
+  error.replacementCommitted = true;
+  error.durabilityUncertain = true;
+  error.atomicWritePhase = 'parent_directory_sync';
+  error.originalCode = cause?.code || '';
+  return error;
 }
+
+export function atomicJsonReplacementCommitted(error) {
+  return Boolean(
+    error
+    && error.replacementCommitted === true
+    && error.atomicWritePhase === 'parent_directory_sync'
+  );
+}
+
+export function createJsonAtomicWriter({
+  openFile = open,
+  renameFile = rename,
+  unlinkFile = unlink,
+  syncDirectory = syncParentDirectory
+} = {}) {
+  for (const [name, operation] of Object.entries({ openFile, renameFile, unlinkFile, syncDirectory })) {
+    if (typeof operation !== 'function') throw new TypeError(`${name} must be a function`);
+  }
+  return async function writeAtomic(filePath, value, { spaces = 0, trailingNewline = true } = {}) {
+    if (!path.isAbsolute(filePath)) throw new TypeError('filePath must be absolute');
+    if (!Number.isInteger(spaces) || spaces < 0 || spaces > 8) throw new TypeError('spaces must be an integer from 0 to 8');
+    if (typeof trailingNewline !== 'boolean') throw new TypeError('trailingNewline must be boolean');
+    const serialized = JSON.stringify(value, null, spaces);
+    if (serialized === undefined) throw new TypeError('value must be JSON serializable');
+    const contents = trailingNewline ? `${serialized}\n` : serialized;
+    const temporaryPath = `${filePath}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+    let handle = null;
+    let replacementCommitted = false;
+    try {
+      handle = await openFile(temporaryPath, 'wx', 0o600);
+      await handle.writeFile(contents, 'utf8');
+      await handle.sync();
+      await handle.close();
+      handle = null;
+      await renameFile(temporaryPath, filePath);
+      replacementCommitted = true;
+      await syncDirectory(filePath);
+    } catch (error) {
+      if (handle) await handle.close().catch(() => {});
+      if (!replacementCommitted) await unlinkFile(temporaryPath).catch(() => {});
+      if (replacementCommitted) throw postRenameWriteError(error);
+      throw error;
+    }
+  };
+}
+
+export const writeJsonAtomic = createJsonAtomicWriter();

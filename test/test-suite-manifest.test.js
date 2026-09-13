@@ -9,7 +9,21 @@ import { TEST_SUITES } from '../scripts/test-suites.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const productionModules = [
   'server.js',
+  'agent-commons.js',
+  'agent-recovery.js',
+  'workload-isolation.js',
+  'code-city.js',
   'codex-telemetry.js',
+  'delivery-plan.js',
+  'delivery-plan-store.js',
+  'delivery-run.js',
+  'delivery-run-store.js',
+  'delivery-planning-run.js',
+  'delivery-planning-run-store.js',
+  'planning-role-report.js',
+  'planning-codex-resolver.js',
+  'workspace-baseline.js',
+  'dashboard-presenters.js',
   'durable-json.js',
   'host-metrics.js',
   'observation-cache.js',
@@ -19,14 +33,19 @@ const productionModules = [
   'runtime-config.js',
   'site-onboarding.js',
   'operator-access-token.js',
+  'operator-device-auth.js',
   'runtime-retention.js',
   'prompt-schedule.js',
   'process-runner.js',
   'sensitive-text.js',
+  'terminal-ansi.js',
   'public/app.js',
   'public/theme-bootstrap.js',
+  'public/terminal-presentation.js',
   'public/ui-state.js',
   'scripts/capture-readme-screenshots.mjs',
+  'scripts/agent-commons.mjs',
+  'scripts/benchmark-telemetry.mjs',
   'scripts/plan-private-site.mjs',
   'scripts/privacy-check.mjs',
   'scripts/run-tests.mjs',
@@ -35,7 +54,10 @@ const productionModules = [
 const coverageExclusions = new Map([
   ['public/app.js', 'browser entrypoint exercised by UI behavior and static integration tests'],
   ['public/theme-bootstrap.js', 'synchronous pre-CSS browser bootstrap exercised in an isolated DOM context'],
+  ['public/terminal-presentation.js', 'browser presentation model is exercised through focused safety and rendering contract tests'],
   ['scripts/capture-readme-screenshots.mjs', 'optional browser capture tool exercised through its fixture contract'],
+  ['scripts/agent-commons.mjs', 'live-pane collaboration CLI exercised through a fake tmux boundary and subprocess integration test'],
+  ['scripts/benchmark-telemetry.mjs', 'optional synthetic benchmark with event and cursor assertions; copying budget is enforced by the telemetry regression suite'],
   ['scripts/plan-private-site.mjs', 'review-only CLI exercised through focused subprocess behavior tests'],
   ['scripts/privacy-check.mjs', 'subprocess tool exercised by privacy-check integration tests'],
   ['scripts/run-tests.mjs', 'test-process orchestrator exercised through subprocess and focused unit tests'],
@@ -106,6 +128,7 @@ test('core and feature scripts include every test file exactly once', async () =
   assert.equal(scripts.test, 'node scripts/run-tests.mjs all');
   assert.equal(scripts['test:core'], 'node scripts/run-tests.mjs core');
   assert.equal(scripts['test:features'], 'node scripts/run-tests.mjs features');
+  assert.equal(scripts['test:focused'], 'node scripts/run-tests.mjs --files');
   const core = TEST_SUITES.core.map((file) => path.basename(file));
   const features = TEST_SUITES.features.map((file) => path.basename(file));
   const listed = [...core, ...features];
@@ -145,15 +168,16 @@ test('every production source module is syntax-checked and coverage-classified',
   assert.deepEqual([...productionModules].sort(), actual, 'production source inventory is incomplete');
 
   const scripts = JSON.parse(packageText).scripts || {};
-  const syntaxCheck = String(scripts.check || '');
-  assert.equal(scripts['check:shell'], 'bash -n scripts/*.sh .githooks/pre-commit');
-  assert.match(syntaxCheck, /&& npm run test:coverage && npm run privacy:check$/);
+  const syntaxCheck = String(scripts['check:syntax'] || '');
+  assert.match(syntaxCheck, /^npm run check:shell && /);
+  assert.equal(scripts.check, 'npm run check:syntax && npm run test:coverage && npm run privacy:check');
   assert.equal(scripts['verify:public'], 'npm run check');
   for (const file of productionModules) {
     assert.match(syntaxCheck, new RegExp(`(?:^|&&\\s*)node --check ${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s*&&|$)`));
   }
 
   const coverageCommand = String(scripts['test:coverage'] || '');
+  assert.match(coverageCommand, /(?:^|\s)--merge-async(?:\s|$)/, 'coverage merge must stay bounded on the control-plane host');
   assert.match(coverageCommand, /(?:^|\s)--check-coverage(?:\s|$)/);
   assert.match(coverageCommand, /(?:^|\s)--per-file(?:\s|$)/);
   for (const [metric, minimum] of Object.entries({ statements: 96, branches: 81, functions: 100, lines: 96 })) {
@@ -259,7 +283,7 @@ test('snapshot host fields exactly match browser-consumed host data', async () =
 
 test('live snapshot collection observes queue state without owning prompt delivery', async () => {
   const server = await readFile(path.join(root, 'server.js'), 'utf8');
-  const eventCollector = server.match(/async function sharedSnapshotEventUpdate[\s\S]*?\n}\n\nfunction writeSnapshotEvent/);
+  const eventCollector = server.match(/async function sharedSnapshotEventUpdate[\s\S]*?\n}\n\nfunction stopSnapshotEventTimerIfIdle/);
   assert.ok(eventCollector, 'shared live snapshot collector is missing');
   assert.match(eventCollector[0], /snapshot\(\{ runPromptQueue: false \}\)/);
   assert.match(server, /setInterval\(\(\) => \{\s*monitorPromptQueue\(\);\s*}, PROMPT_QUEUE_MONITOR_MS\)\.unref\(\)/);

@@ -2,6 +2,8 @@
 Description=PaneFleet workload tmux isolation anchor
 Documentation=file://@ROOT@/docs/operations.md
 Before=agent-orchestrator.service
+StartLimitIntervalSec=30
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -14,6 +16,8 @@ Environment="PATH=@NODE_DIR@:@HOME@/.local/bin:/usr/local/bin:/usr/bin:/usr/sbin
 ExecStart=@ROOT@/scripts/workload-tmux-anchor.sh
 KillMode=control-group
 OOMPolicy=continue
+Restart=on-failure
+RestartSec=2
 TimeoutStopSec=15
 UMask=0077
 SyslogIdentifier=panefleet-workloads

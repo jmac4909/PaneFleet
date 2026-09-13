@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -21,6 +22,7 @@ import { writeExecutable } from './helpers/executables.js';
 import { fetchWithTimeout, responseJson, waitForHttpServer } from './helpers/http.js';
 import { waitForCondition, withTimeout } from './helpers/timing.js';
 import { unusedLoopbackPort } from './helpers/unused-loopback-port.js';
+import { applySnapshotPatch } from '../public/ui-state.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const projectDir = path.resolve(testDir, '..');
@@ -28,10 +30,13 @@ const projectDir = path.resolve(testDir, '..');
 let fixtureDir;
 let agentModePath;
 let captureFailurePath;
+let captureFallbackPath;
 let tmuxFailurePath;
 let toolLogPath;
 let runtimeSourcePath;
 let runtimeModuleSourcePath;
+let modelCachePath;
+let rolloutPath;
 let child;
 let codexTelemetryHelper;
 let childOutput = '';
@@ -77,6 +82,7 @@ before(async () => {
   const logDir = path.join(workspace, 'logs');
   agentModePath = path.join(fixtureDir, 'agent-mode');
   captureFailurePath = path.join(fixtureDir, 'capture-failure');
+  captureFallbackPath = path.join(fixtureDir, 'capture-fallback');
   tmuxFailurePath = path.join(fixtureDir, 'tmux-failure');
   toolLogPath = path.join(fixtureDir, 'tools.log');
   runtimeSourcePath = path.join(fixtureDir, 'runtime-source.js');
@@ -89,8 +95,10 @@ before(async () => {
   writeFileSync(runtimeSourcePath, runtimeEntrypointSource('one'));
   writeFileSync(runtimeModuleSourcePath, 'fixture runtime module one\n');
   writeFileSync(tmuxFailurePath, '');
+  writeFileSync(captureFallbackPath, '');
   writeFileSync(path.join(publicDir, 'index.html'), '<!doctype html><title>Operator controls fixture</title>\n');
-  writeFileSync(path.join(codexHome, 'models_cache.json'), '{"models":[]}\n');
+  modelCachePath = path.join(codexHome, 'models_cache.json');
+  writeFileSync(modelCachePath, '{"models":[]}\n');
   const observedAt = new Date().toISOString();
   writeFileSync(path.join(dataDir, 'agent-samples.json'), JSON.stringify({
     version: 1,
@@ -113,11 +121,45 @@ before(async () => {
           cpu: 0,
           mem: 0
         }]
+      },
+      'codex-retired': {
+        sessionCreatedAt: '2020-01-01T00:00:00.000Z',
+        updatedAt: '2020-01-01T00:00:01.000Z',
+        samples: [{
+          sampledAt: '2020-01-01T00:00:01.000Z',
+          session: 'codex-retired',
+          sessionCreatedAt: '2020-01-01T00:00:00.000Z',
+          path: '~/projects/control-workspace',
+          state: 'idle',
+          tone: 'good',
+          reason: '',
+          latestPrompt: '',
+          focus: '',
+          activity: '',
+          blockers: '',
+          cpu: 0,
+          mem: 0
+        }]
       }
     }
   }));
-  const rolloutPath = path.join(codexSessionDir, 'rollout-fixture.jsonl');
+  writeFileSync(path.join(dataDir, 'actions.jsonl'), `${JSON.stringify({
+    time: new Date(Date.now() - 60_000).toISOString(),
+    action: 'agent.send',
+    target: 'codex-control',
+    ok: true,
+    detail: 'historical fixture interaction'
+  })}\n`);
+  rolloutPath = path.join(codexSessionDir, 'rollout-fixture.jsonl');
   writeFileSync(rolloutPath, `${[
+    {
+      timestamp: observedAt,
+      type: 'session_meta',
+      payload: {
+        id: '11111111-2222-4333-8444-555555555555',
+        source: 'cli'
+      }
+    },
     {
       timestamp: observedAt,
       type: 'turn_context',
@@ -161,6 +203,19 @@ before(async () => {
           },
           secondary: null
         }
+      }
+    },
+    {
+      timestamp: observedAt,
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        phase: 'final_answer',
+        content: [{
+          type: 'output_text',
+          text: '# Finished\n\n**Bold result**\n\n```diff\n+added\n-removed\n```\n\nOPENAI_API_KEY=fixture-secret-value'
+        }]
       }
     }
   ].map((event) => JSON.stringify(event)).join('\n')}\n`);
@@ -258,10 +313,23 @@ case "$1" in
     ;;
   capture-pane)
     if [ -s "$OPERATOR_CAPTURE_FAILURE" ]; then exit 91; fi
+    if [ -s "$OPERATOR_CAPTURE_FALLBACK" ]; then
+      ansi_capture='0'
+      for argument in "$@"; do
+        if [ "$argument" = '-e' ]; then ansi_capture='1'; fi
+      done
+      if [ "$ansi_capture" = '1' ]; then
+        printf '\\033[38;5m%s\\n' 'plain fallback fixture output'
+      else
+        printf '%s\\n' 'plain fallback fixture output'
+      fi
+      exit 0
+    fi
     if [ "$mode" = 'suggestion' ]; then
       printf '%s\n' 'OpenAI Codex' '» Find and fix a bug in @filename' 'gpt-5.6-sol xhigh · ~/projects/control-workspace'
     else
-      printf '%s\n' 'OpenAI Codex' 'Working (1s)' 'safe synthetic fixture output'
+      printf '%s\n' 'OpenAI Codex' 'Working (1s)'
+      printf '\\033[1;32m%s\\033[0m\n' 'safe synthetic fixture output'
     fi
     ;;
   send-keys|new-session|kill-session|set-option)
@@ -300,6 +368,7 @@ fi
 case "$1" in
   -ltnp)
     printf '%s\n' 'State Recv-Q Send-Q Local Address:Port Peer Address:Port Process'
+    printf '%s\n' 'MALFORMED LISTENER FIXTURE'
     printf '%s\n' 'LISTEN 0 511 127.0.0.1:4321 0.0.0.0:* users:(("node",pid=5101,fd=20))'
     printf '%s\n' 'LISTEN 0 511 0.0.0.0:8765 0.0.0.0:* users:(("python",pid=6200,fd=7))'
     printf '%s\n' 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=7000,fd=3))'
@@ -354,6 +423,7 @@ printf '%s\n' '${failedSshAt} host sshd[2]: Failed password for root from 203.0.
       OPERATOR_TOOL_LOG: toolLogPath,
       OPERATOR_AGENT_MODE: agentModePath,
       OPERATOR_CAPTURE_FAILURE: captureFailurePath,
+      OPERATOR_CAPTURE_FALLBACK: captureFallbackPath,
       OPERATOR_TMUX_FAILURE: tmuxFailurePath,
       OPERATOR_WORKSPACE: workspace,
       SNAPSHOT_EVENT_MS: '250',
@@ -446,6 +516,7 @@ test('passive Codex usage monitoring persists one privacy-safe baseline from a l
   assert.equal(snapshot.codexUsage.sourceSession, 'codex-control');
   assert.equal(snapshot.codexUsage.account.primary.usedPercent, 12);
   assert.equal(snapshot.codexStats.agents.some((agent) => agent.session === 'codex-control'), true);
+  assert.doesNotMatch(JSON.stringify(snapshot), /Bold result|fixture-secret-value/);
 });
 
 test('pane capture validates exact coordinates, bounds output, and reports capture failures', async () => {
@@ -463,10 +534,49 @@ test('pane capture validates exact coordinates, bounds output, and reports captu
   assert.equal(body.lines, 17);
   assert.equal(body.pane.id, 'codex-control:0.0');
   assert.match(body.output, /safe synthetic fixture output/);
+  assert.doesNotMatch(body.output, /\u001b/);
+  assert.equal(body.styleStatus, 'styled');
+  assert.equal(body.styleRuns.some((run) => run.bold && run.fg === '#0dbc79'), true);
+  assert.equal(body.captureKind, 'live');
+
+  const liveBound = await get('/api/pane/codex-control/capture?paneId=codex-control%3A0.0&lines=1200');
+  assert.equal((await responseJson(liveBound)).lines, 300);
+
+  const history = await get('/api/pane/codex-control/capture?paneId=codex-control%3A0.0&view=history&lines=5000');
+  const historyBody = await responseJson(history);
+  assert.equal(history.status, 200);
+  assert.equal(historyBody.lines, 1200);
+  assert.equal(historyBody.captureKind, 'history');
+
+  writeFileSync(captureFallbackPath, 'fallback\n');
+  try {
+    const plainFallback = await get('/api/pane/codex-control/capture?paneId=codex-control%3A0.0');
+    const plainFallbackBody = await responseJson(plainFallback);
+    assert.equal(plainFallback.status, 200, JSON.stringify(plainFallbackBody));
+    assert.match(plainFallbackBody.output, /plain fallback fixture output/);
+    assert.deepEqual(plainFallbackBody.styleRuns, []);
+    assert.equal(plainFallbackBody.styleStatus, 'plain-fallback');
+  } finally {
+    writeFileSync(captureFallbackPath, '');
+  }
+
+  const invalidView = await get('/api/pane/codex-control/capture?paneId=codex-control%3A0.0&view=everything');
+  assert.equal(invalidView.status, 400);
+  assert.deepEqual(await responseJson(invalidView), { error: 'invalid_capture_view' });
 
   const fallbackLines = await get('/api/pane/codex-control/capture?paneId=codex-control%3A0.0&lines=not-a-number');
   assert.equal(fallbackLines.status, 200);
   assert.equal((await responseJson(fallbackLines)).lines, 100);
+
+  const changedCaptureIdentity = new URLSearchParams({
+    sessionCreatedAt: '2023-11-14T22:13:20.000Z',
+    paneId: 'codex-control:0.0',
+    tmuxPaneId: '%77',
+    panePid: '4101'
+  }).toString();
+  const changedCapture = await get(`/api/pane/codex-control/capture?${changedCaptureIdentity}`);
+  assert.equal(changedCapture.status, 409);
+  assert.deepEqual(await responseJson(changedCapture), { error: 'pane_identity_changed' });
 
   const missing = await get('/api/pane/codex-missing/capture?paneId=codex-missing%3A0.0');
   assert.equal(missing.status, 404);
@@ -477,6 +587,81 @@ test('pane capture validates exact coordinates, bounds output, and reports captu
   assert.equal(failed.status, 500);
   assert.equal((await responseJson(failed)).error, 'capture_failed');
   rmSync(captureFailurePath, { force: true });
+});
+
+test('latest response stays bound to the exact active pane and is redacted', async () => {
+  const identity = new URLSearchParams({
+    sessionCreatedAt: '2023-11-14T22:13:20.000Z',
+    paneId: 'codex-control:0.0',
+    tmuxPaneId: '%77',
+    panePid: '4100'
+  }).toString();
+  const result = await get(`/api/pane/codex-control/response?${identity}`);
+  const body = await responseJson(result);
+  assert.equal(result.status, 200, JSON.stringify(body));
+  assert.match(body.response.text, /^# Finished/);
+  assert.match(body.response.text, /```diff/);
+  assert.doesNotMatch(body.response.text, /fixture-secret-value/);
+  assert.equal(body.response.at.length > 0, true);
+  assert.equal(body.response.truncated, false);
+  assert.equal(body.redactedCount, 1);
+
+  const missingIdentity = await get('/api/pane/codex-control/response?paneId=codex-control%3A0.0');
+  assert.equal(missingIdentity.status, 400);
+  assert.deepEqual(await responseJson(missingIdentity), { error: 'invalid_pane_identity' });
+
+  const changedIdentity = new URLSearchParams({
+    sessionCreatedAt: '2023-11-14T22:13:20.000Z',
+    paneId: 'codex-control:0.0',
+    tmuxPaneId: '%77',
+    panePid: '4101'
+  }).toString();
+  const changed = await get(`/api/pane/codex-control/response?${changedIdentity}`);
+  assert.equal(changed.status, 409);
+  assert.deepEqual(await responseJson(changed), { error: 'pane_identity_changed' });
+
+  const missingPaneIdentity = new URLSearchParams({
+    sessionCreatedAt: '2023-11-14T22:13:22.000Z',
+    paneId: 'codex-missing:0.0',
+    tmuxPaneId: '%99',
+    panePid: '9999'
+  }).toString();
+  const missingPane = await get(`/api/pane/codex-missing/response?${missingPaneIdentity}`);
+  assert.equal(missingPane.status, 404);
+  assert.deepEqual(await responseJson(missingPane), { error: 'pane_not_found' });
+
+  const planningIdentity = new URLSearchParams({
+    sessionCreatedAt: '2023-11-14T22:13:22.000Z',
+    paneId: 'codex-planning-fixture:0.0',
+    tmuxPaneId: '%98',
+    panePid: '9998'
+  }).toString();
+  const managedPlanningPane = await get(`/api/pane/codex-planning-fixture/response?${planningIdentity}`);
+  assert.equal(managedPlanningPane.status, 409);
+  assert.deepEqual(await responseJson(managedPlanningPane), { error: 'planning_run_worker_control_managed' });
+
+  const rolloutContents = readFileSync(rolloutPath, 'utf8');
+  const withoutFinalResponse = rolloutContents
+    .split('\n')
+    .filter((line) => !line.includes('"phase":"final_answer"'))
+    .join('\n');
+  writeFileSync(rolloutPath, withoutFinalResponse);
+  try {
+    const missingResponse = await get(`/api/pane/codex-control/response?${identity}`);
+    assert.equal(missingResponse.status, 404);
+    assert.deepEqual(await responseJson(missingResponse), { error: 'final_response_not_found' });
+  } finally {
+    writeFileSync(rolloutPath, rolloutContents);
+  }
+
+  setAgentMode('background');
+  try {
+    const backgroundPane = await get(`/api/pane/codex-control/response?${identity}`);
+    assert.equal(backgroundPane.status, 409);
+    assert.deepEqual(await responseJson(backgroundPane), { error: 'codex_rollout_identity_unavailable' });
+  } finally {
+    setAgentMode('node');
+  }
 });
 
 test('snapshot discovers tmux-backed and standalone services without inventing controls or exposing SSH', async () => {
@@ -530,6 +715,95 @@ test('snapshot discovers tmux-backed and standalone services without inventing c
   assert.equal(JSON.parse(readFileSync(path.join(fixtureDir, 'data', 'network-monitor.json'), 'utf8')).version, 1);
 });
 
+test('Agent Commons accepts only live-pane-bound spools and quarantines a replaced identity without terminal input', async () => {
+  setAgentMode('node');
+  const inbox = path.join(fixtureDir, 'data', 'agent-commons-inbox');
+  const rejected = path.join(fixtureDir, 'data', 'agent-commons-rejected');
+  const actor = {
+    kind: 'agent',
+    session: 'codex-control',
+    sessionCreatedAt: '2023-11-14T22:13:20.000Z',
+    paneId: '%77',
+    panePid: 4100,
+    label: 'Control Agent'
+  };
+  const queue = (suffix, action, payload, actorOverride = actor) => {
+    const file = path.join(inbox, `commons-spool-${suffix}.json`);
+    writeFileSync(file, `${JSON.stringify({
+      version: 1,
+      operationId: `commons-op-${suffix}`,
+      action,
+      actor: actorOverride,
+      payload,
+      createdAt: new Date().toISOString()
+    })}\n`, { mode: 0o600 });
+    return file;
+  };
+  const before = toolLog();
+
+  const createFile = queue('live-create-0001', 'message.create', {
+    category: 'question',
+    attention: 'ping',
+    audience: 'all',
+    scope: 'global',
+    body: 'The exact live control pane posted this bounded question.',
+    evidence: ''
+  });
+  let snapshot = await responseJson(await get('/api/snapshot'));
+  const root = snapshot.agentCommons.messages.find((message) => message.body.includes('bounded question'));
+  assert.ok(root);
+  assert.equal(root.author.session, 'codex-control');
+  assert.equal(existsSync(createFile), false);
+
+  queue('live-replying-0001', 'message.reply', {
+    parentId: root.id,
+    attention: 'board',
+    body: 'The same pane added attributable context.',
+    evidence: ''
+  });
+  snapshot = await responseJson(await get('/api/snapshot'));
+  assert.equal(
+    snapshot.agentCommons.messages.some((message) => message.parentId === root.id),
+    true,
+    JSON.stringify({ inbox: readdirSync(inbox), rejected: readdirSync(rejected) })
+  );
+
+  queue('live-acknowledge-0001', 'message.acknowledge', { messageId: root.id });
+  queue('live-transition-0001', 'message.transition', { messageId: root.id, state: 'resolved' });
+  snapshot = await responseJson(await get('/api/snapshot'));
+  const resolved = snapshot.agentCommons.messages.find((message) => message.id === root.id);
+  assert.equal(resolved.state, 'resolved');
+  assert.equal(resolved.acknowledgements.some((item) => item.actor.session === 'codex-control'), true);
+
+  const rejectedFile = queue('stale-create-0001', 'message.create', {
+    body: 'A same-name replacement must not inherit this post.'
+  }, { ...actor, panePid: 9999 });
+  snapshot = await responseJson(await get('/api/snapshot'));
+  assert.equal(snapshot.agentCommons.messages.some((message) => message.body.includes('replacement must not')), false);
+  assert.equal(existsSync(rejectedFile), false);
+  assert.equal(readdirSync(rejected).some((name) => name.startsWith('commons-spool-stale-create-0001.json.')), true);
+  assert.doesNotMatch(toolLog().slice(before.length), /tmux <send-keys>/);
+});
+
+test('model options fail closed when the local catalog becomes unreadable and recover on refresh', async () => {
+  const original = readFileSync(modelCachePath, 'utf8');
+  try {
+    writeFileSync(modelCachePath, '{ invalid model catalog\n');
+    const unavailable = await get('/api/options');
+    const unavailableBody = await responseJson(unavailable);
+    assert.equal(unavailable.status, 200, JSON.stringify(unavailableBody));
+    assert.deepEqual(unavailableBody.models, []);
+    assert.equal(unavailableBody.configuredDefault.model, '');
+    assert.equal(unavailableBody.configuredDefault.reasoning, '');
+  } finally {
+    writeFileSync(modelCachePath, original);
+  }
+  const recovered = await responseJson(await get('/api/options'));
+  assert.deepEqual(recovered.models, []);
+  const snapshot = await get('/api/snapshot');
+  assert.equal(snapshot.status, 200, JSON.stringify(await responseJson(snapshot)));
+});
+
 test('opening an agent records one durable interaction without sending terminal input', async () => {
   setAgentMode('node');
   const before = toolLog();
@@ -553,8 +827,11 @@ test('opening an agent records one durable interaction without sending terminal 
   const persisted = JSON.parse(readFileSync(path.join(fixtureDir, 'data', 'agent-interactions.json'), 'utf8'));
   assert.deepEqual(persisted.agents['codex-control'], {
     at: opened.lastInteractionAt,
-    kind: 'agent.open'
+    kind: 'agent.open',
+    lastSupersedingAt: persisted.agents['codex-control'].lastSupersedingAt,
+    lastSupersedingKind: 'agent.send'
   });
+  assert.match(persisted.agents['codex-control'].lastSupersedingAt, /^\d{4}-\d{2}-\d{2}T/);
   const audit = readFileSync(path.join(fixtureDir, 'data', 'actions.jsonl'), 'utf8')
     .split('\n')
     .filter(Boolean)
@@ -644,6 +921,24 @@ test('interrupt remains explicit, exact-pane-bound, and blocked for exited panes
   assert.equal((toolLog().slice(failedBefore.length).match(/tmux <send-keys>/g) || []).length, 1);
   writeFileSync(tmuxFailurePath, '');
 
+  const protectedBefore = toolLog();
+  const protectedResponse = await post('/api/agent/interrupt', {
+    session: 'agent-orchestrator',
+    confirm: 'interrupt'
+  });
+  assert.equal(protectedResponse.status, 403);
+  assert.deepEqual(await responseJson(protectedResponse), { error: 'protected_session' });
+  assert.doesNotMatch(toolLog().slice(protectedBefore.length), /send-keys/);
+
+  const missingBefore = toolLog();
+  const missing = await post('/api/agent/interrupt', {
+    session: 'codex-not-present',
+    confirm: 'interrupt'
+  });
+  assert.equal(missing.status, 404);
+  assert.deepEqual(await responseJson(missing), { error: 'pane_not_found' });
+  assert.doesNotMatch(toolLog().slice(missingBefore.length), /send-keys/);
+
   setAgentMode('dead');
   const deadBefore = toolLog();
   const dead = await post('/api/agent/interrupt', {
@@ -671,6 +966,61 @@ test('session interrupt alias requires exact confirmation and sends one C-c', as
   const operations = toolLog().slice(before.length);
   assert.equal((operations.match(/tmux <send-keys>/g) || []).length, 1);
   assert.match(operations, /tmux <send-keys> <-t> <codex-control:0\.0> <C-c>/);
+});
+
+test('terminal Esc and Ctrl-C controls require exact pane identity and never retry replacements', async () => {
+  // PaneFleet-created agents normally retain a shell as the tmux pane command
+  // while Codex runs as the foreground descendant.
+  setAgentMode('wrapped');
+  writeFileSync(tmuxFailurePath, '');
+  const identity = {
+    session: 'codex-control',
+    sessionCreatedAt: '2023-11-14T22:13:20.000Z',
+    paneId: 'codex-control:0.0',
+    tmuxPaneId: '%77',
+    panePid: 4100
+  };
+  const before = toolLog();
+
+  const unconfirmedEscape = await post('/api/agent/ui-key', { ...identity, key: 'escape' });
+  assert.equal(unconfirmedEscape.status, 400);
+  assert.deepEqual(await responseJson(unconfirmedEscape), { error: 'confirmation_required' });
+  const missingIdentity = await post('/api/agent/ui-key', {
+    session: identity.session,
+    key: 'escape',
+    confirm: 'send-escape'
+  });
+  assert.equal(missingIdentity.status, 400);
+  assert.deepEqual(await responseJson(missingIdentity), { error: 'exact_agent_identity_required' });
+  assert.doesNotMatch(toolLog().slice(before.length), /tmux <send-keys>/);
+
+  const escaped = await post('/api/agent/ui-key', {
+    ...identity,
+    key: 'escape',
+    confirm: 'send-escape'
+  });
+  assert.equal(escaped.status, 200, JSON.stringify(await responseJson(escaped)));
+  const interrupted = await post('/api/agent/ui-key', {
+    ...identity,
+    key: 'interrupt',
+    confirm: 'interrupt'
+  });
+  assert.equal(interrupted.status, 200, JSON.stringify(await responseJson(interrupted)));
+  const operations = toolLog().slice(before.length);
+  assert.equal((operations.match(/tmux <send-keys>/g) || []).length, 2);
+  assert.match(operations, /tmux <send-keys> <-t> <codex-control:0\.0> <Escape>/);
+  assert.match(operations, /tmux <send-keys> <-t> <codex-control:0\.0> <C-c>/);
+
+  const sendsBeforeReplacement = (toolLog().match(/tmux <send-keys>/g) || []).length;
+  const replaced = await post('/api/agent/ui-key', {
+    ...identity,
+    panePid: identity.panePid + 1,
+    key: 'escape',
+    confirm: 'send-escape'
+  });
+  assert.equal(replaced.status, 409);
+  assert.deepEqual(await responseJson(replaced), { error: 'agent_pane_identity_changed' });
+  assert.equal((toolLog().match(/tmux <send-keys>/g) || []).length, sendsBeforeReplacement);
 });
 
 test('picker input reports exact-pane send failures without retrying or changing targets', async () => {
@@ -748,7 +1098,7 @@ test('a background Codex-shaped process does not make a shell pane promptable', 
   assert.ok(brief);
   assert.equal(brief.tone, 'warn');
   assert.equal(brief.stateText, 'Codex exited, but its exact tmux pane is still running at a live shell.');
-  assert.equal(brief.nextAction, 'Use Restart Codex to resume the last session in this exact terminal.');
+  assert.equal(brief.nextAction, 'Use Resume saved chat to continue the exact registered conversation in this terminal.');
   assert.equal(brief.needsAttention, true);
 
   const before = toolLog();
@@ -787,7 +1137,27 @@ test('explicit stop protects the dashboard, handles missing panes, and reports o
   assert.deepEqual(await responseJson(stopped), { ok: true, session: 'codex-control' });
 });
 
-test('resume accepts only a live shell and types one command plus one Enter', async () => {
+test('resume accepts only a live shell with an exact saved rollout and never falls back to last', async () => {
+  const planningManaged = await post('/api/agent/resume', {
+    session: 'codex-planning-0123456789abcdef01234567-po'
+  });
+  assert.equal(planningManaged.status, 409);
+  assert.equal((await responseJson(planningManaged)).error, 'planning_run_worker_control_managed');
+
+  const ineligible = await post('/api/agent/resume', { session: 'review-agent' });
+  assert.equal(ineligible.status, 409);
+  assert.equal((await responseJson(ineligible)).error, 'agent_recovery_profile_not_eligible');
+
+  const missingPane = await post('/api/agent/resume', {
+    session: 'codex-missing',
+    sessionCreatedAt: new Date(1_700_000_000_000).toISOString(),
+    paneId: 'codex-missing:0.0',
+    tmuxPaneId: '%999',
+    panePid: 99999
+  });
+  assert.equal(missingPane.status, 404);
+  assert.equal((await responseJson(missingPane)).error, 'agent_pane_not_found');
+
   setAgentMode('node');
   const snapshotResponse = await get('/api/snapshot');
   const snapshot = await responseJson(snapshotResponse);
@@ -825,29 +1195,13 @@ test('resume accepts only a live shell and types one command plus one Enter', as
   writeFileSync(tmuxFailurePath, 'send-keys\n');
   const failedBefore = toolLog();
   const failed = await post('/api/agent/resume', identity);
-  assert.equal(failed.status, 500);
-  assert.equal((await responseJson(failed)).error, 'resume_send_failed');
+  assert.equal(failed.status, 409);
+  assert.equal((await responseJson(failed)).error, 'agent_recovery_exact_root_rollout_required');
   const failedOperations = toolLog().slice(failedBefore.length);
-  assert.equal((failedOperations.match(/tmux <send-keys>/g) || []).length, 1);
+  assert.equal((failedOperations.match(/tmux <send-keys>/g) || []).length, 0);
   assert.doesNotMatch(failedOperations, /<C-m>/);
+  assert.doesNotMatch(failedOperations, /resume --last/);
   writeFileSync(tmuxFailurePath, '');
-
-  const before = toolLog();
-  const resumed = await post('/api/agent/resume', identity);
-  const body = await responseJson(resumed);
-  assert.equal(resumed.status, 200, JSON.stringify(body));
-  assert.equal(body.command, 'codex resume --last');
-  const operations = toolLog().slice(before.length);
-  assert.equal((operations.match(/tmux <send-keys>/g) || []).length, 2);
-  assert.match(operations, /<-l> <codex resume --last --yolo --config model_reasoning_effort=xhigh>/);
-  assert.match(operations, /<C-m>/);
-
-  setAgentMode('node');
-  const repeatedBefore = toolLog();
-  const repeated = await post('/api/agent/resume', identity);
-  assert.equal(repeated.status, 409);
-  assert.equal((await responseJson(repeated)).error, 'already_running');
-  assert.doesNotMatch(toolLog().slice(repeatedBefore.length), /tmux <send-keys>/);
 });
 
 test('allowlisted service lifecycle requires confirmation and uses only configured tmux actions', async () => {
@@ -1116,18 +1470,23 @@ test('event stream shares snapshots and shuts down cleanly with active clients',
       assert.match(response.headers.get('content-type') || '', /^text\/event-stream/);
     }
     readers = responses.map((response) => response.body.getReader());
-    const readEvents = (reader, event, count) => withTimeout(async () => {
-      let payload = '';
-      const marker = `event: ${event}`;
-      while (payload.split(marker).length - 1 < count) {
+    const pendingEvents = new Map();
+    const readEvent = (reader, expectedEvent) => withTimeout(async () => {
+      const pending = pendingEvents.get(reader) || { text: '', decoder: new TextDecoder() };
+      pendingEvents.set(reader, pending);
+      while (!pending.text.includes('\n\n')) {
         const chunk = await reader.read();
-        if (chunk.done) throw new Error(`event stream closed before ${event}`);
-        payload += Buffer.from(chunk.value || []).toString('utf8');
+        if (chunk.done) throw new Error(`event stream closed before ${expectedEvent}`);
+        pending.text += pending.decoder.decode(chunk.value, { stream: true });
       }
+      const end = pending.text.indexOf('\n\n') + 2;
+      const payload = pending.text.slice(0, end);
+      pending.text = pending.text.slice(end);
+      assert.ok(payload.split('\n').includes(`event: ${expectedEvent}`), `expected ${expectedEvent}, got ${payload.slice(0, 100)}`);
       return payload;
-    }, { timeoutMs: 2500, label: `${event} event` });
+    }, { timeoutMs: 2500, label: `${expectedEvent} event` });
 
-    const initialPayloads = await Promise.all(readers.map((reader) => readEvents(reader, 'snapshot', 1)));
+    const initialPayloads = await Promise.all(readers.map((reader) => readEvent(reader, 'snapshot')));
     assert.equal((toolLog().match(/tmux <list-panes> <-a>/g) || []).length - buildsBefore, 1);
     for (const payload of initialPayloads) {
       assert.match(payload, /id: 1/);
@@ -1135,7 +1494,7 @@ test('event stream shares snapshots and shuts down cleanly with active clients',
       assert.match(payload, /"session":"codex-control"/);
     }
 
-    const recurringPayloads = await Promise.all(readers.map((reader) => readEvents(reader, 'snapshot-patch', 1)));
+    const recurringPayloads = await Promise.all(readers.map((reader) => readEvent(reader, 'snapshot-patch')));
     for (const payload of recurringPayloads) {
       assert.match(payload, /id: 2/);
       assert.match(payload, /event: snapshot-patch/);
@@ -1149,7 +1508,7 @@ test('event stream shares snapshots and shuts down cleanly with active clients',
     const servicesSource = readFileSync(servicesPath, 'utf8');
     writeFileSync(servicesPath, '{ invalid fixture JSON\n');
     try {
-      const errorPayloads = await Promise.all(readers.map((reader) => readEvents(reader, 'error', 1)));
+      const errorPayloads = await Promise.all(readers.map((reader) => readEvent(reader, 'error')));
       for (const payload of errorPayloads) {
         assert.match(payload, /event: error/);
         assert.match(payload, /services\.json invalid JSON/);
@@ -1157,11 +1516,29 @@ test('event stream shares snapshots and shuts down cleanly with active clients',
     } finally {
       writeFileSync(servicesPath, servicesSource);
     }
-    const recoveredPayloads = await Promise.all(readers.map((reader) => readEvents(reader, 'snapshot-patch', 1)));
+    const recoveredPayloads = await Promise.all(readers.map((reader) => readEvent(reader, 'snapshot-patch')));
     for (const payload of recoveredPayloads) {
       assert.match(payload, /id: 3/);
       assert.match(payload, /event: snapshot-patch/);
     }
+
+    // A browser joining an already-running stream must get a full base first,
+    // then a patch the real browser reducer accepts (never a duplicate update).
+    const joiningController = new AbortController();
+    controllers.push(joiningController);
+    const joiningResponse = await withTimeout(() => fetch(`${baseUrl}/api/events`, {
+      headers: { cookie: controlCookie },
+      signal: joiningController.signal
+    }), { timeoutMs: 2500, label: 'joining event stream connection' });
+    assert.equal(joiningResponse.status, 200);
+    const joiningReader = joiningResponse.body.getReader();
+    readers.push(joiningReader);
+    const joinedFull = await readEvent(joiningReader, 'snapshot');
+    const joinedPatch = await readEvent(joiningReader, 'snapshot-patch');
+    const fullSequence = Number(joinedFull.match(/^id: (\d+)$/m)[1]);
+    const fullData = JSON.parse(joinedFull.match(/^data: (.+)$/m)[1]);
+    const patchData = JSON.parse(joinedPatch.match(/^data: (.+)$/m)[1]);
+    assert.equal(applySnapshotPatch(fullData, fullSequence, patchData).ok, true);
 
     setAgentMode('background');
     const changedSnapshot = await get('/api/snapshot');

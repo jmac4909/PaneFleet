@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { ensurePrivateDirectory, writeJsonAtomic } from '../durable-json.js';
+import {
+  atomicJsonReplacementCommitted,
+  createJsonAtomicWriter,
+  ensurePrivateDirectory,
+  writeJsonAtomic
+} from '../durable-json.js';
 
 test('private directories are owner-only and reject symlink substitution', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'panefleet-private-directory-'));
@@ -79,4 +84,53 @@ test('atomic JSON writes validate inputs and clean random temporary files after 
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('post-rename sync failures expose a committed replacement while pre-rename failures do not', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'panefleet-durable-json-phases-'));
+  const target = path.join(directory, 'state.json');
+  try {
+    await writeFile(target, '{"revision":0}\n', { mode: 0o600 });
+    const syncFailure = Object.assign(new Error('synthetic directory sync failure'), { code: 'EIO' });
+    let postRenameUnlinks = 0;
+    const postRenameWriter = createJsonAtomicWriter({
+      unlinkFile: async (...args) => {
+        postRenameUnlinks += 1;
+        return unlink(...args);
+      },
+      syncDirectory: async () => { throw syncFailure; }
+    });
+    await assert.rejects(
+      postRenameWriter(target, { revision: 1 }),
+      (error) => {
+        assert.equal(error.code, 'durable_json_post_rename_sync_failed');
+        assert.equal(error.originalCode, 'EIO');
+        assert.equal(error.replacementCommitted, true);
+        assert.equal(error.durabilityUncertain, true);
+        assert.equal(atomicJsonReplacementCommitted(error), true);
+        return true;
+      }
+    );
+    assert.equal(postRenameUnlinks, 0);
+    assert.equal(await readFile(target, 'utf8'), '{"revision":1}\n');
+    assert.deepEqual(await readdir(directory), ['state.json']);
+
+    const renameFailure = Object.assign(new Error('synthetic rename failure'), { code: 'EACCES' });
+    const preRenameWriter = createJsonAtomicWriter({
+      renameFile: async () => { throw renameFailure; }
+    });
+    await assert.rejects(
+      preRenameWriter(target, { revision: 2 }),
+      (error) => error === renameFailure && atomicJsonReplacementCommitted(error) === false
+    );
+    assert.equal(await readFile(target, 'utf8'), '{"revision":1}\n');
+    assert.deepEqual(await readdir(directory), ['state.json']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('atomic writer dependency hooks must be callable', () => {
+  assert.throws(() => createJsonAtomicWriter({ syncDirectory: null }), /syncDirectory must be a function/);
+  assert.throws(() => createJsonAtomicWriter({ renameFile: false }), /renameFile must be a function/);
 });

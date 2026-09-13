@@ -93,10 +93,26 @@ test('New Agent presents safe defaults when a partial response omits optional di
 });
 
 test('launcher draft signatures detect edits made while a slow agent start is pending', () => {
-  const submitted = { name: 'sample-project', workspace: '/projects/sample-project', prompt: 'First prompt' };
+  const submitted = {
+    name: 'sample-project',
+    workspace: '/projects/sample-project',
+    safetyProfile: 'standard',
+    prompt: 'First prompt',
+    commonsRequestId: ''
+  };
   assert.equal(agentDraftSignature({ ...submitted }), agentDraftSignature({ ...submitted, open: true }));
   assert.notEqual(agentDraftSignature(submitted), agentDraftSignature({ ...submitted, prompt: 'Newer prompt' }));
-  assert.equal(agentDraftSignature(null), JSON.stringify(['', '', '', '', '', '', '']));
+  assert.notEqual(
+    agentDraftSignature(submitted),
+    agentDraftSignature({ ...submitted, safetyProfile: 'local_delivery' }),
+    'changing worker authority while launch is pending must preserve the edited draft'
+  );
+  assert.notEqual(
+    agentDraftSignature(submitted),
+    agentDraftSignature({ ...submitted, commonsRequestId: 'commons-help-request-0001' }),
+    'binding a launch to a Commons request must preserve the newer draft'
+  );
+  assert.equal(agentDraftSignature(null), JSON.stringify(['', '', '', '', '', '', '', '', '']));
 });
 
 test('New Agent result handling records and reloads the session but resets only outside preserve-draft outcomes', async () => {
@@ -106,6 +122,10 @@ test('New Agent result handling records and reloads the session but resets only 
   assert.match(source, /import\s*\{[^}]*agentCreateOutcome[^}]*\}\s*from\s*['"]\.\/ui-state\.js['"]/s);
   assert.match(createAgent, /agentCreateOutcome\(result,\s*Boolean\(prompt\.trim\(\)\)\)/);
   assert.match(createAgent, /timeoutMs:\s*45000/);
+  assert.match(createAgent, /const safetyProfile = String\(formData\.get\('safetyProfile'\) \|\| 'standard'\)\.trim\(\)/);
+  assert.match(createAgent, /JSON\.stringify\(\{ name, directoryName, workspace, workspaceMode, model, reasoning, safetyProfile, prompt, commonsRequestId, autoRecover: commonsRequestId \? false : undefined \}\)/);
+  assert.match(source, /<select name="safetyProfile">[\s\S]*value="standard"[\s\S]*value="local_delivery"/);
+  assert.match(source, /Local Delivery · workspace only, no network/);
   assert.equal((createAgent.match(/api\('\/api\/agent\/create'/g) || []).length, 1);
 
   const interaction = createAgent.indexOf('markAgentInteraction(result.session');
@@ -115,7 +135,7 @@ test('New Agent result handling records and reloads the session but resets only 
   const branch = createAgent.indexOf('if (!preserveDraft) {');
   const reset = createAgent.indexOf('form.reset()', branch);
   const clearDraft = createAgent.indexOf("state.agentDraft = { open: false", reset);
-  const notice = createAgent.indexOf('setNotice(notice, outcome.tone)');
+  const notice = createAgent.indexOf('setNotice(notice, noticeTone)');
   const reload = createAgent.indexOf("await loadSnapshot('manual')");
 
   assert.ok(interaction >= 0, 'created session interaction must still be recorded');
@@ -129,6 +149,35 @@ test('New Agent result handling records and reloads the session but resets only 
 
   const preserveBranch = createAgent.slice(branch, reset);
   assert.doesNotMatch(preserveBranch, /api\(/, 'uncertain outcomes must never trigger an automatic resend');
+});
+
+test('Commons help preparation binds a locked one-helper draft without starting it', async () => {
+  const [source, server] = await Promise.all([
+    readFile(path.join(root, 'public', 'app.js'), 'utf8'),
+    readFile(path.join(root, 'server.js'), 'utf8')
+  ]);
+  const prepare = functionSource(source, 'function prepareCommonsHelper(messageId)');
+
+  assert.match(prepare, /recommendation\?\.kind !== 'spawn'/);
+  assert.match(prepare, /recommendation\.spawnAllowed !== true/);
+  assert.match(prepare, /name: recommendation\.helper\.name/);
+  assert.match(prepare, /workspace: recommendation\.helper\.workspace/);
+  assert.match(prepare, /commonsRequestId: message\.id/);
+  assert.match(prepare, /openNewAgentLauncher\(recommendation\.helper\.workspace, \{ preserveCommonsBinding: true \}\)/);
+  assert.doesNotMatch(prepare, /\/api\/agent\/create|requestSubmit\(|\.click\(/);
+
+  assert.match(source, /Approve & Start One Helper/);
+  assert.match(source, /Creates at most the one deterministic helper bound to this request/);
+  assert.match(source, /name="commonsRequestId"/);
+  assert.match(source, /commonsHelperBound \? 'readonly' : ''/);
+  assert.match(source, /commonsRequestId \? false : undefined/);
+  assert.match(source, /request stays open until the helper's outcome is reviewed/);
+  assert.match(server, /const prompt = helperBinding\?\.prompt \|\| String\(body\.prompt \|\| ''\)/);
+  assert.match(server, /const autoRecoverRequested = helperBinding \? false : body\.autoRecover !== false/);
+  assert.match(server, /agent_commons_recursive_helper_spawn_forbidden/);
+  assert.match(server, /agent_commons\.helper_started/);
+  assert.match(server, /request_left_open=true/);
+  assert.doesNotMatch(server, /agent_commons\.helper_spawned/);
 });
 
 test('closing the New Agent launcher preserves its draft without creating or sending anything', async () => {

@@ -6,21 +6,40 @@ import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 
 import {
+  agentCommonsComposerPresentation,
+  agentCommonsMessagePresentation,
+  agentCommonsVisibleThreadIds,
   applySnapshotPatch,
   attentionForSession,
   codexCompactTelemetryPresentation,
   codexTelemetryPresentation,
   codexTelemetryFreshness,
   codexTokenBreakdown,
+  canonicalWorkspaceSelection,
+  codeCityBuildingHeight,
+  codeCityPayloadSafe,
   connectionStatePresentation,
   cycledItemIndex,
   dashboardDocumentTitle,
   dashboardSectionDecisionCount,
   dashboardShortcut,
   dashboardThemePresentation,
+  deliveryPlanApprovalTransition,
+  deliveryPlanDefinitionPatch,
+  deliveryPlanOperationStorageKey,
+  deliveryPlanPhasePresentation,
+  deliveryPlanSummaries,
+  deliveryRunConditionPresentation,
+  deliveryRunLevelPresentation,
+  deliveryRunOperationStorageKey,
+  deliveryRunStartRequest,
+  deliveryRunTaskPresentation,
   exactPaneIdentityQuery,
   exactIpv4Input,
   filterPromptHistory,
+  agentRecoveryManualResumeAvailable,
+  agentRecoveryResumeConfirmation,
+  genericAgentRecoverySessionEligible,
   hasActiveTextSelection,
   horizontalRevealScrollLeft,
   ideaGenerationPrompt,
@@ -42,6 +61,15 @@ import {
   normalizedTerminalRestoreState,
   preferredDashboardView,
   preferredScrollBehavior,
+  planningCandidateChanges,
+  planningRoleProgressPresentation,
+  planningRunApplyRequest,
+  planningRunCancelRequest,
+  planningRunConditionPresentation,
+  planningRunContinueRequest,
+  planningRunOperationStorageKey,
+  planningRunStartRequest,
+  planningRunTerminateProvisionalWorkerRequest,
   projectContextCacheFresh,
   promptHistoryOrigin,
   promptQueueCancelPresentation,
@@ -171,6 +199,13 @@ test('live entrypoint loads the terminal-first shell', async () => {
   assert.match(index, /src="\/app\.js"/);
   assert.match(index, /id="queue-tab" class="tab" data-view="queue"[^>]*aria-controls="queue-view"/);
   assert.match(index, /id="queue-view" class="view queue-workspace-view"[^>]*hidden/);
+  assert.match(index, /id="sdlc-tab" class="tab" data-view="sdlc"[^>]*aria-controls="sdlc-view"[^>]*aria-keyshortcuts="Alt\+3"/);
+  assert.match(index, /id="sdlc-view" class="view sdlc-workspace-view"[^>]*hidden/);
+  assert.match(index, /id="code-city-tab" class="tab" data-view="code-city"[^>]*aria-controls="code-city-view"[^>]*aria-keyshortcuts="Alt\+4"/);
+  assert.match(index, /id="code-city-view" class="view code-city-workspace-view"[^>]*hidden/);
+  assert.match(index, /id="commons-tab" class="tab" data-view="commons"[^>]*aria-controls="commons-view"[^>]*aria-keyshortcuts="Alt\+5"/);
+  assert.match(index, /id="commons-view" class="view commons-workspace-view"[^>]*hidden/);
+  assert.match(index, /id="tools-tab"[^>]*aria-keyshortcuts="Alt\+6"/);
   assert.match(index, /id="notice" class="notice notice-toast hidden"[^>]*><span id="notice-message"[^>]*><\/span><button class="notice-dismiss" data-action="notice-dismiss"/);
   assert.match(index, /id="runtime-drift" class="notice runtime-drift hidden" role="alert"/);
   assert.match(index, /id="runtime-drift-title">Dashboard backend restart required/);
@@ -203,7 +238,10 @@ test('live entrypoint loads the terminal-first shell', async () => {
   assert.match(index, /data-action="session-filter" data-filter="needs"/);
   assert.match(index, /id="agents-tab"[^>]*aria-keyshortcuts="Alt\+1"/);
   assert.match(index, /id="queue-tab"[^>]*aria-keyshortcuts="Alt\+2"/);
-  assert.match(index, /id="tools-tab"[^>]*aria-keyshortcuts="Alt\+3"/);
+  assert.match(index, /id="sdlc-tab"[^>]*aria-keyshortcuts="Alt\+3"/);
+  assert.match(index, /id="code-city-tab"[^>]*aria-keyshortcuts="Alt\+4"/);
+  assert.match(index, /id="commons-tab"[^>]*aria-keyshortcuts="Alt\+5"/);
+  assert.match(index, /id="tools-tab"[^>]*aria-keyshortcuts="Alt\+6"/);
   assert.match(index, /id="workspace-eyebrow" class="eyebrow">Terminal-first control/);
   assert.match(index, /id="workspace-title">Agent workspace/);
   assert.match(index, /id="connection-pill"[^>]*data-state="init"[^>]*role="status"[^>]*aria-live="polite"/);
@@ -226,8 +264,8 @@ test('live entrypoint loads the terminal-first shell', async () => {
   assert.match(index, /id="project-notes"/);
   assert.match(index, /id="project-artifacts"/);
   assert.match(index, /id="project-artifact-count"/);
-  assert.match(index, /Downloadable PDF, HTML, and current-session Markdown outputs/);
-  assert.match(index, /id="scratchpad-text"[^>]*maxlength="4000"/);
+  assert.match(index, /Downloadable PDF, HTML, ZIP, and current-session Markdown outputs/);
+  assert.match(index, /id="scratchpad-text"[^>]*maxlength="30000"/);
   assert.match(index, /id="scratchpad-review-panel" class="scratchpad-review-panel hidden"/);
   assert.match(index, /data-action="scratchpad-send-confirm"/);
 
@@ -369,14 +407,31 @@ test('exact IPv4 paste parsing canonicalizes safe clipboard padding and rejects 
   assert.match(app, /if \(!window\.confirm[\s\S]*IP authorization canceled/);
 });
 
+test('AAP workspace selection expands a unique displayed home path without guessing ambiguous labels', () => {
+  const workspaces = [
+    { path: '/srv/projects/agent-workspaces/snowportal', label: '~/projects/agent-workspaces/snowportal' },
+    { path: '/srv/projects/agent-workspaces/other', label: 'Shared name' },
+    { path: '/srv/projects/other', label: 'Shared name' }
+  ];
+  assert.equal(
+    canonicalWorkspaceSelection('~/projects/agent-workspaces/snowportal', workspaces),
+    '/srv/projects/agent-workspaces/snowportal'
+  );
+  assert.equal(canonicalWorkspaceSelection('/srv/exact', workspaces), '/srv/exact');
+  assert.equal(canonicalWorkspaceSelection('Shared name', workspaces), 'Shared name');
+});
+
 test('terminal-first shell removes legacy command-center renderers without losing Codex restart recovery', async () => {
   const [app, styles] = await Promise.all([uiSource('app.js'), uiSource('styles.css')]);
 
   assert.doesNotMatch(app, /function (?:orchestrationBrief|workerRow|attentionItem|firstSummaryLine)\b/);
   assert.doesNotMatch(app, /resumePreferences|rememberResumeSettings|case 'switch-review':/);
   assert.doesNotMatch(styles, /\.(?:ops-console|overview-panel|workers-panel|worker-row|agent-card|resume-config)\b/);
-  assert.match(app, /const canResume = agent\.canResume \|\| brief\.canResume;/);
-  assert.match(app, /canResume \? `<button class="action-button primary" data-action="agent-resume"[^>]*>Restart Codex/);
+  assert.match(app, /const canResume = Boolean\(agent\.canResume \|\| brief\.canResume\)[\s\S]*agentRecoveryManualResumeAvailable\(state\.snapshot, agent\.session\)/);
+  assert.match(app, /canResume \? `<button class="action-button primary" data-action="agent-resume"[^>]*>Resume saved chat/);
+  assert.match(app, /if \(!agentRecoveryManualResumeAvailable\(state\.snapshot, session\)\)[\s\S]*has no exact saved rollout registered/);
+  assert.match(app, /agentRecoveryResumeConfirmation\(state\.snapshot, session, targetLabel\)[\s\S]*window\.confirm\(confirmation\.question\)/);
+  assert.match(app, /Saved-chat resume canceled\. No terminal input was sent\./);
 });
 
 test('Codex context stays exact-session while account usage stays shared and passive', async () => {
@@ -637,7 +692,10 @@ test('dashboard shortcuts stay out of editors and map only deliberate navigation
   assert.equal(dashboardShortcut({ key: 'x', ctrlKey: true }, false), null);
   assert.equal(dashboardShortcut({ key: '1', altKey: true }, false), 'agents');
   assert.equal(dashboardShortcut({ key: '2', altKey: true }, false), 'queue');
-  assert.equal(dashboardShortcut({ key: '3', altKey: true }, false), 'tools');
+  assert.equal(dashboardShortcut({ key: '3', altKey: true }, false), 'sdlc');
+  assert.equal(dashboardShortcut({ key: '4', altKey: true }, false), 'code-city');
+  assert.equal(dashboardShortcut({ key: '5', altKey: true }, false), 'commons');
+  assert.equal(dashboardShortcut({ key: '6', altKey: true }, false), 'tools');
   assert.equal(dashboardShortcut({ key: 'n', altKey: true }, false), 'new-agent');
   assert.equal(dashboardShortcut({ key: 'N', altKey: true }, false), 'new-agent');
   assert.equal(dashboardShortcut({ key: '0', altKey: true }, false), 'workspace-focus');
@@ -861,11 +919,94 @@ test('Tools traps modal focus and Escape restores the opening control', async ()
 
 test('dashboard view preference honors deep links before durable local selection', () => {
   assert.equal(preferredDashboardView('#queue', 'agents'), 'queue');
+  assert.equal(preferredDashboardView('#sdlc', 'agents'), 'sdlc');
+  assert.equal(preferredDashboardView('#code-city', 'agents'), 'code-city');
+  assert.equal(preferredDashboardView('#city', 'agents'), 'code-city');
+  assert.equal(preferredDashboardView('#commons', 'agents'), 'commons');
+  assert.equal(preferredDashboardView('#agent-commons', 'agents'), 'commons');
   assert.equal(preferredDashboardView('#terminals', 'queue'), 'agents');
   assert.equal(preferredDashboardView('#agents', 'queue'), 'agents');
   assert.equal(preferredDashboardView('#unknown', 'queue'), 'queue');
+  assert.equal(preferredDashboardView('#unknown', 'sdlc'), 'sdlc');
+  assert.equal(preferredDashboardView('#unknown', 'code-city'), 'code-city');
+  assert.equal(preferredDashboardView('#unknown', 'commons'), 'commons');
   assert.equal(preferredDashboardView('', 'agents'), 'agents');
   assert.equal(preferredDashboardView(null, 'invalid'), 'agents');
+});
+
+test('Agent Commons presentation keeps attention advisory and filters whole threads', () => {
+  const stop = agentCommonsComposerPresentation({
+    category: 'decision',
+    attention: 'stop',
+    scope: 'global',
+    body: 'The active run may be targeting production.',
+    evidence: 'The observed account identifier differs from the reviewed target.'
+  });
+  assert.equal(stop.disabled, false);
+  assert.equal(stop.showEvidence, true);
+  assert.equal(stop.showIndependent, true);
+  assert.match(stop.attentionHint, /operator review/);
+  assert.match(stop.attentionHint, /never sends C-c/);
+  assert.equal(agentCommonsComposerPresentation({ body: 'hidden\u0000text' }).disabled, true);
+  assert.equal(agentCommonsComposerPresentation({ body: 'x'.repeat(6001) }).disabled, true);
+  assert.equal(agentCommonsComposerPresentation({
+    category: 'help_request', body: 'Need an independent parser review.'
+  }).showEvidence, true);
+  assert.equal(agentCommonsMessagePresentation({
+    category: 'help_request', attention: 'ping', state: 'open'
+  }).categoryLabel, 'Help request');
+  assert.equal(agentCommonsMessagePresentation({
+    category: 'wait', attention: 'checkpoint', state: 'accepted'
+  }).terminalMutation, false);
+  assert.equal(agentCommonsMessagePresentation({
+    category: 'update', attention: 'stop', state: 'resolved'
+  }).attentionOpen, false);
+  assert.deepEqual(agentCommonsMessagePresentation({
+    category: 'lesson', attention: 'stop', state: 'disputed'
+  }), {
+    categoryLabel: 'Lesson',
+    attentionLabel: 'Stop request',
+    attentionTone: 'bad',
+    stateLabel: 'Disputed',
+    attentionOpen: true,
+    terminalMutation: false
+  });
+
+  const messages = [
+    {
+      id: 'decision', threadId: 'decision', parentId: '', category: 'decision', attention: 'board',
+      scope: '/work/a', body: 'Choose a release boundary', evidence: '', updatedAt: '2026-08-27T08:00:00.000Z',
+      author: { kind: 'operator', label: 'Operator' }, audience: { kind: 'sessions', sessions: ['codex-alpha'] }
+    },
+    {
+      id: 'decision-reply', threadId: 'decision', parentId: 'decision', category: 'update', attention: 'stop',
+      scope: '/work/a', body: 'Alpha found the wrong target', evidence: '', updatedAt: '2026-08-27T08:02:00.000Z',
+      author: { kind: 'agent', session: 'codex-alpha', label: 'Alpha' }, audience: { kind: 'sessions', sessions: ['codex-alpha'] }
+    },
+    {
+      id: 'lesson', threadId: 'lesson', parentId: '', category: 'lesson', attention: 'board',
+      scope: '/work/b', body: 'Run focused checks first', evidence: 'Lower memory pressure', updatedAt: '2026-08-27T08:01:00.000Z',
+      author: { kind: 'agent', session: 'codex-beta', label: 'Beta' }, audience: { kind: 'all', sessions: [] }
+    },
+    {
+      id: 'wait', threadId: 'wait', parentId: '', category: 'wait', attention: 'ping',
+      scope: 'global', body: 'Waiting on schema review', evidence: '', updatedAt: '2026-08-27T07:59:00.000Z',
+      author: { kind: 'agent', session: 'codex-gamma', label: 'Gamma' }, audience: { kind: 'all', sessions: [] }
+    }
+  ];
+  assert.deepEqual(agentCommonsVisibleThreadIds(messages), ['decision', 'lesson', 'wait']);
+  assert.deepEqual(agentCommonsVisibleThreadIds(messages, { filter: 'attention' }), ['decision', 'wait']);
+  assert.deepEqual(agentCommonsVisibleThreadIds(messages, { filter: 'coordination' }), ['wait']);
+  assert.deepEqual(agentCommonsVisibleThreadIds(messages, { filter: 'lessons' }), ['lesson']);
+  assert.deepEqual(agentCommonsVisibleThreadIds(messages, { filter: 'decisions' }), ['decision']);
+  assert.deepEqual(agentCommonsVisibleThreadIds(messages, { scope: '/work/a' }), ['decision']);
+  assert.deepEqual(agentCommonsVisibleThreadIds(messages, { query: 'wrong target' }), ['decision']);
+  assert.deepEqual(agentCommonsVisibleThreadIds(messages, { query: 'codex-beta' }), ['lesson']);
+  assert.deepEqual(agentCommonsVisibleThreadIds([...messages, {
+    id: 'help', threadId: 'help', parentId: '', category: 'help_request', attention: 'ping',
+    scope: '/work/a', body: 'Need one independent parser review', evidence: '', updatedAt: '2026-08-27T08:03:00.000Z',
+    author: { kind: 'agent', session: 'codex-alpha', label: 'Alpha' }, audience: { kind: 'all', sessions: [] }
+  }], { filter: 'coordination' }), ['help', 'wait']);
 });
 
 test('Tools classifies apps and listener exposure from live state instead of static labels', () => {
@@ -928,12 +1069,247 @@ test('Tools presents task-focused Pulse, Apps, Security, and Host tabs', async (
   assert.match(styles, /@media \(max-width: 759px\)[\s\S]*\.app-grid,[\s\S]*\.host-section-grid/);
 });
 
+test('Code City is a selectable local-only project view with bounded safe metadata', async () => {
+  const [app, styles, index] = await Promise.all([
+    uiSource('app.js'),
+    uiSource('styles.css'),
+    uiSource('index.html')
+  ]);
+  const city = {
+    version: 3,
+    generatedAt: '2026-08-19T00:00:00.000Z',
+    rootName: 'fixture',
+    privacy: { sourceAnalyzedLocally: true, sourceContentIncluded: false, absolutePathsIncluded: false, externalRequestsRequired: false },
+    files: [{ id: 'building-0123456789abcdef', path: 'src/app.js', name: 'app.js', district: 'src', extension: '.js', language: 'JavaScript', role: 'ui', purpose: 'Browser or mobile interface code', bytes: 2048, depth: 1, analysis: { semanticRole: 'interface', confidence: 'high', lineCount: 40, symbolCount: 2, branchCount: 1, sourceTruncated: false, entrypoint: false, signals: ['component'] } }],
+    districts: [{ id: 'district-0123456789abcdef', name: 'src', fileCount: 1, totalBytes: 2048 }],
+    connections: [],
+    summary: { fileCount: 1, districtCount: 1, totalBytes: 2048, directoriesVisited: 2, skippedEntries: 0, truncated: false, analyzedFileCount: 1, connectionCount: 0, roleCounts: { ui: 1, backend: 0, test: 0, shared: 0, config: 0, docs: 0, ops: 0 }, semanticRoleCounts: { entrypoint: 0, interface: 1, service: 0, ingestion: 0, analysis: 0, decision: 0, data: 0, verification: 0, operations: 0, documentation: 0, configuration: 0, module: 0 }, signalCounts: { entrypoint: 0, component: 1, 'http-route': 0, network: 0, database: 0, 'filesystem-read': 0, 'filesystem-write': 0, process: 0, verification: 0 }, flowCounts: { api: 0, import: 0, test: 0 }, analysisTruncated: false },
+    digest: 'a'.repeat(64)
+  };
+  assert.equal(codeCityPayloadSafe(city), true);
+  assert.equal(codeCityPayloadSafe({
+    ...city,
+    files: [{ ...city.files[0], district: 'src · block 1 of 2' }],
+    districts: [{ ...city.districts[0], name: 'src · block 1 of 2' }]
+  }), true);
+  assert.equal(codeCityPayloadSafe({
+    ...city,
+    files: [{ ...city.files[0], district: 'src · block 2 of 1' }],
+    districts: [{ ...city.districts[0], name: 'src · block 2 of 1' }]
+  }), false);
+  assert.equal(codeCityPayloadSafe({ ...city, privacy: { ...city.privacy, sourceContentIncluded: true } }), false);
+  assert.equal(codeCityPayloadSafe({ ...city, files: [{ ...city.files[0], path: '/srv/private/app.js' }] }), false);
+  assert.equal(codeCityPayloadSafe({ ...city, files: [{ ...city.files[0], role: 'mystery' }] }), false);
+  assert.equal(codeCityPayloadSafe({ ...city, connections: [{ fromId: city.files[0].id, toId: city.files[0].id, kind: 'import', weight: 1 }], summary: { ...city.summary, connectionCount: 1, flowCounts: { api: 0, import: 1, test: 0 } } }), false);
+  assert.equal(codeCityPayloadSafe({ ...city, districts: [{ ...city.districts[0], name: 'src\u0000private' }] }), false);
+  assert.equal(codeCityBuildingHeight(0), 24);
+  assert.ok(codeCityBuildingHeight(1024) > codeCityBuildingHeight(16));
+  assert.equal(codeCityBuildingHeight(Number.MAX_SAFE_INTEGER), 118);
+  assert.match(index, /id="code-city-tab"[\s\S]*>Code City</);
+  assert.match(index, /id="code-city-view" class="view code-city-workspace-view"/);
+  assert.match(app, /function renderCodeCityWorkspace\(\)[\s\S]*Project to visualize[\s\S]*Visualize project/);
+  assert.match(app, /async function loadCodeCity\(\)[\s\S]*\/api\/code-city\?workspace=/);
+  assert.match(app, /No source sharing[\s\S]*no CDN, renderer API, analytics, Git hooks, or project commands/i);
+  assert.match(app, /codeCityPayloadSafe\(result\.city\)/);
+  assert.doesNotMatch(app.slice(app.indexOf('const CODE_CITY_WORKSPACE_STORAGE_KEY'), app.indexOf('function ideaQueueSection')), /https?:\/\//);
+  assert.match(styles, /Private, dependency-free isometric source map/);
+  assert.match(app, /<svg class="code-city-scene"/);
+  assert.match(app, /<polygon class="code-city-lot"/);
+  assert.match(app, /class="code-city-building-top"/);
+  assert.match(app, /left\.gridX \+ left\.gridY/);
+  assert.match(app, /const shortLandscape = compact && window\.innerWidth >= 760/);
+  assert.match(app, /function codeCityDistrictColumns\(districtCount,[\s\S]*count <= 8 \? 2 : 3/);
+  assert.match(app, /const columns = Math\.max\(2, Math\.min\(36/);
+  assert.match(app, /function codeCityRoadMarkup\(city, nodes, motionAllowed\)/);
+  assert.match(app, /function codeCityStructuralConnections\(city\)[\s\S]*for \(const connection of city\.connections\)/);
+  assert.match(app, /codeCityStructuralConnections\(city\)/);
+  assert.match(app, /\.slice\(0, 48\)/);
+  assert.match(app, /selectedConnection[\s\S]*visibleConnections\.splice/);
+  assert.match(app, /10 - Math\.log2\(direction\.references \+ direction\.connectionCount \+ 1\)/);
+  assert.doesNotMatch(app.slice(app.indexOf('const CODE_CITY_WORKSPACE_STORAGE_KEY'), app.indexOf('function ideaQueueSection')), /Math\.random/);
+  assert.match(app, /class="code-city-road-divider"/);
+  assert.match(app, /keyPoints="\$\{forward \? '0;1' : '1;0'\}"[\s\S]*keyTimes="0;1"/);
+  assert.match(app, /Street traffic comes from imports, API references, and test links[\s\S]*Pulses move caller → target[\s\S]*not live network traffic/);
+  assert.match(app, /CODE_CITY_ROLE_META[\s\S]*ui:[\s\S]*backend:[\s\S]*test:/);
+  assert.match(app, /CODE_CITY_FLOW_META[\s\S]*Client\/API call[\s\S]*Code import[\s\S]*Test coverage/);
+  assert.match(app, /CODE_CITY_STREET_META[\s\S]*API Avenue[\s\S]*Import Street[\s\S]*Test Lane/);
+  assert.match(app, /function codeCityStreetIdentity\(connection\)[\s\S]*Mixed-flow Boulevard/);
+  assert.match(app, /class="code-city-street-sign[\s\S]*code-city-street-name[\s\S]*code-city-street-meta/);
+  assert.match(app, /Building use[\s\S]*Wall color = language[\s\S]*App flow/);
+  assert.match(app, /function codeCityDistrictModuleGroups\(district, files\)[\s\S]*Other modules/);
+  assert.match(app, /class="code-city-block-lot[\s\S]*class="code-city-block-sign[\s\S]*class="code-city-district-sign/);
+  assert.match(app, /class="code-city-building-role-code"[\s\S]*class="code-city-building-label"/);
+  assert.match(app, /function codeCityBuildingDetailMarkup[\s\S]*Relationship types[\s\S]*Outgoing ·[\s\S]*Incoming ·[\s\S]*Map metadata/);
+  assert.match(app, /function codeCityBuildingDetailMarkup[\s\S]*Project size rank[\s\S]*Incoming links[\s\S]*Outgoing links/);
+  assert.match(app, /function codeCityDateTime\(value\)[\s\S]*toLocaleString\(\)[\s\S]*Unavailable/);
+  assert.doesNotMatch(app, /formatDate\(city\.generatedAt\)/);
+  assert.match(app, /function codeCityPathwayDetailMarkup[\s\S]*Selected pathway/);
+  assert.match(app, /function codeCityPathwayDetailMarkup[\s\S]*Every file relationship/);
+  assert.match(app, /function codeCityPathwayDetailMarkup[\s\S]*Pulse period/);
+  assert.match(app, /function codeCityPathwayDetailMarkup[\s\S]*Analysis details/);
+  assert.match(app, /function codeCityProjectStructureMarkup\(city\)/);
+  assert.match(app, /Project structure directory/);
+  assert.match(app, /function codeCityAnalysisMarkup\(city, builders = \[\]\)[\s\S]*What this codebase appears to do[\s\S]*Critical code flow[\s\S]*Change hotspots[\s\S]*Test attention/);
+  assert.match(app, /function codeCityDefaultBuildingId\(city\)[\s\S]*codeCityImpactScore/);
+  assert.match(app, /Static test signal[\s\S]*not a test result[\s\S]*proof of missing coverage/);
+  assert.match(app, /function codeCityLiveBuilders\(workspace, city\)[\s\S]*agent\.currentPath[\s\S]*rootInteractive/);
+  assert.match(app, /function codeCityBuildersMarkup\(city, builders\)[\s\S]*Live worksite[\s\S]*Little builders[\s\S]*\+ Add builder/);
+  assert.match(app, /Location comes from each pane’s exact working directory—not terminal text or a guessed file/);
+  assert.match(app, /function codeCityBuilderOverlayMarkup\(builders, roadNodes, viewWidth, viewHeight\)[\s\S]*code-city-builder-person[\s\S]*Project-root agents stay at the site office/);
+  assert.match(app, /builders\.map\(\(builder\) => \[builder\.id,[\s\S]*builder\.status\.key,[\s\S]*builder\.task\]\)/);
+  assert.match(app, /function openCodeCityBuilderLauncher\(\)[\s\S]*codeCityBuilderAssignment\(city\)[\s\S]*openNewAgentLauncher\(workspace\)/);
+  assert.match(app, /case 'code-city-open-builder':[\s\S]*openAgentDetail\(target\.dataset\.session, target\.dataset\.paneId/);
+  assert.match(app, /case 'code-city-add-builder':[\s\S]*openCodeCityBuilderLauncher/);
+  assert.match(app, /Architecture mix · what the buildings represent/);
+  assert.match(app, /District directory ·/);
+  assert.match(app, /Module and subfolder blocks ·/);
+  assert.match(app, /<details class="code-city-atlas-shell"><summary>[\s\S]*Explore the full project directory/);
+  assert.doesNotMatch(app, /<details class="code-city-atlas-section" open>/);
+  assert.match(app, /Most connected files · architecture hubs/);
+  assert.match(app, /Street directory ·/);
+  assert.match(app, /codeCityControlsMarkup\(city, builders\)[\s\S]*codeCityAnalysisMarkup\(city, builders\)[\s\S]*codeCitySceneMarkup\(city, builders\)[\s\S]*codeCityProjectStructureMarkup\(city\)/);
+  assert.match(app, /CODE_CITY_MODE_META[\s\S]*Overview[\s\S]*Flow[\s\S]*Risk[\s\S]*Tests[\s\S]*Live work[\s\S]*Changes/);
+  assert.match(app, /function codeCityControlsMarkup\(city, builders\)[\s\S]*Find a building[\s\S]*System role[\s\S]*Street traffic[\s\S]*Isolate neighbors/);
+  assert.match(app, /function codeCityGraphAnalysis\(city\)[\s\S]*Dependency cycle[\s\S]*High-impact/);
+  assert.match(app, /function codeCitySnapshotDiff\(city, previousCity\)[\s\S]*added[\s\S]*removed[\s\S]*changed/);
+  assert.match(app, /function codeCityBlastRadius\(city, id\)/);
+  assert.match(app, /class="code-city-minimap"[\s\S]*Select a district/);
+  assert.match(app, /data-pathway-key=/);
+  assert.match(app, /function selectCodeCityPathway\(key\)[\s\S]*selectedPathwayKey = key/);
+  assert.match(app, /case 'code-city-road':[\s\S]*selectCodeCityPathway/);
+  assert.match(app, /const codeCityPathway = event\.target[\s\S]*selectCodeCityPathway/);
+  assert.match(app, /PaneFleet inspects bounded source text on this host[\s\S]*Absolute host paths and file contents are excluded/);
+  assert.match(app, /data-city-tooltip-title=/);
+  assert.match(app, /function showCodeCityTooltip\(subject, event\)/);
+  assert.match(app, /case 'code-city-road':[\s\S]*showCodeCityTooltip/);
+  assert.match(app, /if \(loaded\) window\.requestAnimationFrame\(fitCodeCity\)/);
+  assert.match(app, /signature === state\.codeCity\.renderSignature/);
+  assert.match(app, /function selectNearestCodeCityBuilding\(event, stage\)[\s\S]*\? 44 : 30/);
+  assert.match(app, /function setCodeCityZoom\(value,[\s\S]*Math\.max\(0\.25, Math\.min\(2\.5/);
+  assert.match(app, /state\.codeCity\.zoom >= 1\.75[\s\S]*state\.codeCity\.zoom >= 1\.35/);
+  assert.match(app, /function fitCodeCity\(\)/);
+  assert.match(app, /function beginCodeCityPan\(event\)[\s\S]*setPointerCapture/);
+  assert.doesNotMatch(app.slice(app.indexOf('function beginCodeCityPan'), app.indexOf('function moveCodeCityPan')), /code-city-building/);
+  assert.match(app, /case 'code-city-select':[\s\S]*state\.codeCity\.lastPanAt >= 300/);
+  assert.match(app, /document\.addEventListener\('pointermove', moveCodeCityPan\)/);
+  assert.match(app, /document\.addEventListener\('pointercancel', endCodeCityPan\)/);
+  assert.match(app, /data-action="code-city-fit"/);
+  assert.match(app, /code-city-map-toolbar[\s\S]*Drag to move · select a building or street[\s\S]*aria-label="Map camera"/);
+  assert.match(app, /codeCityBuilding && \(event\.key === 'Enter' \|\| event\.key === ' '\)/);
+  assert.match(styles, /\.code-city-stage\s*\{[\s\S]*cursor: grab;[\s\S]*touch-action: none/);
+  assert.match(styles, /\.code-city-stage,[\s\S]*\.code-city-stage \*[\s\S]*user-select: none/);
+  assert.match(styles, /\.code-city-road-shadow[\s\S]*\.code-city-road-hit[\s\S]*\.code-city-traffic/);
+  assert.match(styles, /\.code-city-traffic\.flow-api[\s\S]*\.flow-import[\s\S]*\.flow-test/);
+  assert.match(styles, /\.code-city-building-role-marker/);
+  assert.match(styles, /\.code-city-worksite[\s\S]*\.code-city-builder-roster[\s\S]*\.code-city-builder-card/);
+  assert.match(styles, /\.code-city-builder\.status-working[\s\S]*code-city-builder-work/);
+  assert.match(styles, /\.code-city-role-summary[\s\S]*\.code-city-file-flows/);
+  assert.match(styles, /\.code-city-road-link\.selected[\s\S]*\.code-city-pathway-summary[\s\S]*\.code-city-pathway-direction/);
+  assert.match(styles, /\.code-city-tooltip[\s\S]*pointer-events: none/);
+  assert.match(app, /<div class="code-city-scene-frame \$\{codeCityZoomClass\(state\.codeCity\.zoom\)\}"><svg class="code-city-scene"/);
+  assert.match(app, /function applyCodeCityCameraScale\(\)[\s\S]*codeCityZoomClass\(state\.codeCity\.zoom\)/);
+  assert.doesNotMatch(app.slice(app.indexOf('const CODE_CITY_WORKSPACE_STORAGE_KEY'), app.indexOf('function ideaQueueSection')), /frame\.style\.width|style="--(?:role|flow|atlas|legend)-color/);
+  assert.match(styles, /\.code-city-scene-frame\.code-city-zoom-25[\s\S]*\.code-city-scene-frame\.code-city-zoom-250/);
+  assert.doesNotMatch(styles, /\.code-city-district\s*\{/);
+  assert.match(styles, /@media \(max-width: 759px\),[\s\S]*\.code-city-picker select\s*\{[\s\S]*font-size: 16px/);
+});
+
+test('Code City rich project, building, pathway, and scene presenters execute without hidden globals', async () => {
+  const app = await uiSource('app.js');
+  const presenterSource = `${app.slice(
+    app.indexOf('const CODE_CITY_WORKSPACE_STORAGE_KEY'),
+    app.indexOf('function positionCodeCityTooltip')
+  )}\n${app.slice(
+    app.indexOf('function codeCityRelationshipRows'),
+    app.indexOf('function renderCodeCityWorkspace')
+  )}`;
+  const city = {
+    version: 3,
+    generatedAt: '2026-08-19T12:00:00.000Z',
+    rootName: 'fixture',
+    privacy: { sourceAnalyzedLocally: true, sourceContentIncluded: false, absolutePathsIncluded: false, externalRequestsRequired: false },
+    files: [
+      { id: 'building-0000000000000001', path: 'public/App.js', name: 'App.js', district: 'public', extension: '.js', language: 'JavaScript', role: 'ui', purpose: 'Browser or mobile interface code', bytes: 1200, depth: 1, analysis: { semanticRole: 'interface', confidence: 'high', lineCount: 30, symbolCount: 2, branchCount: 1, sourceTruncated: false, entrypoint: false, signals: ['component'] } },
+      { id: 'building-0000000000000002', path: 'server/api.js', name: 'api.js', district: 'server', extension: '.js', language: 'JavaScript', role: 'backend', purpose: 'Server, API, or persistence code', bytes: 2400, depth: 1, analysis: { semanticRole: 'service', confidence: 'high', lineCount: 60, symbolCount: 4, branchCount: 5, sourceTruncated: false, entrypoint: false, signals: ['http-route'] } },
+      { id: 'building-0000000000000003', path: 'test/api.test.js', name: 'api.test.js', district: 'test', extension: '.js', language: 'JavaScript', role: 'test', purpose: 'Automated test or test support', bytes: 1800, depth: 1, analysis: { semanticRole: 'verification', confidence: 'high', lineCount: 45, symbolCount: 3, branchCount: 2, sourceTruncated: false, entrypoint: false, signals: ['verification'] } }
+    ],
+    districts: [
+      { id: 'district-0000000000000001', name: 'public', fileCount: 1, totalBytes: 1200 },
+      { id: 'district-0000000000000002', name: 'server', fileCount: 1, totalBytes: 2400 },
+      { id: 'district-0000000000000003', name: 'test', fileCount: 1, totalBytes: 1800 }
+    ],
+    connections: [
+      { fromId: 'building-0000000000000001', toId: 'building-0000000000000002', kind: 'api', weight: 3 },
+      { fromId: 'building-0000000000000003', toId: 'building-0000000000000002', kind: 'test', weight: 2 }
+    ],
+    summary: { fileCount: 3, districtCount: 3, totalBytes: 5400, directoriesVisited: 4, skippedEntries: 0, truncated: false, analyzedFileCount: 3, connectionCount: 2, roleCounts: { ui: 1, backend: 1, test: 1, shared: 0, config: 0, docs: 0, ops: 0 }, semanticRoleCounts: { entrypoint: 0, interface: 1, service: 1, ingestion: 0, analysis: 0, decision: 0, data: 0, verification: 1, operations: 0, documentation: 0, configuration: 0, module: 0 }, signalCounts: { entrypoint: 0, component: 1, 'http-route': 1, network: 0, database: 0, 'filesystem-read': 0, 'filesystem-write': 0, process: 0, verification: 1 }, flowCounts: { api: 1, import: 0, test: 1 }, analysisTruncated: false },
+    digest: 'b'.repeat(64)
+  };
+  assert.equal(codeCityPayloadSafe(city), true);
+  const context = {
+    codeCityBuildingHeight,
+    codeCityPayloadSafe,
+    escapeHtml: (value) => String(value),
+    formatBytes: (value) => `${value} bytes`,
+    state: {
+      codeCity: { selectedBuildingId: city.files[0].id, selectedPathwayKey: '', zoom: 1.4, previousCity: null, mode: 'overview', query: '', semanticFilter: 'all', flowKind: 'all', journey: 'all', neighborsOnly: false, selectionHistory: [city.files[0].id], selectionHistoryIndex: 0 },
+      snapshot: {
+        agents: [
+          { id: 'codex-poker:1.1', session: 'codex-poker', currentPath: '/workspace', canSend: true, agentStatus: { state: 'busy', tone: 'good' }, codexTelemetry: { rootInteractive: true } },
+          { id: 'codex-api:1.1', session: 'codex-api', currentPath: '/workspace/server/routes', canSend: true, agentStatus: { state: 'waiting', tone: 'warn' }, codexTelemetry: { rootInteractive: false } },
+          { id: 'codex-other:1.1', session: 'codex-other', currentPath: '/other/project', canSend: true, agentStatus: { state: 'busy', tone: 'good' } }
+        ],
+        orchestration: { agents: [
+          { session: 'codex-poker', state: 'busy', task: 'Coordinate the project-wide change.' },
+          { session: 'codex-api', state: 'waiting', needsAttention: true, task: 'Update the API route.' }
+        ] }
+      }
+    },
+    isReviewAgent: (agent) => agent?.session === 'codex-orchestrator-review',
+    window: { innerWidth: 1200, matchMedia: () => ({ matches: false }) }
+  };
+  runInNewContext(`${presenterSource}\n;globalThis.presenters = { codeCityLiveBuilders, codeCityBuildersMarkup, codeCityProjectStructureMarkup, codeCityStructuralConnections, codeCityBuildingDetailMarkup, codeCityPathwayDetailMarkup, codeCitySnapshotDiff, codeCityGraphAnalysis, codeCityGuidedJourney, codeCityControlsMarkup, codeCityAnalysisMarkup, codeCitySceneMarkup };`, context);
+  const pathways = context.presenters.codeCityStructuralConnections(city);
+  const builders = context.presenters.codeCityLiveBuilders('/workspace', city);
+  assert.equal(pathways.length, 2);
+  assert.equal(builders.length, 2);
+  assert.equal(builders[0].location, 'Project-wide site office');
+  assert.equal(builders[1].location, 'server district');
+  assert.equal(builders[1].lineage.label, 'Parent-controlled sub-agent');
+  assert.match(context.presenters.codeCityProjectStructureMarkup(city), /Project structure directory[\s\S]*Module and subfolder blocks[\s\S]*Street directory/);
+  assert.match(context.presenters.codeCityBuildersMarkup(city, builders), /Little builders[\s\S]*codex-poker[\s\S]*codex-api[\s\S]*Add builder/);
+  assert.match(context.presenters.codeCityBuildingDetailMarkup(city, city.files[1]), /Project size rank[\s\S]*Incoming links[\s\S]*Map metadata/);
+  assert.match(context.presenters.codeCityPathwayDetailMarkup(city, pathways[0]), /Selected pathway[\s\S]*(API Avenue|Test Lane)[\s\S]*Every file relationship/);
+  assert.match(context.presenters.codeCityControlsMarkup(city, builders), /Overview[\s\S]*Find a building[\s\S]*Isolate neighbors/);
+  assert.match(context.presenters.codeCityAnalysisMarkup(city, builders), /Architecture brief[\s\S]*Overview analysis[\s\S]*Probable entry points/);
+  context.state.codeCity.mode = 'flow';
+  context.state.codeCity.journey = 'request';
+  assert.match(context.presenters.codeCityAnalysisMarkup(city, builders), /Flow analysis[\s\S]*Guided journey[\s\S]*Request path/);
+  const changedCity = { ...city, files: city.files.map((file, index) => index === 0 ? { ...file, bytes: file.bytes + 1 } : file) };
+  const diff = context.presenters.codeCitySnapshotDiff(changedCity, city);
+  assert.equal(diff.available, true);
+  assert.deepEqual(diff.changed.map((file) => file.id), [city.files[0].id]);
+  assert.ok(context.presenters.codeCityGraphAnalysis(city).risky.length > 0);
+  assert.ok(context.presenters.codeCityGuidedJourney(city, 'request').fileIds.length > 0);
+  const scene = context.presenters.codeCitySceneMarkup(city, builders);
+  assert.match(scene, /code-city-street-sign/);
+  assert.match(scene, /code-city-block-sign/);
+  assert.match(scene, /code-city-building-label/);
+  assert.match(scene, /code-city-site-office[\s\S]*code-city-builder-person/);
+  assert.match(scene, /code-city-minimap/);
+});
+
 test('browser title prioritizes connection and decision status without losing section context', () => {
   assert.equal(dashboardDocumentTitle(), 'Terminals — PaneFleet');
   assert.equal(dashboardDocumentTitle({ connection: 'error', decisionCount: 3 }), 'Offline · Terminals — PaneFleet');
   assert.equal(dashboardDocumentTitle({ connection: 'poll', decisionCount: 3 }), 'Polling · Terminals — PaneFleet');
   assert.equal(dashboardDocumentTitle({ decisionCount: 2.9, workingCount: 4 }), 'Needs you: 2 · Terminals — PaneFleet');
   assert.equal(dashboardDocumentTitle({ view: 'queue', queuedCount: 5, workingCount: 4 }), 'Queued: 5 · Queue — PaneFleet');
+  assert.equal(dashboardDocumentTitle({ view: 'sdlc' }), 'SDLC — PaneFleet');
+  assert.equal(dashboardDocumentTitle({ view: 'sdlc', decisionCount: 2 }), 'Needs you: 2 · SDLC — PaneFleet');
+  assert.equal(dashboardDocumentTitle({ view: 'code-city' }), 'Code City — PaneFleet');
+  assert.equal(dashboardDocumentTitle({ view: 'commons' }), 'Commons — PaneFleet');
+  assert.equal(dashboardDocumentTitle({ view: 'commons', decisionCount: 1 }), 'Needs you: 1 · Commons — PaneFleet');
   assert.equal(dashboardDocumentTitle({ workingCount: 3 }), 'Working: 3 · Terminals — PaneFleet');
   assert.equal(dashboardDocumentTitle({ drawer: 'tools' }), 'Tools — PaneFleet');
 });
@@ -957,6 +1333,8 @@ test('browser title decisions stay scoped to the current dashboard section', () 
     view: 'queue', attentionItems, missions, agents, promptQueueNeedsReview: 3.8
   }), 3);
   assert.equal(dashboardSectionDecisionCount({ drawer: 'tools', attentionItems, missions, agents }), 1);
+  assert.equal(dashboardSectionDecisionCount({ view: 'commons', commonsAttention: 2.9 }), 2);
+  assert.equal(dashboardSectionDecisionCount({ view: 'commons', commonsAttention: -4 }), 0);
   assert.equal(dashboardSectionDecisionCount({
     attentionItems: attentionItems.filter((item) => item.id === 'old-mission'), missions, agents
   }), 0);
@@ -964,6 +1342,9 @@ test('browser title decisions stay scoped to the current dashboard section', () 
   assert.equal(dashboardSectionDecisionCount({ attentionItems: null, missions: null, agents: null }), 0);
   assert.equal(dashboardSectionDecisionCount({ view: 'queue', promptQueueNeedsReview: 'invalid' }), 0);
   assert.equal(dashboardSectionDecisionCount({ view: 'queue', promptQueueNeedsReview: -4 }), 0);
+  assert.equal(dashboardSectionDecisionCount({ view: 'sdlc', deliveryPlanNeedsDecision: 4.8 }), 4);
+  assert.equal(dashboardSectionDecisionCount({ view: 'sdlc', deliveryPlanNeedsDecision: -1 }), 0);
+  assert.equal(dashboardSectionDecisionCount({ view: 'code-city', attentionItems, missions, agents }), 0);
   assert.equal(dashboardSectionDecisionCount({ drawer: 'tools', attentionItems: {} }), 0);
   assert.equal(dashboardSectionDecisionCount({
     drawer: 'tools', attentionItems: [{ kind: null, requiresDecision: true }]
@@ -1145,22 +1526,58 @@ test('terminal capture pause messaging stays explicit that the agent keeps runni
   });
 });
 
-test('an exact live shell gets an explicit Codex restart action inside its terminal', () => {
-  const item = { mode: 'agent', paneId: 'codex-kronos:1.1' };
-  const agent = { id: 'codex-kronos:1.1', canResume: true };
-  assert.deepEqual(terminalAgentResumePresentation(item, agent), {
-    label: 'Restart Codex',
+test('an exact registered rollout gets an explicit Codex restart action inside its terminal', () => {
+  const session = 'codex-kronos';
+  const item = { mode: 'agent', session, paneId: 'codex-kronos:1.1' };
+  const agent = { id: 'codex-kronos:1.1', session, canResume: true };
+  const snapshot = {
+    capabilities: { agentRecovery: true },
+    agentRecovery: {
+      enabled: true,
+      slots: [{ session, manualResumeAvailable: true }]
+    }
+  };
+  assert.equal(agentRecoveryManualResumeAvailable(snapshot, session), true);
+  assert.deepEqual(terminalAgentResumePresentation(item, agent, snapshot), {
+    label: 'Resume saved chat',
     title: 'Codex exited; tmux is still running',
-    description: 'Restart Codex in this exact terminal and resume its last session.'
+    description: 'Resume the exact saved Codex chat in this terminal. PaneFleet does not select a topic or start a new chat.'
   });
-  assert.equal(terminalAgentResumePresentation({ ...item, mode: 'static' }, agent), null);
-  assert.equal(terminalAgentResumePresentation(item, { ...agent, canResume: false }), null);
-  assert.equal(terminalAgentResumePresentation(item, { ...agent, id: 'codex-kronos:2.1' }), null);
-  assert.deepEqual(terminalAgentResumePresentation({ mode: 'agent', paneId: '' }, agent), {
-    label: 'Restart Codex',
+  assert.deepEqual(agentRecoveryResumeConfirmation(snapshot, session, 'Kronos worker'), {
+    label: 'Resume saved chat',
+    question: 'Resume the exact saved Codex chat for Kronos worker? PaneFleet will not choose a topic, create a new chat, or replay a prompt. Older terminal scrollback may reappear while Codex redraws.'
+  });
+  snapshot.agentRecovery.slots[0].lastObservedAt = '2026-08-17T14:41:28.990Z';
+  assert.match(agentRecoveryResumeConfirmation(snapshot, session, 'Kronos worker').question, /last observed at 2026-08-17T14:41:28\.990Z/);
+  assert.equal(agentRecoveryResumeConfirmation({}, session, 'Kronos worker'), null);
+  assert.equal(terminalAgentResumePresentation({ ...item, mode: 'static' }, agent, snapshot), null);
+  assert.equal(terminalAgentResumePresentation(item, { ...agent, canResume: false }, snapshot), null);
+  assert.equal(terminalAgentResumePresentation(item, { ...agent, id: 'codex-kronos:2.1' }, snapshot), null);
+  assert.deepEqual(terminalAgentResumePresentation({ mode: 'agent', session, paneId: '' }, agent, snapshot), {
+    label: 'Resume saved chat',
     title: 'Codex exited; tmux is still running',
-    description: 'Restart Codex in this exact terminal and resume its last session.'
+    description: 'Resume the exact saved Codex chat in this terminal. PaneFleet does not select a topic or start a new chat.'
   });
+  assert.equal(terminalAgentResumePresentation(item, agent, {}), null);
+  assert.equal(terminalAgentResumePresentation(item, agent, { ...snapshot, capabilities: { agentRecovery: false } }), null);
+  assert.equal(terminalAgentResumePresentation(item, agent, {
+    ...snapshot,
+    agentRecovery: { enabled: true, slots: [] }
+  }), null);
+  assert.equal(terminalAgentResumePresentation(item, agent, {
+    ...snapshot,
+    agentRecovery: { enabled: true, slots: [{ session, manualResumeAvailable: false }] }
+  }), null);
+  assert.equal(agentRecoveryManualResumeAvailable({
+    ...snapshot,
+    agentRecovery: { enabled: false, slots: [{ session, manualResumeAvailable: true }] }
+  }, session), false);
+});
+
+test('Planning-owned workers are excluded from generic recovery presentation', () => {
+  assert.equal(genericAgentRecoverySessionEligible('codex-ag'), true);
+  assert.equal(genericAgentRecoverySessionEligible('codex-planning-0123456789abcdef'), false);
+  assert.equal(genericAgentRecoverySessionEligible(''), false);
 });
 
 test('terminal tab keys wrap predictably and mobile switcher labels include the target name', () => {
@@ -1443,6 +1860,7 @@ test('finished prompt origin filters use durable schedule metadata', () => {
 test('Prompt Queue section navigation is allowlisted to stable in-view targets', () => {
   assert.equal(promptQueueSectionTarget('compose'), '#prompt-queue-compose');
   assert.equal(promptQueueSectionTarget('ideas'), '#prompt-queue-ideas');
+  assert.equal(promptQueueSectionTarget('plans'), null);
   assert.equal(promptQueueSectionTarget('ACTIVE'), '#prompt-queue-active');
   assert.equal(promptQueueSectionTarget('schedules'), '#prompt-queue-schedules');
   assert.equal(promptQueueSectionTarget('history'), '#prompt-queue-history');
@@ -1451,27 +1869,534 @@ test('Prompt Queue section navigation is allowlisted to stable in-view targets',
   assert.equal(promptQueueSectionTarget(null), null);
 });
 
+test('Delivery Plan UI helpers keep summaries compact and approval bound to the exact digest', () => {
+  const digest = 'a'.repeat(64);
+  const plan = {
+    id: 'plan-example-work',
+    revision: 4,
+    phase: 'ready_for_approval',
+    title: 'Example',
+    classification: { intent: 'change', depth: 'standard', risk: 'local_reversible', dataClasses: [], mutationSurfaces: ['workspace'] }
+  };
+  const summary = { id: plan.id, revision: 4, phase: plan.phase, digest };
+  const detail = { plan, digest, readiness: { ready: true } };
+  assert.deepEqual(deliveryPlanApprovalTransition(summary, detail, 'delivery-op-fixed', 7), {
+    operationId: 'delivery-op-fixed',
+    expectedStoreRevision: 7,
+    expectedPlanRevision: 4,
+    expectedDigest: digest,
+    to: 'approved',
+    conditions: { confirmation: 'approve-plan' }
+  });
+  assert.equal(deliveryPlanApprovalTransition({ ...summary, digest: 'b'.repeat(64) }, detail, 'delivery-op-fixed', 7), null);
+  assert.equal(deliveryPlanApprovalTransition({ ...summary, revision: 5 }, detail, 'delivery-op-fixed', 7), null);
+  assert.equal(deliveryPlanApprovalTransition(summary, { ...detail, readiness: { ready: false } }, 'delivery-op-fixed', 7), null);
+  assert.equal(deliveryPlanApprovalTransition(summary, detail, '', 7), null);
+  assert.equal(deliveryPlanApprovalTransition(summary, detail, 'delivery-op-fixed', -1), null);
+  assert.equal(deliveryPlanOperationStorageKey('Transition Approved', plan.id), `host-control:delivery-plan-operation:v1:transition-approved:${plan.id}`);
+  assert.equal(deliveryPlanPhasePresentation('ready_for_approval').label, 'Awaiting approval');
+  assert.deepEqual(deliveryPlanSummaries({ active: [summary], recent: [summary, { id: 'plan-recent-work' }] }), [summary, { id: 'plan-recent-work' }]);
+  assert.deepEqual(deliveryPlanDefinitionPatch(plan), {
+    title: 'Example',
+    request: undefined,
+    workspace: undefined,
+    classification: plan.classification,
+    baseline: undefined,
+    roles: undefined,
+    unresolvedQuestions: undefined,
+    authority: undefined
+  });
+});
+
+test('Delivery Run UI helpers bind run creation and operation replay to exact durable identities', () => {
+  const digest = 'd'.repeat(64);
+  const plan = { id: 'plan-local-run-1234', revision: 8, phase: 'approved' };
+  const summary = { id: plan.id, revision: plan.revision, phase: plan.phase, digest };
+  const detail = { plan, digest };
+  assert.deepEqual(deliveryRunStartRequest(summary, detail, 'delivery-op-run-fixed', 11, 3), {
+    operationId: 'delivery-op-run-fixed',
+    expectedPlanStoreRevision: 11,
+    expectedPlanRevision: 8,
+    expectedDigest: digest,
+    expectedRunStoreRevision: 3,
+    confirmation: 'create-local-delivery-run'
+  });
+  assert.equal(deliveryRunStartRequest({ ...summary, digest: 'e'.repeat(64) }, detail, 'delivery-op-run-fixed', 11, 3), null);
+  assert.equal(deliveryRunStartRequest({ ...summary, revision: 9 }, detail, 'delivery-op-run-fixed', 11, 3), null);
+  assert.equal(deliveryRunStartRequest(summary, { ...detail, digest: 'not-a-digest' }, 'delivery-op-run-fixed', 11, 3), null);
+  assert.equal(deliveryRunStartRequest(summary, { ...detail, plan: { ...plan, phase: 'executing' } }, 'delivery-op-run-fixed', 11, 3), null);
+  assert.equal(deliveryRunStartRequest(summary, detail, '', 11, 3), null);
+  assert.equal(deliveryRunStartRequest(summary, detail, 'delivery-op-run-fixed', -1, 3), null);
+  assert.equal(deliveryRunStartRequest(summary, detail, 'delivery-op-run-fixed', 11.5, 3), null);
+  assert.equal(deliveryRunStartRequest(summary, detail, 'delivery-op-run-fixed', 11, null), null);
+  assert.equal(deliveryRunOperationStorageKey('Verify', 'run-local-12345678', 'STEP-001'), 'host-control:delivery-run-operation:v1:verify:run-local-12345678:step-001');
+  assert.equal(deliveryRunConditionPresentation('reconcile_required').label, 'Reconciliation required');
+  assert.equal(deliveryRunLevelPresentation('implemented_locally').label, 'Implemented locally');
+  assert.equal(deliveryRunTaskPresentation('implementation_captured').label, 'Awaiting QA');
+});
+
+test('Planning Run helpers bind eligible role planning, safe continuation, and candidate apply to exact revisions', () => {
+  const planDigest = 'a'.repeat(64);
+  const candidateDigest = 'b'.repeat(64);
+  const plan = {
+    id: 'plan-multi-role-1234',
+    revision: 6,
+    phase: 'planning',
+    workspace: '/srv/example',
+    classification: {
+      intent: 'change',
+      depth: 'standard',
+      risk: 'local_reversible',
+      dataClasses: [],
+      mutationSurfaces: ['workspace']
+    },
+    roles: { po: { user: 'Owner' }, ba: { requirements: [] }, qa: { acceptanceCriteria: [] }, dev: { steps: [] } },
+    unresolvedQuestions: ['Current question'],
+    authority: {
+      workspaceWrite: true,
+      commit: false,
+      push: false,
+      deploy: false,
+      network: false,
+      serviceControl: false,
+      destructive: false,
+      externalMessages: false
+    }
+  };
+  const summary = { id: plan.id, revision: plan.revision, phase: plan.phase, digest: planDigest };
+  const detail = { plan, digest: planDigest, planStoreRevision: 12, planningRunStoreRevision: 3 };
+  assert.deepEqual(planningRunStartRequest(summary, detail, 'planning-op-start'), {
+    operationId: 'planning-op-start',
+    expectedPlanStoreRevision: 12,
+    expectedPlanRevision: 6,
+    expectedDigest: planDigest,
+    expectedPlanningRunStoreRevision: 3,
+    confirmation: 'start-multi-role-planning'
+  });
+  assert.equal(planningRunStartRequest(null, detail, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest({ ...summary, id: 'unsafe-plan' }, detail, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest({ ...summary, digest: 'not-a-digest' }, detail, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest({ ...summary, id: 'plan-../../unsafe' }, { ...detail, plan: { ...plan, id: 'plan-../../unsafe' } }, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest(summary, { ...detail, plan: { ...plan, workspace: 'relative/path' } }, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest({ ...summary, revision: 0 }, { ...detail, plan: { ...plan, revision: 0 } }, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest(summary, { ...detail, plan: { ...plan, phase: 'draft' } }, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest(summary, { ...detail, plan: { ...plan, classification: { ...plan.classification, depth: 'deep' } } }, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest(summary, { ...detail, plan: { ...plan, classification: { ...plan.classification, intent: 'research' } } }, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest(summary, { ...detail, plan: { ...plan, classification: { ...plan.classification, risk: 'external' } } }, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest(summary, { ...detail, plan: { ...plan, classification: { ...plan.classification, mutationSurfaces: ['workspace', 'network'] } } }, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest(summary, { ...detail, plan: { ...plan, authority: { ...plan.authority, commit: true } } }, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest(summary, { ...detail, plan: { ...plan, authority: { workspaceWrite: true } } }, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest(summary, { ...detail, planningRun: { id: 'planning-run-existing' } }, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest({ ...summary, revision: '6' }, detail, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest(summary, { ...detail, planStoreRevision: '12' }, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest(summary, { ...detail, planStoreRevision: 12.5 }, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest(summary, { ...detail, planningRunStoreRevision: -1 }, 'planning-op-start'), null);
+  assert.equal(planningRunStartRequest(summary, detail, ''), null);
+
+  const run = {
+    id: 'planning-run-example-1234',
+    revision: 9,
+    phase: 'review',
+    condition: 'resource_wait',
+    actions: { canContinue: true, continueKind: 'resource_retry', canCancel: true }
+  };
+  assert.deepEqual(planningRunContinueRequest(run, 'planning-op-continue', 7), {
+    operationId: 'planning-op-continue',
+    expectedStoreRevision: 7,
+    expectedRunRevision: 9,
+    confirmation: 'continue-multi-role-planning'
+  });
+  assert.equal(planningRunContinueRequest({ ...run, actions: undefined }, 'planning-op-continue', 7), null);
+  assert.equal(planningRunContinueRequest({ ...run, actions: { canContinue: false } }, 'planning-op-continue', 7), null);
+  assert.equal(planningRunContinueRequest({ ...run, actions: { canContinue: true } }, 'planning-op-continue', 7), null);
+  assert.equal(planningRunContinueRequest({ ...run, actions: { canContinue: true, continueKind: 'advance' } }, 'planning-op-continue', 7), null);
+  assert.equal(planningRunContinueRequest({ ...run, actions: { canContinue: true, continueKind: 'retry_role' } }, 'planning-op-continue', 7), null);
+  assert.deepEqual(planningRunContinueRequest({ ...run, condition: 'reconcile_required', actions: { canContinue: true, continueKind: 'cleanup_only' } }, 'planning-op-cleanup', 7), {
+    operationId: 'planning-op-cleanup',
+    expectedStoreRevision: 7,
+    expectedRunRevision: 9,
+    confirmation: 'continue-multi-role-planning'
+  });
+  assert.equal(planningRunContinueRequest({ ...run, condition: 'off_course' }, 'planning-op-continue', 7), null);
+  assert.equal(planningRunContinueRequest({ ...run, uncertain: true }, 'planning-op-continue', 7), null);
+  assert.equal(planningRunContinueRequest({ ...run, phase: 'closed' }, 'planning-op-continue', 7), null);
+  assert.equal(planningRunContinueRequest({ ...run, revision: '9' }, 'planning-op-continue', 7), null);
+  assert.equal(planningRunContinueRequest(run, 'planning-op-continue', '7'), null);
+  assert.equal(planningRunContinueRequest(run, 'planning-op-continue', 7.5), null);
+
+  const terminateRun = {
+    ...run,
+    phase: 'po',
+    condition: 'reconcile_required',
+    uncertain: true,
+    actions: { canTerminateExactScope: true }
+  };
+  const terminateRequest = planningRunTerminateProvisionalWorkerRequest(
+    terminateRun,
+    'planning-op-terminate',
+    7
+  );
+  assert.deepEqual(terminateRequest, {
+    operationId: 'planning-op-terminate',
+    expectedStoreRevision: 7,
+    expectedRunRevision: 9,
+    confirmation: 'terminate-exact-planning-scope'
+  });
+  assert.deepEqual(Object.keys(terminateRequest), [
+    'operationId', 'expectedStoreRevision', 'expectedRunRevision', 'confirmation'
+  ]);
+  assert.equal(planningRunTerminateProvisionalWorkerRequest({
+    ...terminateRun, actions: undefined, canTerminateExactScope: true
+  }, 'planning-op-terminate', 7), null);
+  assert.equal(planningRunTerminateProvisionalWorkerRequest({
+    ...terminateRun, actions: { canTerminateExactScope: false }
+  }, 'planning-op-terminate', 7), null);
+  assert.equal(planningRunTerminateProvisionalWorkerRequest({
+    ...terminateRun, actions: { terminateExactScope: true }
+  }, 'planning-op-terminate', 7), null);
+  assert.equal(planningRunTerminateProvisionalWorkerRequest({ ...terminateRun, id: 'unsafe-run' }, 'planning-op-terminate', 7), null);
+  assert.equal(planningRunTerminateProvisionalWorkerRequest({ ...terminateRun, revision: '9' }, 'planning-op-terminate', 7), null);
+  assert.equal(planningRunTerminateProvisionalWorkerRequest({ ...terminateRun, phase: 'closed' }, 'planning-op-terminate', 7), null);
+  assert.equal(planningRunTerminateProvisionalWorkerRequest({ ...terminateRun, condition: 'canceled' }, 'planning-op-terminate', 7), null);
+  assert.equal(planningRunTerminateProvisionalWorkerRequest(terminateRun, '', 7), null);
+  assert.equal(planningRunTerminateProvisionalWorkerRequest(terminateRun, 'planning-op-terminate', -1), null);
+
+  assert.deepEqual(planningRunCancelRequest(run, 'planning-op-cancel', 7, '  Operator stopped this run.  '), {
+    operationId: 'planning-op-cancel',
+    expectedStoreRevision: 7,
+    expectedRunRevision: 9,
+    confirmation: 'cancel-multi-role-planning',
+    reason: 'Operator stopped this run.'
+  });
+  assert.equal(planningRunCancelRequest({ ...run, actions: { ...run.actions, canCancel: false } }, 'planning-op-cancel', 7, 'Stop.'), null);
+  assert.equal(planningRunCancelRequest(run, 'planning-op-cancel', 7, '   '), null);
+  assert.equal(planningRunCancelRequest(run, 'planning-op-cancel', 7, 12), null);
+  assert.equal(planningRunCancelRequest(run, 'planning-op-cancel', 7, 'x'.repeat(801)), null);
+  assert.equal(planningRunCancelRequest(run, 'planning-op-cancel', 7, 'unsafe\nreason'), null);
+  assert.equal(planningRunCancelRequest({ ...run, revision: '9' }, 'planning-op-cancel', 7, 'Stop.'), null);
+  assert.equal(planningRunCancelRequest(run, 'planning-op-cancel', -1, 'Stop.'), null);
+  assert.equal(planningRunCancelRequest({ ...run, phase: 'closed' }, 'planning-op-cancel', 7, 'Stop.'), null);
+
+  const applyRun = {
+    ...run,
+    planId: plan.id,
+    planRevision: plan.revision,
+    planDigest,
+    condition: 'active',
+    actions: { canApply: true },
+    applyOutbox: { state: 'held' },
+    candidate: { digest: candidateDigest, readiness: { ready: true } }
+  };
+  assert.deepEqual(planningRunApplyRequest(summary, detail, applyRun, 'planning-op-apply'), {
+    operationId: 'planning-op-apply',
+    expectedStoreRevision: 3,
+    expectedRunRevision: 9,
+    expectedPlanStoreRevision: 12,
+    expectedPlanRevision: 6,
+    expectedPlanDigest: planDigest,
+    expectedCandidateDigest: candidateDigest,
+    confirmation: 'apply-planning-candidate'
+  });
+  assert.equal(planningRunApplyRequest({ ...summary, digest: 'c'.repeat(64) }, detail, applyRun, 'planning-op-apply'), null);
+  assert.equal(planningRunApplyRequest(null, detail, applyRun, 'planning-op-apply'), null);
+  assert.equal(planningRunApplyRequest(summary, detail, { ...applyRun, candidate: { ...applyRun.candidate, readiness: { ready: false } } }, 'planning-op-apply'), null);
+  assert.equal(planningRunApplyRequest(summary, detail, { ...applyRun, phase: 'synthesis' }, 'planning-op-apply'), null);
+  assert.equal(planningRunApplyRequest(summary, detail, { ...applyRun, condition: 'reconcile_required' }, 'planning-op-apply'), null);
+  assert.equal(planningRunApplyRequest(summary, detail, { ...applyRun, planDigest: 'c'.repeat(64) }, 'planning-op-apply'), null);
+  assert.equal(planningRunApplyRequest(summary, detail, { ...applyRun, actions: undefined }, 'planning-op-apply'), null);
+  assert.equal(planningRunApplyRequest(summary, detail, { ...applyRun, actions: { canApply: false } }, 'planning-op-apply'), null);
+  assert.equal(planningRunApplyRequest(summary, detail, {
+    ...applyRun,
+    actions: { apply: true },
+    applyAllowed: true
+  }, 'planning-op-apply'), null);
+  assert.equal(planningRunOperationStorageKey('Apply Candidate', applyRun.id), `host-control:planning-run-operation:v1:apply-candidate:${applyRun.id}`);
+  assert.equal(planningRunConditionPresentation('resource_wait').label, 'Waiting for resources');
+  assert.equal(planningRunConditionPresentation('unknown').tone, 'bad');
+  assert.equal(planningRoleProgressPresentation('spawn_claimed').label, 'Starting worker');
+  assert.equal(planningRoleProgressPresentation('unknown').tone, 'bad');
+
+  assert.deepEqual(planningCandidateChanges(plan, {
+    definitionPatch: {
+      roles: { po: { user: 'New owner' } },
+      unresolvedQuestions: ['Candidate question'],
+      authority: { deploy: true }
+    },
+    rawTranscript: 'must be ignored'
+  }), {
+    roles: [{ role: 'po', before: { user: 'Owner' }, after: { user: 'New owner' } }],
+    unresolvedQuestions: { before: ['Current question'], after: ['Candidate question'] }
+  });
+  assert.deepEqual(planningCandidateChanges(plan, { definitionPatch: { authority: { push: true } } }), {
+    roles: [],
+    unresolvedQuestions: null
+  });
+});
+
+test('Phase-2 Delivery Plans keep execution in Mission Queue and make run mutations explicit and idempotent', async () => {
+  const app = await uiSource('app.js');
+  const styles = await uiSource('styles.css');
+  const planningStart = app.indexOf('function deliveryPlanTemplate()');
+  const planningEnd = app.indexOf('function ideaQueueSection', planningStart);
+  const planningSource = app.slice(planningStart, planningEnd);
+  const mutationStart = app.indexOf('async function mutateDeliveryPlanAuthoritatively');
+  const mutationEnd = app.indexOf('function reportDeliveryPlanMutationFailure', mutationStart);
+  const mutationSource = app.slice(mutationStart, mutationEnd);
+  const abortStart = app.indexOf('async function abortDeliveryRunClient');
+  const abortEnd = app.indexOf('async function captureDeliveryRunImplementationClient', abortStart);
+  const abortSource = app.slice(abortStart, abortEnd);
+  const verifyStart = app.indexOf('async function verifyDeliveryRunTaskFromForm');
+  const verifyEnd = app.indexOf('function readPromptQueueDraft', verifyStart);
+  const verifySource = app.slice(verifyStart, verifyEnd);
+
+  assert.ok(planningStart >= 0 && planningEnd > planningStart);
+  assert.ok(abortStart >= 0 && abortEnd > abortStart);
+  assert.ok(verifyStart >= 0 && verifyEnd > verifyStart);
+  assert.match(planningSource, /state\.snapshot\?\.capabilities\?\.deliveryPlans !== true/);
+  assert.match(app, /async function loadDeliveryPlanDetails\(planId,[\s\S]*api\(`\/api\/delivery-plans\/\$\{encodeURIComponent\(planId\)\}`\)/);
+  assert.match(app, /classList\?\.contains\('delivery-plan-details'\)[\s\S]*void loadDeliveryPlanDetails\(planId\)/);
+  assert.match(app, /safeSessionStorageGet\(key\)[\s\S]*safeSessionStorageSet\(key, operationId\)[\s\S]*safeSessionStorageGet\(key\) !== operationId[\s\S]*change blocked/);
+  assert.match(mutationSource, /const detail = await api\(`\/api\/delivery-plans\/[\s\S]*clearRetainedDeliveryPlanOperation\(operation\)/);
+  assert.match(app, /Read the authoritative plan before retrying\. PaneFleet retained the same operation ID and will not retry automatically\./);
+  assert.match(app, /deliveryPlanApprovalTransition\(summary, detail, operationId, expectedStoreRevision\)/);
+  assert.match(app, /The retained update was already recorded at revision/);
+  assert.match(app, /It is not being reported as currently approved/);
+  assert.match(app, /api\('\/api\/delivery-plans\/baseline',[\s\S]*mode: 'conversation'/);
+  assert.match(planningSource, /data-action="delivery-run-start"/);
+  assert.match(app, /body: \(operationId\) => deliveryRunStartRequest\(/);
+  assert.match(app, /\/api\/delivery-runs\/\$\{encodeURIComponent\(runId\)\}\/reconcile/);
+  assert.match(app, /confirmation: 'reconcile-delivery-run'/);
+  assert.match(app, /\/tasks\/\$\{encodeURIComponent\(stepId\)\}\/implementation/);
+  assert.match(app, /confirmation: 'capture-local-implementation'/);
+  assert.match(app, /\/tasks\/\$\{encodeURIComponent\(stepId\)\}\/verify/);
+  assert.match(app, /confirmation: 'verify-local-delivery-step'/);
+  assert.match(planningSource, /Implementation dispatch and worker control stay in Mission Queue/);
+  assert.match(planningSource, /Operator-attested acceptance review/);
+  assert.match(planningSource, /PaneFleet stores your attestation; it does not execute these checks for you/);
+  assert.match(planningSource, /name="outcome"/);
+  assert.match(planningSource, /name="method"/);
+  assert.match(planningSource, /name="criterionNote"/);
+  assert.match(planningSource, /name="evidenceId"/);
+  assert.match(planningSource, /name="checkOutcome"/);
+  assert.match(planningSource, /name="checkNote"/);
+  assert.match(verifySource, /task\.state !== 'implementation_captured'[\s\S]*mission\?\.status !== 'verifying'[\s\S]*storeRevision === null/);
+  assert.match(verifySource, /missingObservation[\s\S]*record your observed result/);
+  assert.match(verifySource, /missingCheckObservation[\s\S]*record the observed result for required check/);
+  assert.match(verifySource, /criteria\.every\(\(criterion\) => criterion\.outcome === 'passed'\)[\s\S]*checks\.every\(\(check\) => check\.outcome === 'passed'\)/);
+  assert.match(verifySource, /body: \(operationId\) => \(\{[\s\S]*operationId,[\s\S]*expectedStoreRevision: storeRevision,[\s\S]*expectedRunRevision: Number\(run\.revision\),[\s\S]*expectedMissionRevision: Number\(mission\.revision\),[\s\S]*confirmation: 'verify-local-delivery-step',[\s\S]*criteria,[\s\S]*checks,[\s\S]*evidenceIds,[\s\S]*note: draft\.note/);
+  assert.match(planningSource, /data-action="delivery-run-abort"/);
+  assert.match(planningSource, /Abort local delivery run/);
+  assert.match(abortSource, /\['aborted', 'verified'\]\.includes\(run\.condition\)[\s\S]*storeRevision === null/);
+  assert.match(abortSource, /if \(!reason\) return/);
+  assert.match(abortSource, /PaneFleet will not signal or type into a worker/);
+  assert.match(abortSource, /path: `\/api\/delivery-runs\/\$\{encodeURIComponent\(runId\)\}\/abort`/);
+  assert.match(abortSource, /body: \(operationId\) => \(\{[\s\S]*operationId,[\s\S]*expectedStoreRevision: storeRevision,[\s\S]*expectedRunRevision: Number\(run\.revision\),[\s\S]*confirmation: 'abort-local-delivery-run',[\s\S]*reason/);
+  assert.doesNotMatch(abortSource, /sendText|sendToAgent|send-keys|interrupt|stopSession/);
+  assert.match(app, /retainedDeliveryRunOperation\(action, runId, stepId\)[\s\S]*clearRetainedDeliveryRunOperation\(operation\)/);
+  assert.match(app, /retained the exact operation ID, sent no automatic retry, and re-read durable state/);
+  assert.match(app, /const detail = await api\(`\/api\/delivery-plans\/\$\{encodeURIComponent\(planId\)\}`\)/);
+  assert.doesNotMatch(planningSource, /data-action="(?:prompt-queue|mission|terminal|delivery-plan-execute)/);
+  assert.doesNotMatch(app, /\/api\/delivery-plans\/[^'"`]*\/execute/);
+  assert.match(styles, /\.delivery-plans-panel\s*\{/);
+  assert.match(styles, /\.delivery-plan-role-grid\s*\{/);
+  assert.match(styles, /\.delivery-plan-trace-row\s*\{/);
+  assert.match(styles, /\.delivery-run-review\s*\{/);
+  assert.match(styles, /\.delivery-run-verification-form\s*\{/);
+});
+
+test('Phase-3A planning review is capability-gated, digest-bound, readback-first, and exposes no terminal control', async () => {
+  const app = await uiSource('app.js');
+  const styles = await uiSource('styles.css');
+  const uiState = await uiSource('ui-state.js');
+  const renderStart = app.indexOf('function planningRunFromDetail');
+  const renderEnd = app.indexOf('function deliveryRunFromDetail', renderStart);
+  const planningRender = app.slice(renderStart, renderEnd);
+  const retainedStart = app.indexOf('function retainedPlanningRunOperation');
+  const retainedEnd = app.indexOf('function syncDashboardTheme', retainedStart);
+  const retainedSource = app.slice(retainedStart, retainedEnd);
+  const mutationStart = app.indexOf('async function mutatePlanningRunAuthoritatively');
+  const mutationEnd = app.indexOf('function reportPlanningRunMutationFailure', mutationStart);
+  const mutationSource = app.slice(mutationStart, mutationEnd);
+  const clientStart = app.indexOf('async function startPlanningRunClient');
+  const clientEnd = app.indexOf('async function rereadDeliveryPlanAfterUncertainRun', clientStart);
+  const planningClients = app.slice(clientStart, clientEnd);
+  const focusStart = app.indexOf('function deliveryPlanFocusContext');
+  const focusEnd = app.indexOf('async function mutateDeliveryPlanAuthoritatively', focusStart);
+  const focusSource = app.slice(focusStart, focusEnd);
+
+  assert.ok(renderStart >= 0 && renderEnd > renderStart);
+  assert.ok(retainedStart >= 0 && retainedEnd > retainedStart);
+  assert.ok(mutationStart >= 0 && mutationEnd > mutationStart);
+  assert.ok(clientStart >= 0 && clientEnd > clientStart);
+  assert.match(planningRender, /state\.snapshot\?\.capabilities\?\.planningRuns !== true/);
+  assert.match(planningRender, /\['po', 'ba', 'qa', 'dev'\]\.map/);
+  for (const field of ['sessionCreatedAt', 'paneId', 'tmuxPaneId', 'panePid', 'paneTty', 'codexPid', 'rolloutId', 'sourceId', 'commandDigest', 'promptDigest']) {
+    assert.match(planningRender, new RegExp(`attempt\\.${field}`));
+  }
+  assert.match(planningRender, /resource_wait:[\s\S]*needs_input:[\s\S]*reconcile_required:[\s\S]*off_course:[\s\S]*failed:/);
+  assert.match(planningRender, /planningCandidateChanges\(plan, candidate\)/);
+  assert.match(planningRender, /Use this proposed AAP/);
+  assert.match(planningRender, /data-action="planning-run-cancel"/);
+  assert.match(planningRender, /class="planning-run-terminate"[\s\S]*data-action="planning-run-terminate-provisional-worker"[\s\S]*Terminate stuck planning worker/);
+  assert.match(planningRender, /Process and rollout identity were not established\. This one-shot action stops only the durably bound exact transient Planning scope/);
+  assert.match(planningRender, /continueKind === 'cleanup_only'/);
+  assert.match(planningRender, /Cleanup only closes or reconciles the exact reserved worker\. It cannot spawn a worker, retry role work, or replay terminal input\./);
+  assert.match(planningRender, /This puts the proposal back in the center as another unapproved AAP revision. It does not approve or start coding./);
+  assert.match(planningRender, /Shared workshop conversation[\s\S]*Everyone works from the same AAP/);
+  assert.match(planningRender, /report\?\.artifact[\s\S]*Product Owner[\s\S]*Business Analyst[\s\S]*Quality Analyst[\s\S]*Developer/);
+  assert.match(planningRender, /aap-workshop-message-form[\s\S]*Message the workshop <small>\(optional\)<\/small>[\s\S]*Send to workshop/);
+  assert.match(planningRender, /activeRound \? 'Workshop running' : 'Send to workshop'[\s\S]*Your draft stays here while the current frozen round finishes/);
+  assert.match(app, /deliveryPlanNeedsGuidedSetup\(plan\) \? '' : planningRunReview\(summary, plan, detail\)/);
+  assert.match(planningRender, /Role status and recovery details/);
+  assert.doesNotMatch(planningRender, /data-action="(?:terminal|mission|prompt-queue|planning-run-execute)/);
+  assert.doesNotMatch(planningRender, /attempt\.(?:prompt(?:Text|Body|Raw)?|transcript|marker)\b/);
+  assert.doesNotMatch(planningRender, /attempt\.session\b|spawnLease|leaseId|scopeUnit|scopeDigest/);
+  assert.doesNotMatch(planningRender, /data-action="planning-run-continue"[^>]*>Terminate stuck planning worker/);
+
+  assert.match(retainedSource, /JSON\.stringify\(\{ operationId, request \}\)/);
+  assert.match(retainedSource, /safeSessionStorageSet\(key, raw\)[\s\S]*safeSessionStorageGet\(key\) !== raw/);
+  assert.match(retainedSource, /JSON\.stringify\(request\) !== JSON\.stringify\(record\.request\)/);
+  assert.match(retainedSource, /cannot retain the exact operation ID and request safely/);
+  assert.match(mutationSource, /api\(path, \{ method: 'POST', body: JSON\.stringify\(operation\.request\) \}\)/);
+  assert.equal((mutationSource.match(/api\(path/g) || []).length, 1);
+  assert.match(mutationSource, /readPlanningRunAuthoritatively\([\s\S]*clearRetainedPlanningRunOperation\(operation\)/);
+  assert.match(mutationSource, /catch \(error\)[\s\S]*readPlanningRunAuthoritatively\([\s\S]*Never convert a failed readback into a second mutation attempt/);
+  assert.match(app, /retained the exact operation ID and request, performed only an authoritative read, and will not retry automatically/);
+
+  assert.match(app, /api\(`\/api\/planning-runs\/\$\{encodeURIComponent\(authoritativeRunId\)\}`\)/);
+  assert.match(app, /value\?\.actions[\s\S]*\{ \.\.\.candidate, actions: \{ \.\.\.actions \} \}/);
+  assert.match(focusSource, /const attachedRun = planningRunFromDetail\(detail\)[\s\S]*api\(`\/api\/planning-runs\/\$\{encodeURIComponent\(attachedRun\.id\)\}`\)/);
+  assert.match(planningClients, /\/api\/delivery-plans\/\$\{encodeURIComponent\(planId\)\}\/planning-runs/);
+  assert.match(planningClients, /action: `start-r\$\{detail\.plan\.revision\}-\$\{detail\.digest\.slice\(0, 12\)\}-s\$\{detail\.planningRunStoreRevision\}`/);
+  assert.match(planningClients, /delivery_planning_run_store_active_run_limit_reached[\s\S]*readPlanningRunAuthoritatively\(planId\)[\s\S]*active\.planDigest === authoritative\.detail\.digest[\s\S]*clearRetainedPlanningRunOperation\(error\.planningRunOperation\)[\s\S]*sent no duplicate prompt/);
+  assert.match(planningClients, /\/api\/planning-runs\/\$\{encodeURIComponent\(run\.id\)\}\/continue/);
+  assert.match(planningClients, /\/api\/planning-runs\/\$\{encodeURIComponent\(run\.id\)\}\/cancel/);
+  assert.match(planningClients, /\/api\/planning-runs\/\$\{encodeURIComponent\(run\.id\)\}\/terminate-provisional-worker/);
+  assert.match(planningClients, /\/api\/planning-runs\/\$\{encodeURIComponent\(run\.id\)\}\/apply/);
+  assert.match(planningClients, /planningRunStartRequest\(summary, detail, operationId\)/);
+  assert.match(planningClients, /planningRunContinueRequest\(run, operationId, storeRevision\)/);
+  assert.match(planningClients, /planningRunCancelRequest\(run, operationId, storeRevision, reason\)/);
+  assert.match(planningClients, /planningRunTerminateProvisionalWorkerRequest\([\s\S]*run,[\s\S]*operationId,[\s\S]*storeRevision/);
+  assert.match(planningClients, /planningRunApplyRequest\(summary, detail, run, operationId\)/);
+  assert.match(planningClients, /async function cancelPlanningRunClient\(button\)[\s\S]*readPlanningRunAuthoritatively\(planId, runId\)[\s\S]*reasonInput[\s\S]*mutatePlanningRunAuthoritatively/);
+  assert.match(planningClients, /displayedContinueKind !== continueKind/);
+  assert.match(uiState, /confirmation: 'cancel-multi-role-planning'/);
+  assert.match(planningClients, /reasonInput === null[\s\S]*reason = String\(reasonInput\)\.trim\(\)/);
+  assert.match(planningClients, /It does not type into, interrupt, or signal a worker/);
+  assert.match(planningClients, /Process and rollout identity were not established\.[\s\S]*destructive, one-shot stop of only the durably bound exact transient Planning scope/);
+  assert.match(planningClients, /uncertain response will never be retried automatically/);
+  assert.doesNotMatch(planningClients, /sendText|sendToAgent|send-keys|respawn-pane|kill-session/);
+  assert.match(planningClients, /displayedCandidateDigest !== request\.expectedCandidateDigest/);
+  assert.match(planningClients, /It is not approval and starts no execution/);
+  assert.match(focusSource, /function renderDeliveryPlanWithFocus\(context\)[\s\S]*restoreDeliveryPlanFocus\(context\)/);
+  assert.match(focusSource, /const focusContext = deliveryPlanFocusContext\(planId\)[\s\S]*renderDeliveryPlanWithFocus\(focusContext\)[\s\S]*finally[\s\S]*renderDeliveryPlanWithFocus\(focusContext\)/);
+  assert.match(styles, /\.planning-role-grid\s*\{/);
+  assert.match(styles, /\.planning-worker-identity\s*\{/);
+  assert.match(styles, /\.planning-candidate-columns\s*\{/);
+  assert.match(styles, /\.planning-run-actions\s*\{/);
+  assert.match(styles, /\.planning-run-actions > \.planning-run-recovery-note\s*\{/);
+  assert.match(styles, /\.planning-run-terminate\s*\{/);
+  assert.match(styles, /\.aap-conversation\s*\{/);
+  assert.match(styles, /\.aap-chat-thread\s*\{/);
+  assert.match(styles, /\.aap-workshop-message-form\s*\{/);
+});
+
+test('SDLC is a dedicated role workspace with repeatable pre-implementation planning cycles', async () => {
+  const [app, styles, index] = await Promise.all([
+    uiSource('app.js'),
+    uiSource('styles.css'),
+    uiSource('index.html')
+  ]);
+  const queueStart = app.indexOf('function renderPromptQueue(promptQueue, agents)');
+  const queueEnd = app.indexOf('function renderMissionQueue', queueStart);
+  const sdlcStart = app.indexOf('function sdlcWorkflowOverview()');
+  const sdlcEnd = app.indexOf('function ideaQueueSection', sdlcStart);
+  const queueSource = app.slice(queueStart, queueEnd);
+  const sdlcSource = app.slice(sdlcStart, sdlcEnd);
+  const starterStart = sdlcSource.indexOf('<form id="delivery-plan-guided-create-form"');
+  const starterEnd = sdlcSource.indexOf('</form>', starterStart);
+  const starterSource = sdlcSource.slice(starterStart, starterEnd);
+  const validatorStart = app.indexOf('function validDeliveryPlanGuidedDraft');
+  const validatorEnd = app.indexOf('async function createDeliveryPlanFromGuidedForm', validatorStart);
+  const validatorSource = app.slice(validatorStart, validatorEnd);
+
+  assert.match(index, /Terminals[\s\S]*Queue[\s\S]*SDLC[\s\S]*Code City[\s\S]*Tools/);
+  assert.ok(sdlcStart >= 0 && sdlcEnd > sdlcStart);
+  assert.match(sdlcSource, /Product Owner[\s\S]*Business Analyst[\s\S]*Quality Analyst[\s\S]*Developer/);
+  assert.match(sdlcSource, /Agent Action Plan Workshop[\s\S]*Put your AAP in the middle/);
+  assert.match(sdlcSource, /Bring an idea, project, or AAP[\s\S]*Run a workshop round[\s\S]*Use or challenge the proposal[\s\S]*Approve and hand off/);
+  assert.match(sdlcSource, /Bring context[\s\S]*Agents challenge[\s\S]*You review[\s\S]*Refine another round/);
+  assert.match(sdlcSource, /Agents do not edit your project or approve their own proposal/);
+  assert.match(sdlcSource, /Workshop status/);
+  assert.ok(starterStart >= 0 && starterEnd > starterStart);
+  assert.match(sdlcSource, /Message the workshop[\s\S]*No setup form\. A rough thought is enough/);
+  assert.match(sdlcSource, /<section id="sdlc-new-plan"[\s\S]*<form id="delivery-plan-guided-create-form"[\s\S]*Send to workshop/);
+  assert.doesNotMatch(sdlcSource, /summary-hint[\s\S]*Chat|>Chat</);
+  assert.match(starterSource, /What are you thinking about/);
+  assert.match(starterSource, /name="message"[\s\S]*deliveryPlanConversationContext[\s\S]*Send to workshop/);
+  assert.match(app, /function deliveryPlanConversationContext[\s\S]*Connect later[\s\S]*Project context[\s\S]*Optional[\s\S]*never blocks the workshop/);
+  assert.match(app, /async function createDeliveryPlanFromGuidedForm[\s\S]*requireWorkspace: false[\s\S]*result\.workspace[\s\S]*deliveryPlanGuidedDefinition/);
+  assert.match(validatorSource, /const message = String\(draft\.request \|\| ''\)\.trim\(\)/);
+  assert.match(validatorSource, /message && message\.length <= 1800/);
+  assert.match(validatorSource, /test\(`\$\{title\}\$\{message\}\$\{workspace\}`\)/);
+  assert.doesNotMatch(validatorSource, /test\(`\$\{title\}\$\{request\}\$\{workspace\}`\)/);
+  assert.match(app, /AAP_WORKSPACE_STORAGE_KEY[\s\S]*rememberDeliveryPlanWorkspace/);
+  assert.match(starterSource, /Just send the idea\. The workshop will help establish the outcome, requirements, feasibility, risks, and proof/);
+  assert.doesNotMatch(starterSource, /name="(?:startingPoint|title|currentState|request|constraints|intent)"/);
+  assert.doesNotMatch(app, /class="delivery-plan-(?:advanced-panel|edit-panel|create-form|edit-form)"/);
+  assert.match(sdlcSource, /function renderSdlcWorkspace\(\)[\s\S]*sdlcNextAction\(summaries, planningRuns\)[\s\S]*deliveryPlansSection\(\)[\s\S]*sdlcWorkflowOverview\(\)/);
+  assert.match(app, /protectedViewId !== 'sdlc-view'[\s\S]*renderSdlcWorkspace\(\)/);
+  assert.doesNotMatch(app, /Open AAP workshop|Open AAP<|Start AAP conversation|Start workshop conversation|Start workshop round|Run another workshop round|Add message to AAP|Begin planning/);
+  assert.match(app, /planningCyclesForPlan\(plan\.id\)/);
+  assert.match(app, /async function createDeliveryPlanFromGuidedForm[\s\S]*deliveryPlanBaselineForWorkspace[\s\S]*conversation: true[\s\S]*mutateDeliveryPlanAuthoritatively/);
+  assert.match(app, /async function createDeliveryPlanFromGuidedForm[\s\S]*Opening the AAP workshop/);
+  assert.match(app, /function deliveryPlanConversationTitle\(message\)[\s\S]*Starting point: Collaborative discovery/);
+  assert.match(app, /async function createDeliveryPlanFromGuidedForm[\s\S]*startPlanningRunClient\(\{[\s\S]*deliveryPlanId: createdPlan\.id[\s\S]*\}, \{ confirmed: true \}\)/);
+  assert.match(app, /async function startPlanningRunClient\(button, \{ confirmed = false \} = \{\}\)[\s\S]*if \(!confirmed && !window\.confirm/);
+  assert.match(app, /async function updateDeliveryPlanFromSetupForm[\s\S]*deliveryPlanSetupPrepared[\s\S]*patch\.authority/);
+  assert.match(app, /function deliveryPlanGuidedSetup[\s\S]*baseline_discovery_only[\s\S]*Continue the conversation[\s\S]*name="message"[\s\S]*Send to workshop[\s\S]*Connect a Git baseline[\s\S]*Connect Git baseline/);
+  assert.match(app, /function readDeliveryPlanSetupDraft[\s\S]*dataset\.setupMode === 'conversation'[\s\S]*deliveryPlanConversationTitle\(message\)[\s\S]*deliveryPlanWorkshopRequest\(\{ request: message \}\)[\s\S]*deliveryPlanResolvedWorkspace\(field\('workspace', detail\.plan\.workspace\)/);
+  assert.match(app, /async function updateDeliveryPlanFromSetupForm[\s\S]*conversation-planning-r[\s\S]*to: 'planning'[\s\S]*startPlanningRunClient\([\s\S]*confirmed: true/);
+  assert.doesNotMatch(sdlcSource, /Starting context needed|Put the starting AAP in the middle|Blocking findings|Edit plan essentials/);
+  assert.match(app, /function planningWorkshopComposer[\s\S]*Message the workshop[\s\S]*optional[\s\S]*Send to workshop[\s\S]*One action saves your message/);
+  assert.match(app, /async function addDeliveryPlanWorkshopMessage\(form\)[\s\S]*planningRunFromDetail\(detail\)[\s\S]*if \(message\)[\s\S]*patch\.request = nextRequest[\s\S]*workshop-planning-r[\s\S]*startPlanningRunClient/);
+  assert.match(app, /classList\?\.contains\('aap-workshop-message-form'\)[\s\S]*addDeliveryPlanWorkshopMessage/);
+  assert.match(app, /deliveryPlanWorkshopDrafts\.set\([\s\S]*slice\(0, 1200\)/);
+  assert.match(app, /class="planning-role-details"[\s\S]*Role details/);
+  assert.match(app, /class="delivery-plan-fingerprint"[\s\S]*Technical fingerprint/);
+  assert.doesNotMatch(queueSource, /deliveryPlansSection|prompt-queue-plans|data-queue-section="plans"/);
+  assert.match(styles, /#sdlc-view\.active\.sdlc-workspace-view/);
+  assert.match(styles, /\.sdlc-next-action/);
+  assert.match(styles, /\.sdlc-iteration-rule/);
+  assert.match(styles, /\.aap-workshop-loop\s*\{[\s\S]*grid-template-areas:[\s\S]*"role1 center role2"[\s\S]*"role3 center role4"/);
+  assert.match(styles, /\.aap-workshop-center\s*\{/);
+  assert.match(styles, /\.aap-workshop-cycle\s*\{/);
+  assert.match(styles, /\.aap-conversation-starter\s*\{/);
+  assert.match(styles, /\.aap-conversation-prompt\s*\{/);
+  assert.match(styles, /\.aap-conversation-context > summary\s*\{/);
+});
+
 test('Prompt Queue composer exposes honest readiness and deliberate desktop submit shortcuts', () => {
   assert.deepEqual(promptQueueComposerPresentation({ session: 'codex', text: 'Next task', cron: '' }, true), {
-    label: 'Add prompt', sendLabel: 'Send now', disabled: false, sendDisabled: false, selectedCount: 1, count: '9/4000', full: false, hasDraft: true, unsafeCharacterCount: 0
+    label: 'Add prompt', sendLabel: 'Send now', disabled: false, sendDisabled: false, selectedCount: 1, count: '9/30000', full: false, hasDraft: true, unsafeCharacterCount: 0
   });
   assert.deepEqual(promptQueueComposerPresentation({ session: 'codex', text: 'Next task', cron: '0 * * * *' }, true), {
-    label: 'Create schedule', sendLabel: 'Send now', disabled: false, sendDisabled: true, selectedCount: 1, count: '9/4000', full: false, hasDraft: true, unsafeCharacterCount: 0
+    label: 'Create schedule', sendLabel: 'Send now', disabled: false, sendDisabled: true, selectedCount: 1, count: '9/30000', full: false, hasDraft: true, unsafeCharacterCount: 0
   });
   assert.equal(promptQueueComposerPresentation({ session: '', text: 'Next task' }, true).disabled, true);
   assert.equal(promptQueueComposerPresentation({ session: 'codex', text: '   ' }, true).disabled, true);
   assert.deepEqual(promptQueueComposerPresentation({ session: 'codex', text: '', cron: '0 * * * *' }, true), {
-    label: 'Create schedule', sendLabel: 'Send now', disabled: true, sendDisabled: true, selectedCount: 1, count: '0/4000', full: false, hasDraft: true, unsafeCharacterCount: 0
+    label: 'Create schedule', sendLabel: 'Send now', disabled: true, sendDisabled: true, selectedCount: 1, count: '0/30000', full: false, hasDraft: true, unsafeCharacterCount: 0
   });
   assert.equal(promptQueueComposerPresentation({ session: 'codex', text: 'Next task' }, false).disabled, true);
-  assert.deepEqual(promptQueueComposerPresentation({ session: 'codex', text: 'x'.repeat(4000) }, true), {
-    label: 'Add prompt', sendLabel: 'Send now', disabled: false, sendDisabled: false, selectedCount: 1, count: '4000/4000', full: true, hasDraft: true, unsafeCharacterCount: 0
+  assert.deepEqual(promptQueueComposerPresentation({ session: 'codex', text: 'x'.repeat(30000) }, true), {
+    label: 'Add prompt', sendLabel: 'Send now', disabled: false, sendDisabled: false, selectedCount: 1, count: '30000/30000', full: true, hasDraft: true, unsafeCharacterCount: 0
   });
   assert.deepEqual(promptQueueComposerPresentation(null, true), {
-    label: 'Add prompt', sendLabel: 'Send now', disabled: true, sendDisabled: true, selectedCount: 0, count: '0/4000', full: false, hasDraft: false, unsafeCharacterCount: 0
+    label: 'Add prompt', sendLabel: 'Send now', disabled: true, sendDisabled: true, selectedCount: 0, count: '0/30000', full: false, hasDraft: false, unsafeCharacterCount: 0
   });
   assert.deepEqual(promptQueueComposerPresentation({ sessions: ['codex', 'codex2'], text: 'Fan out', cron: '' }, true), {
-    label: 'Queue for 2', sendLabel: 'Send now to 2', disabled: false, sendDisabled: false, selectedCount: 2, count: '7/4000', full: false, hasDraft: true, unsafeCharacterCount: 0
+    label: 'Queue for 2', sendLabel: 'Send now to 2', disabled: false, sendDisabled: false, selectedCount: 2, count: '7/30000', full: false, hasDraft: true, unsafeCharacterCount: 0
   });
   assert.equal(promptQueueComposerPresentation({ sessions: ['codex', 'codex2'], text: 'Fan out', cron: '0 * * * *' }, true).disabled, true);
 
@@ -1491,8 +2416,8 @@ test('Prompt Queue composer exposes honest readiness and deliberate desktop subm
   assert.deepEqual(normalizedPromptQueueDraft({ session: 'codex', text: 'hello', cron: ' 0 * * * * ' }), {
     session: 'codex', sessions: ['codex'], text: 'hello', cron: '0 * * * *'
   });
-  assert.deepEqual(normalizedPromptQueueDraft({ session: 's'.repeat(140), text: 'x'.repeat(4010), cron: ` ${'c'.repeat(90)} ` }), {
-    session: 's'.repeat(128), sessions: ['s'.repeat(128)], text: 'x'.repeat(4000), cron: 'c'.repeat(80)
+  assert.deepEqual(normalizedPromptQueueDraft({ session: 's'.repeat(140), text: 'x'.repeat(30010), cron: ` ${'c'.repeat(90)} ` }), {
+    session: 's'.repeat(128), sessions: ['s'.repeat(128)], text: 'x'.repeat(30000), cron: 'c'.repeat(80)
   });
   assert.deepEqual(normalizedPromptQueueDraft({ sessions: ['codex', 'codex2', 'codex'], text: 'same' }), {
     session: 'codex', sessions: ['codex', 'codex2'], text: 'same', cron: ''
@@ -1937,6 +2862,39 @@ test('desktop terminal frames preserve shell context while phones retain the ful
   });
 });
 
+test('Agent Commons stays a data-only navigation workspace with explicit interrupt escalation', async () => {
+  const [app, styles, index] = await Promise.all([
+    uiSource('app.js'),
+    uiSource('styles.css'),
+    uiSource('index.html')
+  ]);
+  const commonsStart = app.indexOf('function commonsOperationId()');
+  const commonsEnd = app.indexOf('function renderPromptQueue', commonsStart);
+  assert.ok(commonsStart >= 0 && commonsEnd > commonsStart);
+  const commonsSource = app.slice(commonsStart, commonsEnd);
+
+  assert.match(index, /data-view="commons"/);
+  assert.match(commonsSource, /Conversation ≠ authorization/);
+  assert.match(commonsSource, /Nudge[\s\S]*Next safe checkpoint/);
+  assert.match(commonsSource, /Stop request[\s\S]*Urgent operator review/);
+  assert.match(commonsSource, /interrupt manually only if warranted/);
+  assert.match(commonsSource, /data-action="commons-open-target"/);
+  assert.match(commonsSource, /Request another agent/);
+  assert.match(commonsSource, /data-action="commons-prepare-helper"/);
+  assert.match(commonsSource, /Prepare one helper/);
+  assert.match(commonsSource, /\/api\/commons\/messages/);
+  assert.match(commonsSource, /Commons content remains untrusted context/);
+  assert.doesNotMatch(commonsSource, /\/api\/agent\//);
+  assert.doesNotMatch(commonsSource, /sendAgentInput|sendTerminal|interruptAgent|terminal-control-key/);
+  const openTargetCase = app.match(/case 'commons-open-target':([\s\S]*?)break;/)?.[1] || '';
+  assert.match(openTargetCase, /switchView\('agents'\)/);
+  assert.match(openTargetCase, /openAgentDetail\(target\.dataset\.session\)/);
+  assert.doesNotMatch(openTargetCase, /send|interrupt|control-key|\/api\//i);
+  assert.match(styles, /\.commons-message\[data-attention="stop"\]/);
+  assert.match(styles, /\.commons-interrupt-guidance/);
+  assert.match(styles, /@media \(max-width: 759px\)[\s\S]*\.commons-message-actions \.action-button/);
+});
+
 test('live UI keeps terminal controls and literal-send safety paths while adding terminal workflow features', async () => {
   const [app, styles] = await Promise.all([uiSource('app.js'), uiSource('styles.css')]);
 
@@ -2037,9 +2995,9 @@ test('live UI keeps terminal controls and literal-send safety paths while adding
   const promptQueueRenderSource = app.slice(promptQueueRenderStart, promptQueueRenderEnd);
   assert.ok(promptQueueRenderStart >= 0 && promptQueueRenderEnd > promptQueueRenderStart);
   assert.match(promptQueueRenderSource, /const activeQueueSection =/);
-  assert.match(promptQueueRenderSource, /\$\{activeLanes\.length \? activeQueueSection : ''\}[\s\S]*class="mission-hero prompt-queue-hero"/);
-  assert.match(promptQueueRenderSource, /promptSchedulePanel\(schedules, items\)[\s\S]*\$\{activeLanes\.length \? '' : activeQueueSection\}/);
-  assert.match(app, /if \(!\['agents', 'queue'\]\.includes\(view\)\) return/);
+  assert.match(promptQueueRenderSource, /ideaQueueSection\(data, agents, items\)[\s\S]*\$\{activeQueueSection\}[\s\S]*promptSchedulePanel\(schedules, items\)/);
+  assert.doesNotMatch(promptQueueRenderSource, /deliveryPlansSection\(/);
+  assert.match(app, /if \(!\['agents', 'queue', 'sdlc', 'code-city', 'commons'\]\.includes\(view\)\) return/);
   assert.doesNotMatch(app, /setOpenDrawer\('queue'/);
   assert.match(app, /Queue creates one independent FIFO item per terminal/);
   assert.match(app, /agent\.queueReady === true/);
@@ -2056,6 +3014,7 @@ test('live UI keeps terminal controls and literal-send safety paths while adding
   assert.match(app, /class="project-artifact-row"/);
   assert.match(app, /data-action="project-artifact-download"/);
   assert.match(app, /function projectArtifactPreviewUrl\(artifact, target, previewAvailable\)/);
+  assert.match(app, /artifact\?\.type === 'markdown'/);
   assert.match(app, /class="action-button project-artifact-preview"/);
   assert.match(app, /\/preview\$\{url\.slice\(separator\)\}/);
   assert.match(app, /target="_blank" rel="noopener noreferrer">Preview<\/a>/);
@@ -2070,6 +3029,7 @@ test('live UI keeps terminal controls and literal-send safety paths while adding
   assert.match(app, /PROJECT_ARTIFACT_CONTENT_TYPES\.has\(contentType\)/);
   assert.match(app, /markdown: '\.md'/);
   assert.match(app, /html: '\.html'/);
+  assert.match(app, /zip: '\.zip'/);
   assert.match(app, /URL\.createObjectURL\(blob\)/);
   assert.match(app, /URL\.revokeObjectURL\(objectUrl\)/);
   const artifactDownloadStart = app.indexOf('async function projectArtifactDownload(button)');
@@ -2077,15 +3037,20 @@ test('live UI keeps terminal controls and literal-send safety paths while adding
   const artifactDownloadSource = app.slice(artifactDownloadStart, artifactDownloadEnd);
   assert.ok(artifactDownloadStart >= 0 && artifactDownloadEnd > artifactDownloadStart);
   assert.match(artifactDownloadSource, /data\.error === 'control_session_required' && attempt === 0/);
+  assert.match(artifactDownloadSource, /data\.error === 'device_auth_required'/);
+  assert.match(artifactDownloadSource, /redirectToDeviceLogin\(\)/);
   assert.match(artifactDownloadSource, /await refreshControlSession\(controller\.signal\)/);
   assert.match(artifactDownloadSource, /credentials: 'same-origin'/);
-  assert.match(artifactDownloadSource, /headers: \{ accept: 'application\/pdf, text\/markdown, text\/html' \}/);
+  assert.match(artifactDownloadSource, /headers: \{ accept: 'application\/pdf, text\/markdown, text\/html, application\/zip' \}/);
   assert.doesNotMatch(app, /file:\/\//);
   assert.match(app, /scratchpadDraftKey/);
   assert.match(app, /SCRATCHPAD_SNIPPETS_KEY/);
   assert.match(app, /sameExactTarget/);
   assert.match(app, /state\.snapshot\?\.capabilities\?\.projectDesk === true/);
   assert.match(app, /restart PaneFleet to enable exact-target Review and Send/);
+  assert.match(app, /function redirectToDeviceLogin\(\)/);
+  assert.match(app, /window\.location\.assign\(`\/login\?next=\$\{encodeURIComponent\(next\)\}`\)/);
+  assert.match(app, /async function startDashboard\(\)[\s\S]*if \(!await loadSnapshot\('startup'\)\) return;[\s\S]*connectEvents\(\);[\s\S]*await loadOptions\(\);/);
   assert.match(app, /const identity = normalizedExactPaneIdentity\(target\)/);
   assert.match(app, /sessionCreatedAt: identity\.sessionCreatedAt/);
   assert.match(app, /paneId: identity\.paneId/);
@@ -2115,7 +3080,7 @@ test('live UI keeps terminal controls and literal-send safety paths while adding
   assert.match(app, /safeStorageSet\(ACTIVE_VIEW_STORAGE_KEY, view\)/);
   assert.match(app, /window\.history\.replaceState\(null, '', nextHash\)/);
   assert.match(app, /window\.addEventListener\('hashchange'/);
-  assert.match(app, /els\.workspaceTitle\.textContent = queueActive \? 'Prompt Queue' : 'Agent workspace'/);
+  assert.match(app, /els\.workspaceTitle\.textContent = commonsActive \? 'Agent Commons' : codeCityActive \? 'Code City' : sdlcActive \? 'AAP Workshop' : queueActive \? 'Prompt Queue' : 'Agent workspace'/);
   assert.match(app, /const presentation = connectionStatePresentation\(value\)/);
   assert.match(app, /els\.connectionPill\.setAttribute\('aria-label', presentation\.description\)/);
   assert.match(app, /runtimeVersionPresentation\(runtimeVersion, DASHBOARD_PROTOCOL_VERSION\)/);
@@ -2160,8 +3125,9 @@ test('live UI keeps terminal controls and literal-send safety paths while adding
   assert.match(app, /item\.captureUnavailable = transition\.unavailable/);
   assert.match(app, /capture stopped after three failed checks/i);
   assert.match(app, /class="terminal-resume-panel hidden"/);
-  assert.match(app, /data-action="terminal-resume-agent"[^>]*>Restart Codex/);
-  assert.match(app, /terminalAgentResumePresentation\(item, currentAgent\(item\.session\)\)/);
+  assert.match(app, /data-action="terminal-resume-agent"[^>]*>Resume saved chat/);
+  assert.match(app, /terminalAgentResumePresentation\(item, currentAgent\(item\.session\), state\.snapshot\)/);
+  assert.match(app, /Restart unavailable:[\s\S]*no exact saved rollout registered/);
   assert.match(app, /case 'terminal-resume-agent':/);
   assert.match(app, /normalizedExactPaneIdentity\(\{ \.\.\.agent, paneId: agent\?\.id \}\)/);
   assert.match(app, /JSON\.stringify\(\{ \.\.\.identity, model, reasoning \}\)/);
@@ -2296,7 +3262,13 @@ test('live UI keeps terminal controls and literal-send safety paths while adding
   assert.match(app, /class="terminal-tool-group terminal-reading-tools"[^>]*aria-label="Reading tools"/);
   assert.match(app, /class="terminal-tool-group terminal-agent-tools"[^>]*aria-label="Agent commands"/);
   assert.match(app, /class="terminal-tool-group terminal-recovery-tools"[^>]*aria-label="Session recovery"/);
-  assert.match(app, /class="terminal-interrupt-control" data-action="session-interrupt"[^>]*>Send Ctrl-C<\/button>/);
+  assert.match(app, /class="terminal-signal-bar hidden" role="toolbar" aria-label="Immediate terminal controls"/);
+  assert.doesNotMatch(app, /<strong>Interrupt<\/strong><small>Exact pane · never retried<\/small>/);
+  assert.match(app, /data-action="terminal-control-key" data-key="escape"[^>]*>Esc<\/button>/);
+  assert.match(app, /class="terminal-interrupt-control" data-action="terminal-control-key" data-key="interrupt"[^>]*>Ctrl-C<\/button>/);
+  assert.match(app, /async function sendTerminalControlKey\(item, key\)[\s\S]*normalizedExactPaneIdentity[\s\S]*key === 'interrupt'[\s\S]*window\.confirm[\s\S]*api\('\/api\/agent\/ui-key'[\s\S]*PaneFleet will not retry it/);
+  assert.match(app, /case 'terminal-control-key':[\s\S]*sendTerminalControlKey\(terminalItem, target\.dataset\.key\)/);
+  assert.doesNotMatch(app, /data-action="interrupt-agent"/);
   assert.match(app, /class="terminal-stop-control" data-action="session-stop"[^>]*>Stop session<\/button>/);
   assert.match(app, /agentTools: element\.querySelector\('\.terminal-agent-tools'\)/);
   assert.match(app, /recoveryTools: element\.querySelector\('\.terminal-recovery-tools'\)/);
@@ -2314,7 +3286,7 @@ test('live UI keeps terminal controls and literal-send safety paths while adding
   assert.match(app, /item\.mode === 'static' \|\| item\.minimized \|\| item\.refreshPaused \|\| item\.captureUnavailable/);
   assert.match(app, /item\.minimized \|\| item\.refreshPaused \|\| item\.captureUnavailable \|\| document\.hidden/);
   assert.match(app, /data-action="new-agent-cancel" type="button">Cancel<\/button>/);
-  assert.match(app, /type="submit" aria-describedby="new-agent-launcher-safety new-agent-launcher-shortcut">Start Agent<\/button>/);
+  assert.match(app, /type="submit" aria-describedby="new-agent-launcher-safety new-agent-launcher-shortcut">\$\{commonsHelperBound \? 'Approve & Start One Helper' : 'Start Agent'\}<\/button>/);
   assert.match(app, /function closeNewAgentLauncher\(launcher = document\.querySelector\('\.new-agent-panel\[open\]'\), focus = true\)/);
   assert.match(app, /function handleNewAgentLauncherKeydown\(event, launcher\)/);
   assert.match(app, /form\?\.contains\(event\.target\) && isNewAgentSubmitShortcut\(event\)/);
@@ -2343,7 +3315,7 @@ test('live UI keeps terminal controls and literal-send safety paths while adding
   assert.match(app, /function jumpToPromptQueueSection\(section\)/);
   assert.match(app, /const selector = promptQueueSectionTarget\(section\)/);
   assert.match(app, /case 'prompt-queue-jump':/);
-  assert.match(app, /class="prompt-queue-counter" data-full="\$\{presentation\.full\}" aria-label="\$\{state\.promptQueueDraft\.text\.length\} of 4000 characters used"/);
+  assert.match(app, /class="prompt-queue-counter" data-full="\$\{presentation\.full\}" aria-label="\$\{state\.promptQueueDraft\.text\.length\} of \$\{PROMPT_INPUT_MAX_CHARS\} characters used"/);
   assert.match(app, /aria-keyshortcuts="Control\+Enter Meta\+Enter"/);
   assert.match(app, /id="prompt-queue-text-safety"[^>]*role="status"[^>]*aria-live="assertive"/);
   assert.match(app, /data-action="prompt-queue-remove-hidden"[^>]*>Remove hidden characters<\/button>/);
@@ -2721,6 +3693,30 @@ test('the active phone terminal traps focus without making its ancestor inert', 
   assert.match(app.slice(keydownStart), /handleTerminalTabKeydown\(event\)[\s\S]*handleTerminalModalKeydown\(event\)[\s\S]*terminal-find-input/);
 });
 
+test('rich terminal reading stays exact-pane-bound and outside every inert background target', async () => {
+  const [app, styles] = await Promise.all([uiSource('app.js'), uiSource('styles.css')]);
+  const modalStart = app.indexOf('function syncTerminalModalState(desktopMode = isDesktopTerminalMode())');
+  const modalEnd = app.indexOf('function currentAgent(session)', modalStart);
+  const modalSource = app.slice(modalStart, modalEnd);
+
+  assert.match(app, /class="terminal-rich-response hidden" tabindex="0"/);
+  assert.match(app, /state\.snapshot\?\.capabilities\?\.terminalRichResponse === true/);
+  assert.match(app, /state\.snapshot\?\.capabilities\?\.terminalHistory === true/);
+  assert.match(app, /state\.snapshot\?\.capabilities\?\.terminalAnsiCapture === true/);
+  assert.match(app, /exactPaneIdentityQuery\(item\.boundIdentity\)/);
+  assert.match(app, /\/response\?\$\{identityQuery\}/);
+  assert.match(app, /capture\?view=history&lines=1200/);
+  assert.match(app, /item\.refreshPaused = true;[\s\S]*await api\(`\/api\/pane/);
+  assert.match(app, /normalizedTerminalStyleRuns\(content, styleRuns\)/);
+  assert.match(app, /span\.textContent = slice\.text/);
+  assert.match(app, /item\.responseBody\.replaceChildren\(\)/);
+  assert.doesNotMatch(app, /responseBody\.innerHTML/);
+  assert.match(modalSource, /els\.appShell\.removeAttribute\('inert'\)/);
+  assert.doesNotMatch(modalSource, /item\.element\.(?:setAttribute|toggleAttribute)\('inert'/);
+  assert.match(styles, /\.terminal-rich-response\s*\{[\s\S]*grid-area: output;[\s\S]*overflow: auto;[\s\S]*overscroll-behavior: contain/);
+  assert.match(styles, /@media \(max-width: 759px\), \(max-width: 900px\) and \(max-height: 620px\) and \(pointer: coarse\)[\s\S]*\.terminal-command-bar \.terminal-view-controls button \{ width: 100%; min-height: 44px/);
+});
+
 test('live responsive CSS anchors desktop windows to the workspace and shows only one phone terminal', async () => {
   const styles = await uiSource('styles.css');
   assert.match(styles, /\.terminal-home\s*\{[\s\S]*grid-template-columns: 230px minmax\(520px, 1fr\) 300px/);
@@ -2794,10 +3790,12 @@ test('live responsive CSS anchors desktop windows to the workspace and shows onl
   assert.match(styles, /\.terminal-command-bar \.terminal-refresh-toggle\.active\s*\{[\s\S]*color: #fde68a/);
   assert.match(styles, /\/\* Group high-frequency read tools separately from terminal-input commands\. \*\//);
   assert.match(styles, /\.terminal-command-bar > span\.terminal-tool-group\s*\{[\s\S]*display: flex/);
-  assert.match(styles, /\.terminal-command-bar \.terminal-interrupt-control\s*\{[\s\S]*color: #fde68a/);
+  assert.match(styles, /\.terminal-signal-bar\s*\{[\s\S]*grid-area: signal/);
+  assert.match(styles, /\.terminal-signal-bar \.terminal-interrupt-control\s*\{[\s\S]*color: #fecaca/);
+  assert.match(styles, /@media \(max-width: 759px\), \(pointer: coarse\)[\s\S]*\.terminal-signal-bar button\s*\{[\s\S]*min-height: 44px/);
   assert.match(styles, /\.terminal-command-bar \.terminal-stop-control\s*\{[\s\S]*color: #fecaca/);
   assert.match(styles, /@media \(max-width: 759px\)[\s\S]*\.terminal-command-bar > span\.terminal-tool-group\s*\{[\s\S]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
-  assert.match(styles, /@media \(max-width: 759px\)[\s\S]*\.terminal-command-bar > span\.terminal-recovery-tools\s*\{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(styles, /@media \(max-width: 759px\)[\s\S]*\.terminal-command-bar > span\.terminal-recovery-tools\s*\{[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(styles, /@media \(max-width: 759px\)[\s\S]*\.terminal-tool-group-label\s*\{[\s\S]*display: block/);
   assert.match(styles, /\.terminal-command-bar \.terminal-text-size-controls \.terminal-text-size-value\.can-reset\s*\{[\s\S]*cursor: pointer/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);

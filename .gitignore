@@ -88,6 +88,17 @@ docs/private-*.md
 docs/host-wide-https.md
 docs/security-hardening.md
 
+# Private, one-installation maintenance material; not part of the product
+docs/host-audit-*.md
+docs/host-security-sweep-*.md
+docs/*-dns-rollout-plan.md
+deploy/aws/panefleet-resize-automation-role.json
+scripts/capture-panefleet-resize-preflight.mjs
+scripts/resize-panefleet-instance.mjs
+test/capture-panefleet-resize-preflight.test.js
+test/panefleet-resize-role-template.test.js
+test/resize-panefleet-instance.test.js
+
 # Editor and OS metadata
 .DS_Store
 .idea/

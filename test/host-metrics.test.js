@@ -11,11 +11,13 @@ test('Linux memory metrics use available memory and retain swap capacity', () =>
     'SwapTotal:       4194300 kB',
     'SwapFree:        3000000 kB'
   ].join('\n')), {
+    totalMem: 2048000000,
     availableMem: 1024000000,
     swapTotal: 4294963200,
     swapFree: 3072000000
   });
   assert.deepEqual(parseLinuxMemoryMetrics('MemFree: 12 kB\nmalformed'), {
+    totalMem: null,
     availableMem: null,
     swapTotal: null,
     swapFree: null
