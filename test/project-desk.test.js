@@ -90,7 +90,8 @@ function artifactPreviewPath(id, session = 'codex-alpha', overrides = {}) {
 }
 
 before(async () => {
-  fixtureDir = mkdtempSync(path.join(os.tmpdir(), 'agent-orchestrator-project-desk-'));
+  // A port-like substring in unrelated metadata must not imply a leaked link.
+  fixtureDir = mkdtempSync(path.join(os.tmpdir(), 'agent-orchestrator-project-desk-9999-'));
   projectsRoot = path.join(fixtureDir, 'projects');
   workspace = path.join(projectsRoot, 'alpha');
   workspaceSubdir = path.join(workspace, 'src');
@@ -488,7 +489,8 @@ test('Project Desk is exact-pane-bound and returns only capped, allowlisted proj
   assert.match(releaseArtifact.id, /^[a-f0-9]{32}$/);
   assert.equal(releaseArtifact.size, readFileSync(path.join(deliverablesDir, 'release-notes.pdf')).length);
   assert.doesNotMatch(JSON.stringify(desk.artifacts), /outside-link|private-notes|root-document|in-project-private|old-plan|not-markdown|README|\/home\//);
-  assert.doesNotMatch(JSON.stringify(desk), /Never Return|9999/);
+  // Check the service boundary, not opaque artifact IDs or temporary paths.
+  assert.doesNotMatch(JSON.stringify(desk.links), /Never Return|9999/);
   assert.doesNotMatch(toolLog(), /FORBIDDEN/);
   assert.doesNotMatch(toolLog(), /<status>|<diff-files>|<hash-object>/, 'Project Desk must not invoke content-converting Git commands');
 });
